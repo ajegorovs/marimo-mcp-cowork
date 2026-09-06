@@ -6,10 +6,7 @@
 > **Date:** 2026-09-06
 >
 > This is the actionable plan that resolves
-> [`agenda-live-test-redesign.md`](agenda-live-test-redesign.md). It supersedes the
-> stale history docs (`live-test-redesign.md`, `live-test-architecture.md`,
-> `kernel-launch-progress.md`, `integration-test-plan.md`) for any decision made
-> here — those remain only as history.
+> [`agenda-live-test-redesign.md`](agenda-live-test-redesign.md).
 >
 > **Read this first, in order:** `docs/live-tests.md` (current status) →
 > this plan → `docs/marimo-version-support.md` (before touching marimo deps).
@@ -235,9 +232,6 @@ In `MarimoServerManager`:
 ### Step 8 — Consolidate docs (last)
 
 - Move this plan's final state into `docs/live-tests.md` as current truth.
-- Mark `docs/live-test-redesign.md`, `docs/live-test-architecture.md`,
-  `docs/kernel-launch-progress.md`, `docs/integration-test-plan.md` as stale
-  (add a one-line header) or delete, and update `AGENTS.md`'s docs map accordingly.
 - Update the "Live suite is currently red" section in `docs/live-tests.md`.
 
 ### Step 9 (future) — Version matrix

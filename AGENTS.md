@@ -35,7 +35,9 @@ agent has not freshly read.
 - Package/venv manager: **uv**. No `venv`/`pip`/`poetry` workflows.
 - Python: 3.12 (pinned via `.python-version`).
 - Runtime deps: `fastmcp>=4.0.0`, `httpx2>=2.5.0`,
-  `marimo[recommended]>=0.24.0,<0.25`.
+  `marimo[recommended]>=0.24.0,<0.25`, plus `numpy` and `matplotlib`
+  (needed by the demo notebooks/runbook; `marimo[recommended]` does not pull
+  them in).
 - Test extras: `pytest>=9.1.1`, `pytest-asyncio>=1.4.0`,
   `inline-snapshot`, `dirty-equals`.
 
@@ -143,19 +145,20 @@ bite of live-test coverage.
 - `docs/agenda-live-test-redesign.md` — resolved agenda (rationale + design
   space).
 
-**Demo runbooks:**
+**Harness / IDE integrations (per-harness MCP setup notes):**
+
+- `docs/harness-integration/deepseek-harness-web-profile.md` — registering the
+  marimo-inspect FastMCP server with the DeepSeek Harness web profile
+  (`~/.dsh/profiles/web/cordis.patch.yml`); the two setup gotchas (bare vs
+  `insert:` patch form, `uv run` vs venv binary) and hardening.
+
+**Demo runbook (the only one):**
 
 - `docs/agent-onboarding-demo-mcp.md` — the canonical demo runbook (uses
-  `notebooks/agent_demo.py` etc. in this repo).
-- `docs/mcp-tools-demo-scenario.md` — older read-tools-only demo scenario.
-- `docs/mcp-tools-stateful-demo-linux-findings.md` — findings from a live
-  stateful-demo run on Linux.
-
-**Stale history (superseded; marked STALE in-file):**
-
-- `docs/live-test-architecture.md`, `docs/live-test-redesign.md`,
-  `docs/kernel-launch-progress.md`, `docs/integration-test-plan.md` — pre-
-  redesign design history; read for context, not as current truth.
+  `notebooks/function_plotting_demo.py` in this repo). Its "Prerequisites" section
+  documents the two things an interactive run needs: `uv sync` for the demo's
+  `numpy`/`matplotlib` deps, and a real session (browser launch or the `/sse`
+  handshake — a bare `--headless` launch discovers nothing).
 
 **One-off reports / analyses (historical — do not treat as current truth):**
 
@@ -167,11 +170,6 @@ bite of live-test coverage.
 - `docs/mcp-tools-test-findings.md` — 2025-01 bug findings (shows old buggy
   code; historical).
 - `docs/mcp-upgrade-roadmap.md` — upgrade roadmap (partially executed).
-
-**Broken:**
-
-- `docs/refactor-session-creation.md` — corrupted in migration (a single
-  line of literal `\n` escapes). Historical; safe to delete or rewrite.
 
 ## Remote / publishing
 

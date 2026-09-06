@@ -54,11 +54,53 @@ points:
   reappear as external `changes_since_last` events.
 - `execute-code.sh` remains available as a fallback for complex `cm` blocks, but
   for normal co-work the MCP write tools are the surface.
+- **Writes persist to the notebook file on disk.** `create_cell`/`edit_cell`/
+  `delete_cell` rewrite the `.py` (new `@app.cell` blocks appear in the source).
+  For a demo against a *committed* fixture notebook, git-restore the file
+  afterward (or copy it to a scratch path first) so the run doesn't pollute the
+  repo.
+
+## Prerequisites
+
+- **Dependencies come from `uv sync`.** The demo notebooks import `numpy` and
+  the plot step imports `matplotlib`; both are declared in `pyproject.toml`
+  (added 2026-09-06 after an interactive run failed with
+  `ModuleNotFoundError: No module named 'numpy'`). `marimo[recommended]` does
+  **not** pull either in — if you see that error, you're on a pre-fix tree or a
+  stale venv: run `uv sync`.
+- **A marimo server materializes a session only when a client connects.** A
+  `--headless` launch never opens a browser and never creates a session on its
+  own, so `list_active_notebooks()` returns `total_notebooks: 0` (and
+  `GET /api/sessions` returns `{}`) until one exists. Two ways to get a session:
+  - Launch **without `--headless`** (step 2 below) so the browser opens and
+    performs the handshake for you.
+  - Keep `--headless` and create the session yourself with the `/sse` handshake
+    (the same mechanics the live-test suite uses — see `docs/live-tests.md`):
+    ```python
+    import asyncio, uuid
+    import httpx2 as httpx
+
+    async def handshake(server_url: str, notebook_path: str) -> str:
+        session_id = str(uuid.uuid4())
+        params = {"session_id": session_id, "file": notebook_path}
+        async with httpx.AsyncClient(timeout=15) as client:
+            async with client.stream(
+                "GET", f"{server_url}/sse", params=params
+            ) as response:
+                assert response.status_code == 200, await response.aread()
+                async for line in response.aiter_lines():
+                    if "kernel-ready" in line:
+                        break
+        return session_id
+    ```
+    Then pass the returned `session_id` to `list_active_notebooks(server_url=...)`
+    (or straight to the read tools).
 
 ## How an agent loads and runs this
 
-1. **The agent creates the notebook file manually**, then launches it. Hand-write
-   the `.py` with the showcase title baked in:
+1. **Use the committed starter notebook** `notebooks/function_plotting_demo.py`
+   (two cells — a `# Function Plotting Showcase` title and a `numpy` import).
+   It is already on disk; do not hand-write it. Its source, for reference:
    ```python
    import marimo
 
@@ -67,18 +109,17 @@ points:
 
 
    @app.cell
-   def _(mo):
+   def _():
        import marimo as mo
-
        mo.md("# Function Plotting Showcase")
-       return mo
+       return (mo,)
 
 
    @app.cell
    def _():
        import numpy as np
 
-       return np
+       return (np,)
 
 
    if __name__ == "__main__":

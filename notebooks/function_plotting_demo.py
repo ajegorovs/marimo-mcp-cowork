@@ -8,14 +8,14 @@ app = marimo.App(width="full")
 def _():
     import marimo as mo
     mo.md("# Function Plotting Showcase")
-    return
+    return (mo,)
 
 
 @app.cell
 def _():
     import numpy as np
 
-    return
+    return (np,)
 
 
 if __name__ == "__main__":

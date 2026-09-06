@@ -171,6 +171,3 @@ What fixed the red suite (see [live-test-redesign-plan.md](live-test-redesign-pl
   (verified findings, work items, definition of done).
 - `docs/agenda-live-test-redesign.md` — the original open issue / rationale.
 - `docs/marimo-version-support.md` — why the live suite gates marimo bumps.
-- `docs/live-test-architecture.md`, `docs/live-test-redesign.md`,
-  `docs/kernel-launch-progress.md`, `docs/integration-test-plan.md` — design
-  history; treat as stale, not current truth.
