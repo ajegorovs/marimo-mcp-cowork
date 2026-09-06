@@ -37,10 +37,13 @@ def _serialize(value, depth=0):
     if depth > 3:
         return {"value": str(value)[:500], "datatype": type(value).__name__}
 
-    import numpy as np
+    # numpy arrays / scalars (optional dependency - degrade gracefully)
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
 
-    # numpy arrays / scalars
-    if isinstance(value, (np.ndarray, np.generic)):
+    if np is not None and isinstance(value, (np.ndarray, np.generic)):
         return {
             "value": str(value)[:500],
             "datatype": "numpy." + type(value).__name__,

@@ -84,7 +84,10 @@ uv add --editable /path/to/marimo-inspect  # local checkout
 ```bash
 uv sync
 uv run ruff check .
-uv run pytest -m "not live"
+uv run pytest -m "not live"   # unit tests (fast, no kernel)
+uv run pytest -m live         # live kernel tests (boots its own headless server)
 ```
 
-The `live` tests need a real marimo kernel and are deselected by default.
+The `live` tests need a real marimo kernel and are deselected by default. See
+[docs/live-tests.md](docs/live-tests.md) for how the live suite is run and its
+current status.

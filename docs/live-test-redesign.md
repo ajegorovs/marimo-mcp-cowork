@@ -1,4 +1,7 @@
-# Live Test Suite Redesign
+# Live Test Suite Redesign (STALE — history only)
+
+> **Stale.** Superseded by docs/live-test-redesign-plan.md (the executed plan)
+> and docs/live-tests.md (current truth). Kept for historical context.
 
 > Started: 2025-08-26
 > Objective: Improve and redesign the live marimo kernel test suite

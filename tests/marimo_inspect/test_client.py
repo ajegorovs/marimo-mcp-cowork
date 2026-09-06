@@ -434,6 +434,107 @@ data: {"success": true, "output": {"mimetype": "text/html", "data": "<b>chart</b
             assert result.status == "ok"
             assert result.output == {"mimetype": "text/html", "data": "<b>chart</b>"}
 
+    async def test_execute_event_without_space(self):
+        """Handles SSE 'event:' without a space after the colon."""
+        from marimo_inspection.client import MarimoClient
+
+        client = MarimoClient("http://127.0.0.1:8090")
+        sse_data = """event:stdout
+data: {"data": "no-space-event"}
+event:done
+data: {"success": true, "output": null}
+"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.aread = AsyncMock(return_value="")
+
+        async def aiter_lines():
+            for line in sse_data.strip().split("\n"):
+                yield line
+
+        mock_response.aiter_lines = aiter_lines
+        async_cm = MagicMock()
+        async_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        async_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(
+            client, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_http = MagicMock()
+            mock_http.stream = MagicMock(return_value=async_cm)
+            mock_get_client.return_value = mock_http
+
+            result = await client.execute(session_id="abc123", code="print('x')")
+            assert result.status == "ok"
+            assert "no-space-event" in result.stdout
+
+    async def test_execute_standalone_output_event(self):
+        """Captures output from a separate 'event: output' frame."""
+        from marimo_inspection.client import MarimoClient
+
+        client = MarimoClient("http://127.0.0.1:8090")
+        sse_data = """event: output
+data: {"output": {"mimetype": "text/plain", "data": "42"}}
+event: done
+data: {"success": true, "output": {"mimetype": "text/plain", "data": "42"}}
+"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.aread = AsyncMock(return_value="")
+
+        async def aiter_lines():
+            for line in sse_data.strip().split("\n"):
+                yield line
+
+        mock_response.aiter_lines = aiter_lines
+        async_cm = MagicMock()
+        async_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        async_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(
+            client, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_http = MagicMock()
+            mock_http.stream = MagicMock(return_value=async_cm)
+            mock_get_client.return_value = mock_http
+
+            result = await client.execute(session_id="abc123", code="42")
+            assert result.status == "ok"
+            assert result.output == {"mimetype": "text/plain", "data": "42"}
+
+    async def test_execute_ignores_malformed_data_lines(self):
+        """Non-JSON data lines are skipped without crashing."""
+        from marimo_inspection.client import MarimoClient
+
+        client = MarimoClient("http://127.0.0.1:8090")
+        sse_data = """event: stdout
+data: +OK ready
+event: done
+data: {"success": true, "output": null}
+"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.aread = AsyncMock(return_value="")
+
+        async def aiter_lines():
+            for line in sse_data.strip().split("\n"):
+                yield line
+
+        mock_response.aiter_lines = aiter_lines
+        async_cm = MagicMock()
+        async_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        async_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(
+            client, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_http = MagicMock()
+            mock_http.stream = MagicMock(return_value=async_cm)
+            mock_get_client.return_value = mock_http
+
+            result = await client.execute(session_id="abc123", code="x")
+            assert result.status == "ok"
+
 
 # -------------------------------------------------------------------
 # ExecuteResult dataclass tests

@@ -1,4 +1,8 @@
-# Live Test Architecture
+# Live Test Architecture (STALE — history only)
+
+> **Stale.** Superseded by docs/live-tests.md (current truth) and
+> docs/live-test-redesign-plan.md. Kept for historical context; do not treat
+> as current.
 
 > Updated: 2025-08-26
 > Objective: Document the redesigned live test suite architecture

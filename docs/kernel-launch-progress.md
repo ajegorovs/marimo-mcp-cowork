@@ -1,4 +1,8 @@
-# Kernel Launch Architecture Progress Report
+# Kernel Launch Architecture Progress Report (STALE — history only)
+
+> **Stale.** This doc over-claims completion (e.g. claimed create_session.py /
+> start_test_server.py were removed when they were not). The current truth is
+> docs/live-tests.md.
 
 > Started: 2025-08-26
 > Updated: 2025-08-26

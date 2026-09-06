@@ -5,26 +5,37 @@ No manual server start required - tests manage their own kernel lifecycle.
 
 Architecture:
 - MarimoServerManager: Manages marimo server process lifecycle
-- Session isolation: Each test gets a clean session
-- Proper cleanup: No residual state between tests
-- Fast execution: < 10s total test time
-- No Playwright: Uses HTTP API for session creation
+- One server + one session per pytest session (marimo edit mode allows a
+  single session per server)
+- Session created via the `/sse` plain-HTTP handshake (no websocket
+  library needed; see docs/live-test-redesign-plan.md)
+- Proper cleanup + log dumping on failure
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
+import socket
 import subprocess
 import sys
-import urllib.error
-import urllib.request
+import tempfile
+import uuid
+from collections import deque
+from pathlib import Path
 
+import httpx2 as httpx
 import pytest
 
 from marimo_inspection.client import MarimoClient
-from marimo_inspection.discovery import discover_servers
+
+# Marimo materializes a kernel session only when a client performs the
+# frontend handshake (GET /sse?session_id=<uuid>&file=<path> - or the /ws
+# websocket). Polling /api/sessions can never create one. See
+# docs/live-test-redesign-plan.md §0 for the verified contract.
+NOTEBOOK_PATH = Path(__file__).parents[3] / "notebooks" / "test_marimo.py"
+START_TIMEOUT_S = 30
+HANDLE_TIMEOUT_S = 15
 
 
 class MarimoServerManager:
@@ -38,107 +49,197 @@ class MarimoServerManager:
         self.process: subprocess.Popen | None = None
         self.server_url: str | None = None
         self.session_id: str | None = None
-        self._sessions: list[str] = []
+        self._state_dir: Path | None = None
+        self._log_lines: deque[str] = deque(maxlen=500)
+        self._drain_task: asyncio.Task | None = None
 
-    async def start(self, notebook_path: str = "notebooks/test_marimo.py"):
-        """Start a marimo server process."""
-        # Start marimo server with --no-token --headless.
-        # The port is configurable via $MARIMO_TEST_PORT (default 2718) so the
-        # suite does not depend on a hardcoded, possibly-occupied port.
-        port = os.environ.get("MARIMO_TEST_PORT", "2718")
+    @staticmethod
+    def _pick_port() -> int:
+        """Return a free localhost port, honoring $MARIMO_TEST_PORT override."""
+        env_port = os.environ.get("MARIMO_TEST_PORT")
+        if env_port:
+            return int(env_port)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    async def start(self, notebook_path: str | None = None) -> str:
+        """Start a headless marimo edit server on a free port."""
+        notebook = notebook_path or str(NOTEBOOK_PATH)
+        port = self._pick_port()
+
+        # Isolate marimo's state (server registry, cli state) in a temp dir so
+        # the suite neither pollutes the developer's real marimo state nor
+        # clashes with it; also keeps CI hermetic.
+        self._state_dir = Path(tempfile.mkdtemp(prefix="marimo-test-state-"))
+        env = dict(os.environ)
+        env["XDG_STATE_HOME"] = str(self._state_dir)
+
         cmd = [
             sys.executable,
             "-m",
             "marimo",
             "edit",
-            notebook_path,
+            notebook,
             "--no-token",
             "--headless",
             "--port",
-            port,
+            str(port),
+            "--host",
+            "127.0.0.1",
         ]
-
         self.process = subprocess.Popen(  # noqa: ASYNC220 - test scaffolding
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
         )
+        # Drain the pipes in the background so the server never blocks on a
+        # full pipe buffer, and so we can surface logs on failure.
+        self._drain_task = asyncio.create_task(self._drain_pipes())
 
-        # Wait for server to start
-        await asyncio.sleep(2)
-
-        # Prefer the exact port we launched on; fall back to discovery.
-        self.server_url = f"http://localhost:{port}"
-        servers = await discover_servers()
-        if servers:
-            self.server_url = servers[0].url
-
+        self.server_url = await self._wait_until_ready(port)
         return self.server_url
 
-    async def create_session(self):
-        """Create a session using HTTP API.
+    async def _drain_pipes(self) -> None:
+        """Continuously read server stdout/stderr into a bounded deque."""
+        assert self.process is not None
+        loop = asyncio.get_running_loop()
+        while True:
+            for reader in (self.process.stdout, self.process.stderr):
+                if reader is None or reader.closed:
+                    continue
+                try:
+                    line = await loop.run_in_executor(None, reader.readline)
+                except (ValueError, OSError):
+                    continue
+                if not line:  # EOF on this pipe
+                    continue
+                self._log_lines.append(line.decode(errors="replace").rstrip("\n"))
+            if self.process.poll() is not None and all(
+                r is None or r.closed
+                for r in (self.process.stdout, self.process.stderr)
+            ):
+                break
+            await asyncio.sleep(0.05)
 
-        Polls /api/sessions until a session exists.
-        No Playwright needed - marimo creates sessions automatically.
+    async def _wait_until_ready(self, port: int) -> str:
+        """Poll /api/version until the server responds.
+
+        Raises with dumped server logs if it never comes up.
         """
-        if not self.server_url:
-            raise RuntimeError("Server not started")
-
-        # Use urllib to poll /api/sessions
-        for attempt in range(20):  # Max 20 attempts (10 seconds)
+        url = f"http://127.0.0.1:{port}"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + START_TIMEOUT_S
+        while loop.time() < deadline:
+            if self.process is not None and self.process.poll() is not None:
+                break
             try:
-                response = urllib.request.urlopen(  # noqa: ASYNC210 - test polling
-                    f"{self.server_url}/api/sessions", timeout=2
-                )
-                sessions = json.loads(response.read().decode())
-
-                if sessions:
-                    # Return first available session
-                    return sessions[0]
-            except (urllib.error.URLError, ConnectionError, TimeoutError):
-                pass  # Server not ready yet, continue polling
-
-            await asyncio.sleep(0.5)
-
-        raise TimeoutError(
-            f"Timed out waiting for session at {self.server_url}/api/sessions"
+                async with httpx.AsyncClient(timeout=2) as client:
+                    response = await client.get(f"{url}/api/version")
+                if response.status_code == 200:
+                    return url
+            except (httpx.HTTPError, OSError):
+                pass
+            await asyncio.sleep(0.25)
+        self.dump_logs()
+        raise RuntimeError(
+            f"Marimo server did not become ready within {START_TIMEOUT_S}s "
+            f"at {url} (see server logs above)."
         )
 
-    async def cleanup_session(self, session_id: str):
-        """Cleanup a session after test completion."""
-        # For now, just remove from tracking
-        # In future, could add session termination logic
-        if session_id in self._sessions:
-            self._sessions.remove(session_id)
+    def log_tail(self, n: int = 30) -> str:
+        """Return the last n captured server log lines."""
+        return "\n".join(list(self._log_lines)[-n:])
 
-    async def stop(self):
-        """Stop the marimo server process."""
+    def dump_logs(self) -> None:
+        """Print captured server logs (used on failure)."""
+        if self._log_lines:
+            print("\n--- marimo server log tail ---")
+            print(self.log_tail())
+            print("-------------------------------")
+
+    async def create_session(self) -> str:
+        """Create the single edit-mode session via the /sse handshake.
+
+        marimo only materializes a session when a client connects to
+        `/sse?session_id=<uuid>&file=<abs path>` (or the `/ws` websocket).
+        We open the stream and wait for the `kernel-ready` event, which also
+        guarantees the kernel itself is up before any test runs.
+        """
+        assert self.server_url is not None, "start() must be called first"
+        session_id = str(uuid.uuid4())
+        params = {"session_id": session_id, "file": str(NOTEBOOK_PATH)}
+        try:
+            async with (
+                httpx.AsyncClient(timeout=HANDLE_TIMEOUT_S) as client,
+                client.stream(
+                    "GET", f"{self.server_url}/sse", params=params
+                ) as response,
+            ):
+                if response.status_code != 200:
+                    text = await response.aread()
+                    raise RuntimeError(
+                        f"Session handshake failed: {response.status_code} {text}"
+                    )
+                async for line in response.aiter_lines():
+                    if '"op": "kernel-ready"' in line or "kernel-ready" in line:
+                        break
+                else:
+                    raise RuntimeError(
+                        "Session handshake completed without kernel-ready event"
+                    )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Session handshake failed: {exc}") from exc
+
+        self.session_id = session_id
+        return session_id
+
+    async def stop(self) -> None:
+        """Terminate the server process and reap it."""
         if self.process:
             self.process.terminate()
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+                self.process.wait(timeout=5)
             self.process = None
+        if self._drain_task:
+            self._drain_task.cancel()
+            try:
+                await self._drain_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - teardown best-effort
+                self._log_lines.append("[stop] drain task cancelled")
+            self._drain_task = None
 
 
-# ─── Session-Scoped Fixtures ──────────────────────────────────────────────
+# ─── Session-Scoped Fixtures ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture(scope="session")
-async def kernel_manager():
-    """Create a direct kernel manager for all live tests.
+async def kernel_manager(request):
+    """Start the marimo server and create its single edit-mode session.
 
     Manages the marimo server lifecycle:
-    - Starts server before tests
+    - Starts server + session before tests
     - Stops server after tests
     - No MCP intermediary
     - No auto-resurrection
     """
     manager = MarimoServerManager()
-    await manager.start()
-    yield manager
-    await manager.stop()
+    # Accessible to pytest_sessionfinish for failure diagnostics.
+    session = request.session
+    try:
+        await manager.start()
+        await manager.create_session()
+        session._marimo_kernel_manager = manager
+        yield manager
+    except Exception:
+        manager.dump_logs()
+        raise
+    finally:
+        await manager.stop()
 
 
 @pytest.fixture(scope="session")
@@ -147,7 +248,19 @@ def live_server_url(kernel_manager):
     return kernel_manager.server_url
 
 
-# ─── Function-Scoped Fixtures (Per-Test Isolation) ─────────────────────────
+@pytest.fixture(scope="session")
+def live_session_id(kernel_manager):
+    """Return the shared session id used by all live tests.
+
+    marimo edit mode allows exactly one session per server; a new
+    connection with a different session id *replaces* the existing session
+    (verified, see docs/live-test-redesign-plan.md), so tests share one
+    session rather than creating fresh ones.
+    """
+    return kernel_manager.session_id
+
+
+# ─── Function-Scoped Fixtures (Per-Test Client Isolation) ─────────────────────────────────────────────────
 
 
 @pytest.fixture(scope="function")
@@ -163,45 +276,27 @@ async def live_client(live_server_url):
 
 
 @pytest.fixture(scope="function")
-async def live_session(live_client):
+async def live_session(live_client, live_session_id):
     """Resolve the test session from the live server.
 
-    Each test gets a fresh session - no state pollution between tests.
-    Session is cleaned up after test completion.
+    Returns the single shared session (fresh client per test; the session
+    itself is server-wide because marimo edit mode is single-session).
     """
-    session = await live_client.resolve_session()
+    session = await live_client.resolve_session(session_id=live_session_id)
     yield session
-    # Cleanup would happen here if needed
 
 
-# ─── Legacy Compatibility (for tests that still use old fixture names) ─────
+# ─── Failure diagnostics ──────────────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture(scope="session")
-def marimo_server(kernel_manager):
-    """Legacy fixture name - uses kernel_manager."""
-    return kernel_manager
+def pytest_sessionfinish(session, exitstatus):
+    """Dump shared server log tail when a live run fails.
 
-
-@pytest.fixture(scope="session")
-async def direct_kernel_manager(kernel_manager):
-    """Compatibility with direct kernel launch tests."""
-    return kernel_manager
-
-
-@pytest.fixture(scope="session")
-async def direct_server_url(live_server_url):
-    """Compatibility with direct kernel launch tests."""
-    return live_server_url
-
-
-@pytest.fixture(scope="function")
-async def direct_client(live_client):
-    """Compatibility with direct kernel launch tests."""
-    return live_client
-
-
-@pytest.fixture(scope="function")
-async def direct_session(live_session):
-    """Compatibility with direct kernel launch tests."""
-    return live_session
+    The kernel_manager fixture also dumps logs on setup errors; this covers
+    test-level failures so a failing suite says *where* the server failed,
+    not just "assertion failed".
+    """
+    if exitstatus != 0:
+        manager = getattr(session, "_marimo_kernel_manager", None)
+        if manager is not None:
+            manager.dump_logs()

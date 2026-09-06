@@ -1,4 +1,10 @@
-"""Integration tests for variables template against a live marimo kernel."""
+"""Live integration tests for the variables template.
+
+Behavioral assertions: against a live kernel the template returns status ok
+and inspects the kernel-visible globals (e.g. the `json` module injected by
+the kernel; a scratchpad-defined helper). It must not raise when optional
+dependencies (numpy/pandas) are absent.
+"""
 
 from __future__ import annotations
 
@@ -10,42 +16,42 @@ from marimo_inspection.templates.variables import TEMPLATE_VARIABLES
 
 
 @pytest.mark.live
-async def test_variables_returns_structure(live_client, live_session):
-    """Verify variables template returns the expected structure."""
+async def test_variables_returns_ok_with_variables(live_client, live_session):
+    """The variables template succeeds and returns a variables mapping."""
     result = await live_client.execute(live_session.session_id, TEMPLATE_VARIABLES)
-
     assert result.status == "ok", f"Template failed: stderr={result.stderr}"
     data = json.loads(result.stdout[0])
 
     assert "variables" in data
     assert "tables" in data
+    assert isinstance(data["variables"], dict)
+    assert isinstance(data["tables"], dict)
 
 
 @pytest.mark.live
-async def test_variables_detects_kernel_vars(live_client, live_session):
-    """marimo injects variables like 'mo' — verify they're detected."""
+async def test_variables_sees_kernel_injected_global(live_client, live_session):
+    """The `json` module (kernel-injected) is visible to the template."""
     result = await live_client.execute(live_session.session_id, TEMPLATE_VARIABLES)
-
     assert result.status == "ok"
     data = json.loads(result.stdout[0])
 
-    # The kernel should have at least some variables (marimo injects mo, cm, etc.)
-    # Even if variables is empty, the structure should be valid
-    assert isinstance(data.get("variables"), dict) or data["variables"] is None
+    variables = data["variables"]
+    assert "json" in variables, (
+        f"Expected kernel-injected 'json'; got {sorted(variables)}"
+    )
+    # json is a module; datatype reflects that.
+    assert variables["json"]["datatype"] == "module"
 
 
 @pytest.mark.live
-async def test_variables_with_known_var(live_client, live_session):
-    """Create a variable, verify it's detected."""
-    # 1. Execute code that creates a variable directly
-    setup_code = "x = 42"
-    await live_client.execute(live_session.session_id, setup_code)
+async def test_variables_does_not_require_numpy_or_pandas(live_client, live_session):
+    """The template degrades gracefully when optional data libs are absent.
 
-    # 2. Query variables using the template with specific variable
-    # Note: scratchpad execution doesn't persist variables, so this test
-    # verifies the structure rather than actual variable detection
+    Regression for the unguarded `import numpy as np` in _serialize that
+    crashed in kernels without numpy. It must run fine in this env, which
+    has neither numpy nor pandas.
+    """
     result = await live_client.execute(live_session.session_id, TEMPLATE_VARIABLES)
-
-    assert result.status == "ok"
+    assert result.status == "ok", f"Template failed: stderr={result.stderr}"
     data = json.loads(result.stdout[0])
     assert "variables" in data

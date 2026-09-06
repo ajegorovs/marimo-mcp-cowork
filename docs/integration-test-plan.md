@@ -1,4 +1,7 @@
-# Integration Test Plan: Live Marimo Kernel
+# Integration Test Plan: Live Marimo Kernel (STALE — history only)
+
+> **Stale.** Several claims (auto session creation, 0-cell fixture) are false
+> today. Current truth: docs/live-tests.md.
 
 > Updated: 2025-08-26
 > Status: Current

@@ -1,8 +1,10 @@
 # Agenda (open issue): redesign how we run live kernel tests
 
-> **Status:** Agenda — issue described, **not yet solved**. This document exists
-> to capture the current pain points and the design space so we can plan a
-> proper solution; it contains no implementation.
+> **Status:** **Resolved (2026-09-06)** — implemented per
+> [`docs/live-test-redesign-plan.md`](live-test-redesign-plan.md); live suite
+> green (19 passed), fast path green (175 passed). See `docs/live-tests.md`
+> for current truth. This document remains as the rationale/design-space
+> capture.
 
 ## The issue
 
