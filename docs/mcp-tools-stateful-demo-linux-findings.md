@@ -18,6 +18,7 @@ auto-binds a session, every read tool works with the `session_id` omitted.
 
 1. Launched the demo notebook detached:
    `uv run marimo edit notebooks/agent_demo.py --no-token --port 8123`
+   (this repo's bundled demo notebook, not the image-processing repo)
    (launch script under `temp/`).
 2. Called `list_active_notebooks(server_url=...)` → discovered session `s_nrdmwz`,
    auto-bound.

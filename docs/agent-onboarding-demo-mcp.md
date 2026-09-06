@@ -133,7 +133,7 @@ Create the notebook file (see above) and detach-launch `marimo edit`.
   "notebooks": [
     {
       "session_id": "s_xhe4j1",
-      "path": "/home/alex/Repos/python-image-processing-notebooks/notebooks/function_plotting_demo.py"
+      "path": "notebooks/function_plotting_demo.py"
     }
   ]
 }

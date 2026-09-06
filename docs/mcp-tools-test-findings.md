@@ -19,8 +19,8 @@ Two blocking bugs prevent all MCP tools from functioning with a live marimo kern
 ```json
 {
   "s_phw25d": {
-    "filename": "C:\\Repos\\python-image-processing-notebooks\\notebooks\\test_marimo.py",
-    "path": "C:\\Repos\\python-image-processing-notebooks\\notebooks\\test_marimo.py"
+    "filename": "notebooks/test_marimo.py",
+    "path": "notebooks/test_marimo.py"
   }
 }
 ```

@@ -4,7 +4,7 @@ This document shows the redesigned demo scenario using MCP read tools for discov
 
 ## Demo Flow
 
-1. **Agent creates notebook** — `notebooks/agent_demo.py` with 2 cells (title + numpy import)
+1. **Agent creates notebook** — this repo's `notebooks/agent_demo.py` with 2 cells (title + numpy import)
 2. **Agent launches kernel** — `marimo edit --no-token --port 8123` (webpage auto-opens)
 3. **MCP tools throughout** — discovery, cell map, errors, variables, dependencies
 
@@ -28,7 +28,7 @@ result = await list_active_notebooks(server_url="http://127.0.0.1:8123")
   "notebooks": [
     {
       "session_id": "s_xhe4j1",
-      "path": "C:\\Repos\\python-image-processing-notebooks\\notebooks\\agent_demo.py"
+      "path": "notebooks/agent_demo.py"
     }
   ]
 }
