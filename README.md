@@ -66,7 +66,7 @@ lose edits.
 
 ```bash
 uv add marimo-inspect                      # from a package index
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-inspect"  # from VCS
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork"  # from VCS
 uv add --editable /path/to/marimo-inspect  # local checkout
 ```
 
