@@ -61,4 +61,5 @@ We do **not** abstract the marimo internals behind a compatibility layer for
 abstraction's sake — `client.py` + `templates/` are deliberately the only
 files that change on a marimo bump. If that surface ever grows unwieldy, a thin
 `NotebookBackend` protocol can isolate them further; that is a later,
-optional step.
+optional step — see [notebook-backend-protocol.md](notebook-backend-protocol.md)
+for the full deferred design (status, sketch, and the trigger to revisit).
