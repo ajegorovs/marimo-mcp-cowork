@@ -114,9 +114,11 @@ simpler approach:
 async def start_notebook(file_path: str, host: str = "127.0.0.1") -> dict:
     """Start marimo server for a notebook. Returns session_id."""
 
+
 @mcp.tool
 async def stop_notebook(session_id: str = None) -> dict:
     """Stop the default or specified notebook server."""
+
 
 @mcp.tool
 async def switch_notebook(file_path: str) -> dict:

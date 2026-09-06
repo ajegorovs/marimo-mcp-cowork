@@ -61,19 +61,25 @@ points:
    the `.py` with the showcase title baked in:
    ```python
    import marimo
+
    __generated_with = "0.24.0"
    app = marimo.App(width="full")
+
 
    @app.cell
    def _(mo):
        import marimo as mo
+
        mo.md("# Function Plotting Showcase")
        return mo
+
 
    @app.cell
    def _():
        import numpy as np
+
        return np
+
 
    if __name__ == "__main__":
        app.run()
@@ -86,6 +92,7 @@ points:
    `discover-servers.sh`:
    ```python
    from marimo_inspection.tools.notebooks import list_active_notebooks
+
    result = await list_active_notebooks(server_url="http://127.0.0.1:PORT")
    session_id = result["notebooks"][0]["session_id"]
    ```
@@ -294,21 +301,21 @@ import matplotlib.pyplot as plt
 
 x = np.linspace(start_s.value, start_s.value + span_s.value, 1000)
 
-if f_pick.value == 'np.sin(x)':
+if f_pick.value == "np.sin(x)":
     y = np.sin(x)
-    label = 'sin(x)'
-elif f_pick.value == 'np.cos(x)':
+    label = "sin(x)"
+elif f_pick.value == "np.cos(x)":
     y = np.cos(x)
-    label = 'cos(x)'
+    label = "cos(x)"
 else:
     y = x**2
-    label = 'x**2'
+    label = "x**2"
 
 fig, ax = plt.subplots(figsize=(10, 6))
 ax.plot(x, y, label=label, linewidth=2)
-ax.set_xlabel('x')
-ax.set_ylabel('y')
-ax.set_title(f'Function Plot: {label}')
+ax.set_xlabel("x")
+ax.set_ylabel("y")
+ax.set_title(f"Function Plot: {label}")
 ax.legend()
 ax.grid(True, alpha=0.3)
 
@@ -428,9 +435,7 @@ for cell in cells["cells"]:
 ```python
 # Read widget values
 vars = await get_variables(
-    session_id,
-    variable_names=["widget_name"],
-    server_url=server_url
+    session_id, variable_names=["widget_name"], server_url=server_url
 )
 widget_value = vars["variables"]["widget_name"]["value"]
 ```

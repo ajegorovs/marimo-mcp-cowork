@@ -75,6 +75,9 @@ uv add --editable /path/to/marimo-inspect  # local checkout
 - Python 3.12+
 - A running marimo server (start it with `--no-token` for registry-based
   discovery; see `discover_servers`).
+- marimo **0.24.x** (private APIs are version-bound — see
+  [docs/marimo-version-support.md](docs/marimo-version-support.md) for the
+  pinned range and the upgrade validation procedure).
 
 ## Development
 

@@ -87,8 +87,10 @@ async def get_cell_map():
         ...
     return json.dumps({...})
 
+
 result = get_cell_map()
 import asyncio
+
 print(asyncio.run(result))  # ❌ Creates a new event loop → conflicts
 ```
 
@@ -100,6 +102,7 @@ async def get_cell_map():
     async with cm.get_context() as ctx:
         ...
     return json.dumps({...})
+
 
 result = await get_cell_map()  # ✅ Uses the existing event loop
 print(result)
