@@ -1,0 +1,11 @@
+{
+  "variables": {
+    "data": {
+      "value": "array([1, 2, 3])",
+      "datatype": "numpy.ndarray",
+      "shape": [3],
+      "dtype": "int64"
+    }
+  },
+  "tables": {}
+}

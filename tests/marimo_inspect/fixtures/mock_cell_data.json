@@ -1,0 +1,13 @@
+{
+  "data": [
+    {
+      "cell_id": "0",
+      "code": "import marimo as mo\nimport numpy as np",
+      "runtime_state": "idle",
+      "variables": {
+        "mo": {"name": "mo", "datatype": "module"},
+        "np": {"name": "np", "datatype": "module"}
+      }
+    }
+  ]
+}

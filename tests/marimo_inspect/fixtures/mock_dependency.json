@@ -1,0 +1,26 @@
+{
+  "cells": [
+    {
+      "cell_id": "0",
+      "cell_name": "imports",
+      "defs": [{"name": "np", "kind": "variable"}],
+      "refs": [],
+      "parent_cell_ids": [],
+      "child_cell_ids": ["1"]
+    },
+    {
+      "cell_id": "1",
+      "cell_name": "data setup",
+      "defs": [{"name": "data", "kind": "variable"}],
+      "refs": ["np"],
+      "parent_cell_ids": ["0"],
+      "child_cell_ids": []
+    }
+  ],
+  "variable_owners": {
+    "np": ["0"],
+    "data": ["1"]
+  },
+  "multiply_defined": [],
+  "cycles": []
+}

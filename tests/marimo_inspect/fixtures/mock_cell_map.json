@@ -1,0 +1,29 @@
+{
+  "cells": [
+    {
+      "cell_id": "0",
+      "name": "imports",
+      "preview": "import marimo as mo\nimport numpy as np",
+      "line_count": 5,
+      "runtime_state": "idle",
+      "has_output": false
+    },
+    {
+      "cell_id": "1",
+      "name": "data setup",
+      "preview": "data = np.array([1, 2, 3])\nprint(data)",
+      "line_count": 3,
+      "runtime_state": "idle",
+      "has_output": true
+    },
+    {
+      "cell_id": "2",
+      "name": "analysis",
+      "preview": "result = data.mean()\nprint(f'Mean: {result}')",
+      "line_count": 2,
+      "runtime_state": "idle",
+      "has_output": true
+    }
+  ],
+  "total_cells": 3
+}
