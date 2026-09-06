@@ -14,6 +14,7 @@ This document shows the redesigned demo scenario using MCP read tools for discov
 
 ```python
 from marimo_inspection.tools.notebooks import list_active_notebooks
+
 result = await list_active_notebooks(server_url="http://127.0.0.1:8123")
 ```
 
@@ -37,6 +38,7 @@ result = await list_active_notebooks(server_url="http://127.0.0.1:8123")
 
 ```python
 from marimo_inspection.tools.cells import get_cell_map
+
 result = await get_cell_map(session_id, preview_lines=3, server_url=SERVER_URL)
 ```
 

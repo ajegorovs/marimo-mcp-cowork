@@ -84,6 +84,7 @@ async def kernel_manager():
     yield manager
     await manager.stop()
 
+
 @pytest.fixture(scope="function")
 async def test_session(kernel_manager):
     """Isolated session per test."""

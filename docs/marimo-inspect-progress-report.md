@@ -73,9 +73,11 @@ import pytest
 from fastmcp.client import Client
 from marimo_inspection.server import create_server
 
+
 @pytest.fixture
 def mcp_server():
     return create_server()
+
 
 @pytest.mark.asyncio
 async def test_list_notebooks(mcp_server):
