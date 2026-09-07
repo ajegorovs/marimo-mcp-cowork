@@ -8,9 +8,18 @@ import logging
 from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient
-from marimo_inspection.tools.session import resolve_session_id
+from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_ids(ids: str | list[str] | None) -> list[str]:
+    """Normalize a list-typed argument (which a harness may deliver as a string)."""
+    if ids is None:
+        return []
+    if isinstance(ids, str):
+        return [ids]
+    return ids
 
 
 async def get_cell_map(
@@ -37,7 +46,7 @@ async def get_cell_map(
     if ctx:
         await ctx.info(f"Getting cell map for session {sid}...")
 
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
 
     from marimo_inspection.templates.cell_map import build_cell_map_template
@@ -103,7 +112,7 @@ async def get_cell_map(
 
 async def get_cell_data(
     session_id: str = "",
-    cell_ids: list[str] | None = None,
+    cell_ids: str | list[str] | None = None,
     server_url: str = "",
     ctx: Context | None = None,
 ) -> dict:
@@ -115,23 +124,26 @@ async def get_cell_data(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        cell_ids: Cell IDs from get_cell_map. Empty = all cells.
+        cell_ids: Cell IDs from get_cell_map. Empty = all cells. A bare
+            string (e.g. a single ID mangled by a harness) is treated as a
+            one-element list.
         server_url: Optional server URL override.
 
     Returns:
         Dictionary with cell runtime data.
     """
+    cell_ids = _normalize_ids(cell_ids)
     sid = await resolve_session_id(session_id, ctx)
     if ctx:
         target = f"cells {cell_ids}" if cell_ids else "all cells"
         await ctx.info(f"Getting cell data for {target}...")
 
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
 
     from marimo_inspection.templates.cell_data import build_cell_data_template
 
-    code = build_cell_data_template(cell_ids=cell_ids or [])
+    code = build_cell_data_template(cell_ids=cell_ids)
     result = await client.execute(session.session_id, code)
 
     if result.status == "error":
@@ -162,7 +174,7 @@ async def get_cell_data(
 
 async def get_cell_outputs(
     session_id: str = "",
-    cell_ids: list[str] | None = None,
+    cell_ids: str | list[str] | None = None,
     server_url: str = "",
     ctx: Context | None = None,
 ) -> dict:
@@ -171,23 +183,26 @@ async def get_cell_outputs(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        cell_ids: Cell IDs from get_cell_map. Empty = all cells.
+        cell_ids: Cell IDs from get_cell_map. Empty = all cells. A bare
+            string (e.g. a single ID mangled by a harness) is treated as a
+            one-element list.
         server_url: Optional server URL override.
 
     Returns:
         Dictionary with cell outputs and console streams.
     """
+    cell_ids = _normalize_ids(cell_ids)
     sid = await resolve_session_id(session_id, ctx)
     if ctx:
         target = f"cells {cell_ids}" if cell_ids else "all cells"
         await ctx.info(f"Getting cell outputs for {target}...")
 
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
 
     from marimo_inspection.templates.cell_outputs import build_cell_outputs_template
 
-    code = build_cell_outputs_template(cell_ids=cell_ids or [])
+    code = build_cell_outputs_template(cell_ids=cell_ids)
     result = await client.execute(session.session_id, code)
 
     if result.status == "error":
@@ -215,16 +230,10 @@ async def get_cell_outputs(
         }
 
 
-def _get_client(server_url: str) -> MarimoClient:
-    """Create a MarimoClient, using server_url or auto-discovery."""
-    if server_url:
-        return MarimoClient(server_url)
-
-    # Default discovery will be handled in the tool
-    # This is a fallback; typically the caller provides server_url
-
-    # Use a placeholder; actual discovery happens in list_active_notebooks
-    raise ValueError(
-        "server_url is required. Use list_active_notebooks to discover servers, "
-        "then pass the server_url to subsequent tools."
-    )
+async def _get_client(
+    server_url: str,
+    ctx: Context | None = None,
+) -> MarimoClient:
+    """Create a MarimoClient, using explicit server_url or the bound one."""
+    url = await resolve_server_url(server_url, ctx)
+    return MarimoClient(url)

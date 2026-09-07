@@ -1,7 +1,7 @@
 # DeepSeek Harness (web profile) — MCP setup findings
 
 > Date: 2026-09-06
-> Machine: Arch Linux, repo `/home/alex/Repos/marimo-inspect`.
+> Machine: Arch Linux, repo `~/Repos/marimo-inspect`.
 >
 > This is a per-harness integration note; sibling docs under
 > `docs/harness-integration/` cover other harnesses/IDEs. It records how to
@@ -44,9 +44,9 @@ surface as `mcp__marimo__<tool>`.
       config:
         serverName: marimo
         transport: stdio
-        command: /home/alex/Repos/marimo-inspect/.venv/bin/marimo-inspect
+        command: ~/Repos/marimo-inspect/.venv/bin/marimo-inspect
         args: ['--transport', 'stdio']
-        cwd: '/home/alex/Repos/marimo-inspect'
+        cwd: '~/Repos/marimo-inspect'
         failOnStartupError: true
 ```
 
@@ -107,15 +107,15 @@ file; verify the entry with the loader's own compile step.
 exposes the same 13 tools. Use:
 
 ```yaml
-command: /home/alex/Repos/marimo-inspect/.venv/bin/marimo-inspect
+command: ~/Repos/marimo-inspect/.venv/bin/marimo-inspect
 args: ['--transport', 'stdio']
-cwd: '/home/alex/Repos/marimo-inspect'
+cwd: '~/Repos/marimo-inspect'
 ```
 
 ## Verification
 
 ```bash
-cd /home/alex/Repos/marimo-inspect
+cd ~/Repos/marimo-inspect
 .venv/bin/marimo-inspect --transport stdio   # or: uv run marimo-inspect --transport stdio
 ```
 

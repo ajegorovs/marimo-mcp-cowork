@@ -36,11 +36,11 @@ def create_server(
 
         Start with `list_active_notebooks` to discover sessions. The first
         session found is auto-bound as the active session — subsequent tool
-        calls can omit `session_id`.
+        calls can omit both `session_id` and `server_url`.
 
         Use `set_active_session` to switch to a different notebook session,
-        or pass `session_id` explicitly to any tool to override the bound
-        session for a single call.
+        or pass `session_id`/`server_url` explicitly to any tool to override
+        the bound values for a single call.
 
         Writes: use `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
         `edit_cell` refuses to overwrite a cell whose source changed since the

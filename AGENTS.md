@@ -144,9 +144,23 @@ bite of live-test coverage.
   marimo internals, session-creation handshake, DoD). Read for mechanics.
 - `docs/agenda-live-test-redesign.md` — resolved agenda (rationale + design
   space).
+- `docs/agenda-remote-marimo-mcp.md` — **OPEN** agenda: what we'd gain (and
+  break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
+  machine. Read before choosing a consumer's topology or touching
+  `discovery.py`/`--no-token` assumptions.
+- `docs/agenda-udv-consumer-findings.md` — **OPEN** agenda: first-consumer
+  (udv-echo-process, 2026-09-07) field findings: headless `--no-token` servers
+  skip the discovery registry (T1), `server_url` auto-bind semantics (T2),
+  harness list-arg mangling (T3), 3.14 private-API drift evidence (T4), and the
+  **publishing checklist** for making this repo public (T5).
 
 **Harness / IDE integrations (per-harness MCP setup notes):**
 
+- `docs/harness-integration/README.md` — **DRAFT** index for consumers: the two
+  install axes (how the package gets in × how the agent reaches it), the marimo
+  0.24.x pin you inherit, runtime prerequisites, the per-harness note template +
+  index, and a "known gaps" graduation checklist. Claims are labelled
+  ✅/📄/❓ — do not treat ❓ as truth until re-verified.
 - `docs/harness-integration/deepseek-harness-web-profile.md` — registering the
   marimo-inspect FastMCP server with the DeepSeek Harness web profile
   (`~/.dsh/profiles/web/cordis.patch.yml`); the two setup gotchas (bare vs
@@ -170,6 +184,30 @@ bite of live-test coverage.
 - `docs/mcp-tools-test-findings.md` — 2025-01 bug findings (shows old buggy
   code; historical).
 - `docs/mcp-upgrade-roadmap.md` — upgrade roadmap (partially executed).
+
+## Privacy — do not overexpose
+
+Everything committed here must be publishable; treat the whole tree as public
+(and remember it flips public once Settings → danger zone is done).
+
+**Allowed:** the author name/contact email (`pyproject.toml`, `LICENSE`) and
+the GitHub username in the remote/install URL. That is the only personal data.
+
+**Never commit:**
+- Absolute local paths that name the user or machine layout — write
+  `~/Repos/marimo-inspect`, never `/home/<user>/Repos/marimo-inspect`.
+- Sibling/consumer repo names or checkout paths that are not meant to be
+  public — describe them generically ("a consumer repo").
+- Credentials (tokens, api keys, passwords, skew/session tokens). Docs may
+  *discuss* marimo auth, but never paste a real value.
+- Tailnet / RFC1918 IPs, hostnames, or concrete vLLM/tailscale endpoint URLs
+  — write "tailnet-only URL", not the address.
+
+Test fixtures use `/home/user/…` placeholders; keep them that way.
+
+Before a public flip, or when adding docs/config, scan:
+`git grep -nE '/home/[a-z]+|api[_-]?key|password|secret|BEGIN .*PRIVATE|tailscale|vllm' -- . ':!uv.lock'`
+(loopback `127.0.0.1` in tests is fine; flag any other IP.)
 
 ## Remote / publishing
 

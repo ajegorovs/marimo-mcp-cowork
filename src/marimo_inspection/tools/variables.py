@@ -8,14 +8,23 @@ import logging
 from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient
-from marimo_inspection.tools.session import resolve_session_id
+from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
 
 logger = logging.getLogger(__name__)
 
 
+def _normalize_names(names: str | list[str] | None) -> list[str]:
+    """Normalize a list-typed argument (which a harness may deliver as a string)."""
+    if names is None:
+        return []
+    if isinstance(names, str):
+        return [names]
+    return names
+
+
 async def get_variables(
     session_id: str = "",
-    variable_names: list[str] | None = None,
+    variable_names: str | list[str] | None = None,
     server_url: str = "",
     ctx: Context | None = None,
 ) -> dict:
@@ -27,23 +36,26 @@ async def get_variables(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        variable_names: Specific variables to inspect. Empty = all.
+        variable_names: Specific variables to inspect. Empty = all. A bare
+            string (e.g. a single name mangled by a harness) is treated as a
+            one-element list.
         server_url: Optional server URL override.
 
     Returns:
         Dictionary with tables and variables information.
     """
+    variable_names = _normalize_names(variable_names)
     sid = await resolve_session_id(session_id, ctx)
     if ctx:
         target = f"variables {variable_names}" if variable_names else "all variables"
         await ctx.info(f"Inspecting {target}...")
 
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
 
     from marimo_inspection.templates.variables import build_variables_template
 
-    code = build_variables_template(variable_names=variable_names or [])
+    code = build_variables_template(variable_names=variable_names)
     result = await client.execute(session.session_id, code)
 
     if result.status == "error":
@@ -73,10 +85,10 @@ async def get_variables(
         }
 
 
-def _get_client(server_url: str) -> MarimoClient:
-    """Create a MarimoClient."""
-    if not server_url:
-        raise ValueError(
-            "server_url is required. Use list_active_notebooks to discover servers."
-        )
-    return MarimoClient(server_url)
+async def _get_client(
+    server_url: str,
+    ctx: Context | None = None,
+) -> MarimoClient:
+    """Create a MarimoClient, using explicit server_url or the bound one."""
+    url = await resolve_server_url(server_url, ctx)
+    return MarimoClient(url)

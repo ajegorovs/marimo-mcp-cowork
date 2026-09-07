@@ -23,19 +23,18 @@ from marimo_inspection.tools.change_tracking import (
     CellFingerprint,
     get_tracker,
 )
-from marimo_inspection.tools.session import resolve_session_id
+from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
 
 logger = logging.getLogger(__name__)
 
 
-def _get_client(server_url: str) -> MarimoClient:
-    """Create a MarimoClient from server_url (same fallback as other tools)."""
-    if not server_url:
-        raise ValueError(
-            "server_url is required. Use list_active_notebooks to discover "
-            "servers, then pass the server_url to subsequent tools."
-        )
-    return MarimoClient(server_url)
+async def _get_client(
+    server_url: str,
+    ctx: Context | None = None,
+) -> MarimoClient:
+    """Create a MarimoClient, using explicit server_url or the bound one."""
+    url = await resolve_server_url(server_url, ctx)
+    return MarimoClient(url)
 
 
 async def _execute_json(client: MarimoClient, sid: str, code: str) -> dict:
@@ -116,7 +115,7 @@ async def create_cell(
         return {"error": "source must not be empty", "status": "error"}
 
     sid = await resolve_session_id(session_id, ctx)
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
     sid = session.session_id
     if ctx:
@@ -175,7 +174,7 @@ async def edit_cell(
         return {"error": "source must not be empty", "status": "error"}
 
     sid = await resolve_session_id(session_id, ctx)
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
     sid = session.session_id
 
@@ -259,7 +258,7 @@ async def run_cell(
         return {"error": "cell_id is required", "status": "error"}
 
     sid = await resolve_session_id(session_id, ctx)
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
     sid = session.session_id
     if ctx:
@@ -300,7 +299,7 @@ async def delete_cell(
         return {"error": "cell_id is required", "status": "error"}
 
     sid = await resolve_session_id(session_id, ctx)
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
     sid = session.session_id
     if ctx:

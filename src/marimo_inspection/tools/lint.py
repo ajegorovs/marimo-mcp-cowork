@@ -16,7 +16,7 @@ from pathlib import Path
 from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient
-from marimo_inspection.tools.session import resolve_session_id
+from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,8 @@ async def lint_notebook(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        server_url: Optional server URL override.
+        server_url: Optional server URL override. Optional if an active
+            server_url is bound.
 
     Returns:
         Dictionary with lint diagnostics and summary.
@@ -122,7 +123,7 @@ async def lint_notebook(
     if ctx:
         await ctx.info("Linting notebook...")
 
-    client = _get_client(server_url)
+    client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
 
     file_path = session.file
@@ -173,10 +174,10 @@ async def lint_notebook(
     return result
 
 
-def _get_client(server_url: str) -> MarimoClient:
-    """Create a MarimoClient."""
-    if not server_url:
-        raise ValueError(
-            "server_url is required. Use list_active_notebooks to discover servers."
-        )
-    return MarimoClient(server_url)
+async def _get_client(
+    server_url: str,
+    ctx: Context | None = None,
+) -> MarimoClient:
+    """Create a MarimoClient, using explicit server_url or the bound one."""
+    url = await resolve_server_url(server_url, ctx)
+    return MarimoClient(url)

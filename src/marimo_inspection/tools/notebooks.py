@@ -21,7 +21,7 @@ async def list_active_notebooks(
 
     Returns all active sessions with their file paths and session IDs.
     The first discovered session is automatically bound as the active
-    session — subsequent tools can omit `session_id`.
+    session — subsequent tools can omit both `session_id` and `server_url`.
 
     Args:
         server_url: Optional explicit server URL.
@@ -89,7 +89,8 @@ async def list_active_notebooks(
         first = all_notebooks[0]
         sid = first.get("session_id")
         if sid and sid != "error":
-            await bind_active_session(sid, ctx)
+            url = first.get("server_url", "")
+            await bind_active_session(sid, ctx, server_url=url)
             await ctx.info(f"Auto-bound session {sid} as active session")
 
     return {
@@ -100,7 +101,7 @@ async def list_active_notebooks(
         },
         "notebooks": all_notebooks,
         "next_steps": [
-            "Use get_cell_map to get the structure of a notebook (session_id is now optional)",
+            "Use get_cell_map to get the structure of a notebook (session_id and server_url are now optional)",
             "Use get_errors to debug errors",
             "Pass session_id explicitly to target a different notebook",
         ],
