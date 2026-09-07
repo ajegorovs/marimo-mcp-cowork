@@ -41,9 +41,12 @@ path (B3) needs no MCP server and no `fastmcp` at all.
 uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork"
 ```
 
-📄 `AGENTS.md` §Remote/publishing; `README.md` §Install. Needs access to a
-**private** repo — do not paste this URL into public docs or a public
-`pyproject.toml`.
+📄 `AGENTS.md` §Remote/publishing; `README.md` §Install. Public repo — pin a
+tag when you depend on it in a committed `pyproject.toml`:
+
+```bash
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.2.0"
+```
 
 ### A2. Local checkout, editable (dev against a sibling clone) ✅
 

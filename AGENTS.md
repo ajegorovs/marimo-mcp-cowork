@@ -212,7 +212,20 @@ Before a public flip, or when adding docs/config, scan:
 ## Remote / publishing
 
 - Remote: `origin` = `https://github.com/ajegorovs/marimo-mcp-cowork`
-  (**private**). Push to `main` after committing.
+  (**public**). Push to `main` after committing.
 - Consumers install via:
   `uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork"`.
-- Don't leak the private remote URL into public docs.
+
+### Git tags — pin releases, don't float HEAD
+
+Consumers should reference a **tag**, not a moving branch, so a future bump
+can't silently change what they resolve.
+
+- Cut a release tag at the current package version before asking any consumer
+  to depend on this repo: `git tag v0.2.0 && git push origin --tags`.
+- Bump `version` in `pyproject.toml` **and** `__version__` in
+  `src/marimo_inspection/__init__.py` together (they are duplicated on
+  purpose); cut the matching tag in the same change.
+- Consumer form: `uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.2.0"`
+  (or a `[tool.uv.sources]` entry with `tag = "v0.2.0"`).
+- Never move a tag that a consumer already pinned — cut a new one instead.

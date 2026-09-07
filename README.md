@@ -65,9 +65,9 @@ lose edits.
 ## Install
 
 ```bash
-uv add marimo-inspect                      # from a package index
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork"  # from VCS
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.2.0"  # from VCS (pin a tag)
 uv add --editable /path/to/marimo-inspect  # local checkout
+# uv add marimo-inspect                     # from a package index (not yet published)
 ```
 
 ## Requirements

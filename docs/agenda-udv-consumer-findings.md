@@ -105,6 +105,15 @@ After flipping:
   bogus commit hash — corrected in-session; the "hash" was a mis-copied lockfile
   pin, not a real provider commit. Kept as a self-caught-drift example.)*
 
+- **2026-09-07-c** ✅ Status: flip landed. API re-probe confirmed
+  `private: false`; repo now returns HTTP 200 unauthenticated. Items 1–4
+  executed: AGENTS.md §Remote / publishing now says **public** (and gained a
+  "Git tags" subsection), harness-integration §A1 drops the private-repo
+  warning and shows the `@v0.2.0` pin form, README §Install verified clean
+  (no private caveats). Tag `v0.2.0` is **not yet cut** — the owner has never
+  used tags; AGENTS.md now documents the tag/release practice for the next
+  agent to follow.
+
 ## T6 — Consumer gotchas worth cross-referencing (no work here) ✅
 
 - **Sandboxed agents:** `uv` fails on read-only `$HOME` (`.cache/uv` lock) and
