@@ -17,8 +17,9 @@ One widget per module; front-end code in ``js/<name>.js`` loaded via the
 """
 
 from marimo_inspection.widgets.image_preview import ImagePreview
+from marimo_inspection.widgets.trace_scrubber import TraceScrubber
 
-__all__ = ["ImagePreview", "load_esm"]
+__all__ = ["ImagePreview", "TraceScrubber", "load_esm"]
 
 
 # Re-export for convenience without forcing an import at package import time.

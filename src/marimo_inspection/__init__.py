@@ -40,6 +40,7 @@ __all__ = [
     "ImagePreview",
     "MarimoClient",
     "SessionInfo",
+    "TraceScrubber",
     "create_server",
     "discover_servers",
 ]
@@ -56,4 +57,8 @@ def __getattr__(name: str):
         from marimo_inspection.widgets import ImagePreview as _ImagePreview
 
         return _ImagePreview
+    if name == "TraceScrubber":
+        from marimo_inspection.widgets import TraceScrubber as _TraceScrubber
+
+        return _TraceScrubber
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
