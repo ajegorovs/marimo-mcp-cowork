@@ -18,6 +18,12 @@ dependencies = [
     # its first run step with `ModuleNotFoundError: No module named 'numpy'`.
     "numpy",
     "matplotlib",
+    # Distributed anywidget components (src/marimo_inspection/widgets). Kept
+    # as regular deps so widgets import out of the box; the base package lazy
+    # imports them, so the client path stays free of these until requested.
+    "anywidget>=0.11.0",
+    "traitlets",
+    "pillow",
 ]
 
 [project.scripts]

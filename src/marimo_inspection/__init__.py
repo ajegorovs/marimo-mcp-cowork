@@ -37,6 +37,7 @@ __version__ = "0.2.0"
 __all__ = [
     "DiscoveredServer",
     "ExecuteResult",
+    "ImagePreview",
     "MarimoClient",
     "SessionInfo",
     "create_server",
@@ -45,9 +46,14 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Lazily expose the FastMCP server so the client path needs no fastmcp."""
+    """Lazily expose the FastMCP server and the anywidgets so the client path
+    needs neither fastmcp nor anywidget until requested."""
     if name == "create_server":
         from marimo_inspection.server import create_server as _create_server
 
         return _create_server
+    if name == "ImagePreview":
+        from marimo_inspection.widgets import ImagePreview as _ImagePreview
+
+        return _ImagePreview
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
