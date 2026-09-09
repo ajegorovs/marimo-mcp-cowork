@@ -112,9 +112,10 @@ Your harness launches the binary as a child process over stdio. Simplest, fully
 isolated per project, no port to manage; one server process per harness.
 
 Verified working for **DeepSeek Harness** →
-[deepseek-harness-web-profile.md](deepseek-harness-web-profile.md). No note exists
-yet for Claude Desktop/Code, Cursor, Codex, Zed, Windsurf — see [Adding a note for
-your harness](#adding-a-note-for-your-harness).
+[deepseek-harness-web-profile.md](deepseek-harness-web-profile.md) and
+**Hermes Agent** → [hermes-agent.md](hermes-agent.md). No note exists
+yet for Claude Desktop/Code, Cursor, Codex, Zed, Windsurf — see [Adding a
+note for your harness](#adding-a-note-for-your-harness).
 
 Two pieces of advice from the DSH note that **generalize to any harness config**:
 
@@ -236,6 +237,7 @@ Then add a row to the table below.
 | Harness / client | Transport | Note | Status |
 |---|---|---|---|
 | DeepSeek Harness (web profile) | stdio | [deepseek-harness-web-profile.md](deepseek-harness-web-profile.md) | ✅ verified 2026-09-06 |
+| Hermes Agent (TUI gateway) | stdio | [hermes-agent.md](hermes-agent.md) | ✅ verified 2026-09-09 |
 | Claude Desktop / Claude Code | — | — | ❓ no note |
 | Cursor | — | — | ❓ no note |
 | Zed / Codex / Windsurf / other | — | — | ❓ no note |

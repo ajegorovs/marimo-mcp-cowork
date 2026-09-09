@@ -165,6 +165,11 @@ bite of live-test coverage.
   marimo-inspect FastMCP server with the DeepSeek Harness web profile
   (`~/.dsh/profiles/web/cordis.patch.yml`); the two setup gotchas (bare vs
   `insert:` patch form, `uv run` vs venv binary) and hardening.
+- `docs/harness-integration/hermes-agent.md` — registering the same server
+  with the Hermes Agent MCP gateway (`hermes config set
+  mcp_servers.marimo-inspect.*`); the stale pre-extraction consumer-path
+  finding, why the venv binary beats `uv run … fastmcp run`, and why
+  `--reload` is off.
 
 **Demo runbook (the only one):**
 

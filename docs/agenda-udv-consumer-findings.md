@@ -128,25 +128,134 @@ After flipping:
   library that saves-and-closes figures must render via `mo.image(path)` until
   it adds a fig-returning mode.
 
-## T7 — New consumer session report to review (2026-09-09) ⏳
+## T7 — Consumer session report: reviewed & triaged (2026-09-09) ✅
 
 The consumer filed a full "using the MCP felt like" report from a long live
 feature session: [`session-report-deepseek-harness-2026-09-09.md`]
-(session-report-deepseek-harness-2026-09-09.md). It confirms T2 (auto-bind)
-and adds nine frictions (F1–F9) with a prioritized backlog:
+(session-report-deepseek-harness-2026-09-09.md) — nine frictions (F1–F9) with
+a prioritized backlog (P1–P5). Reviewed provider-side 2026-09-09 against the
+source (`src/marimo_inspection/`, installed marimo 0.24 code-mode, git
+history). Every code-verifiable claim checked out except the headline one:
 
-- **P1** `execute` / `set_ui_value` MCP tools (or explicitly document the
-  `cm`-over-HTTP split) — dropdown sets need single-element-list form (O25).
-- **P2** unify error channels: UIElement/`on_change` exceptions currently
-  invisible to `get_errors` (land in cell console; sticky GUI banner).
-- **P3** output model: expose all output blocks incl. UI elements per cell;
-  `get_cell_map.has_output` reads `false` for every cell (unreliable).
-- **P4** agent docs: marimo rules — cell displays only its final expression;
-  a cell cannot read `.value` of a UI element it created; screenshot needs
-  Playwright (ScreenshotError with no capability detection).
-- **P5** sticky session semantics / clearer "human vs agent connection" info.
+- **F7 does NOT confirm T2 — reclassified.** T2 (server_url auto-bind) was
+  *fixed* in `8a44b8c` (2026-09-07, in tag v0.2.0): `bind_active_session`
+  stores both `session_id` and `server_url` (`tools/session.py`), every
+  handler falls back to bound `server_url` (`tools/cells.py` `_get_client`),
+  covered by `tests/test_session_binding.py`. The consumer demonstrably ran
+  ≥ `8a44b8c` (list-arg normalization — the same commit — "works on v0.2.0"
+  in their own table), so a still-call-local bind would mean ctx state is
+  lost across tool calls **on the DSH stdio transport**, not the old bug.
+  Open question: does FastMCP ctx state (session-scoped state store) survive
+  across calls under the DSH harness's process/reconnect model? If no →
+  document "pass `server_url` every call" for that harness (or make binding
+  transport-independent); if yes → report was stale habit. Do not re-open
+  T2 as a provider bug without a repro on the DSH side.
+- **P3 is bigger than reported — the flags are hardcoded stubs.**
+  `get_cell_map.has_output` isn't "unreliable": `templates/cell_map.py`
+  hardcodes `"has_output": False` (also `has_console_output`, `has_errors`),
+  and `get_cell_data`'s `variables` is hardcoded `None`
+  (`templates/cell_data.py`). Fix or drop, don't document. Exposing
+  UI-element blocks/object-ids is a real data-model gap (code-mode snapshot
+  holds one main output per cell — `CellOutputs.output` is
+  `dict[CellId, CellOutput]`) and couples to the token-gated-instantiation
+  coverage gap in AGENTS.md.
+- **P2 (error channels) has a cheap implementable half.** `get_errors` reads
+  only `cell.errors` and hardcodes `"stderr": []` — UI-handler exceptions
+  land in console outputs, which code-mode *can* read. Scanning console
+  stderr for exception markers covers the visible half today.
+- **P4 (agent docs) is the highest ROI for the next consumer session** —
+  one guide encoding: final-expression display, creator-can't-read-own-
+  `.value`, list-form `set_ui_value`, screenshot/Playwright, explicit-args
+  habit. The report's own §4 asks for exactly this.
+- **P1 split decision:** `set_ui_value` = feasible MCP tool via marimo's
+  existing `POST /api/kernel/set_ui_element_value` (object_ids+values, list-
+  shaped — explains the scalar `AssertionError`); needs object-ids → depends
+  on P3. Raw `execute` = keep `cm`-over-HTTP, document prominently
+  (roadmap "What NOT to Change" keeps scratchpad as transport).
+- **F4 addendum:** `create_cell` defaults `hide_code=True`
+  (`tools/mutation.py`) — reconsider the default (agents create user-facing
+  cells) or document loudly.
+- **F6 re-owned:** `screenshot` is a marimo `ctx` capability reached via the
+  consumer skill's `execute-code.sh`, not an MCP tool — fix target is that
+  script / marimo docs, not this repo's surface.
 
-Review items for the next provider session: triage F1–F9 into this agenda /
-the mcp-upgrade roadmap, and decide whether P1 lands as MCP tools or as
-documented `cm` guidance (consumer currently bridges via
-`marimo-pair/scripts/execute-code.sh`).
+Provider-side follow-ups from this triage are tracked as T8 (Hermes
+enablement + replication doc) and in `docs/mcp-upgrade-roadmap.md`.
+
+## T8 — Enable marimo-inspect MCP for Hermes + write the replication doc (2026-09-09) ⏳
+
+The DeepSeek Harness got its per-harness note
+(`docs/harness-integration/deepseek-harness-web-profile.md`) plus an index
+row in `docs/harness-integration/README.md`. Hermes is the provider's own
+daily agent — it should get the same treatment so the setup is replicable
+and self-documenting.
+
+- **Current state (2026-09-09, ✅): the Hermes MCP entry is stale/broken.**
+  `~/.hermes/config.yaml` `mcp_servers.marimo-inspect` runs
+  `uv run --directory <old consumer checkout> fastmcp run
+  src/marimo_inspection/server.py:create_server` with a `--reload-dir` on
+  that consumer checkout — but the file no longer exists there
+  (that repo now installs
+  `marimo-inspect = { git = ... }` from this repo; `ls` on the old path
+  fails). The entry points at the pre-extraction layout.
+- **Target config (✅ verified boots 2026-09-09):** point at this repo's
+  venv binary, mirroring the DSH doc's hardened form (Finding 2 — venv
+  binary over `uv run`):
+
+  ```yaml
+  mcp_servers:
+    marimo-inspect:
+      command: ~/Repos/marimo-inspect/.venv/bin/marimo-inspect
+      args: ["--transport", "stdio"]
+      timeout: 60
+  ```
+
+  Verified: `.venv/bin/marimo-inspect --transport stdio` starts the
+  `marimo-inspection` server cleanly on this machine.
+- **To do:**
+  1. Update `~/.hermes/config.yaml` to the target config above (drop the
+     dead `--directory`/`--reload-dir` consumer path; keep `--reload` OFF —
+     it wedges the long-lived Hermes gateway tool catalog, per the config
+     note). Hermes registers them as `mcp__marimo_inspect__*` (entry key
+     `marimo-inspect`), verified 2026-09-09 — 13 marimo tools + 4 standard
+     FastMCP ones (list_resources/read_resource/list_prompts/get_prompt).
+  2. Restart/reload the Hermes MCP connection and confirm the 13 tools
+     register (or apply the `hermes config set mcp_servers.marimo-inspect`
+     equivalent).
+  3. Write `docs/harness-integration/hermes-agent.md` mirroring the DSH
+     note's shape: TL;DR, harness background, minimal working config,
+     fields table, findings (the stale-path finding is the first one),
+     verification, hardening. Add the index row to
+     `docs/harness-integration/README.md`.
+- **DoD:** tools live in Hermes against a real marimo session; the new doc
+  is self-sufficient for a fresh zero-context agent to replicate (run it
+  through a regression-gate subagent before declaring done).
+
+- **2026-09-09-b** ✅ **Executed & live-verified.** Config fixed via
+  `hermes config set` (venv binary, stdio, `timeout: 60`); gateway
+  hot-reloaded and registered the server — `registered 17 tool(s):
+  mcp__marimo_inspect__list_active_notebooks, …` (13 marimo tools +
+  list_resources/read_resource/list_prompts/get_prompt). Doc written:
+  `docs/harness-integration/hermes-agent.md` (mirrors the DSH note's shape,
+  stale-path finding first); index row + B1 pointer added in
+  `docs/harness-integration/README.md`; AGENTS.md docs map updated.
+  **End-to-end round-trip exercised in-session** against a real headless
+  marimo 0.24 kernel (notebook fixture, /sse handshake): the full agent loop
+  worked through the live MCP tools with **zero explicit server_url/session_id
+  after auto-bind** — `list_active_notebooks` → `get_cell_map` (no args) →
+  `run_cell` → `get_variables` → `get_errors` → `create_cell` → `delete_cell`.
+  This also **answers T7's open question from the Hermes side: FastMCP ctx
+  state survives across stdio calls — auto-bind persists** (contradicting the
+  consumer's DSH "call-local" report, which is a harness lifecycle artifact,
+  not a provider bug).
+- **2026-09-09-c** ✅ **Regression gate PASSED** (zero-context subagent,
+  read-only). Doc found internally consistent; binary boot, live config,
+  17-tool registration, tool catalog, and sibling-README row all verified.
+  Gate gaps all closed post-run: (1) Verification step 3's `grep | tail -1`
+  could surface a *stale second gateway daemon's* "parking" noise instead of
+  the registration line — command now filters for "registered"; (2) the
+  apply path now also sets `timeout: 60`; (3) boot check uses `timeout` +
+  `</dev/null` so it can't look hung; (4) doc notes `uv sync` produces the
+  venv; (5) Finding 1 and a PENDING hardening note record that any gateway
+  instance started pre-fix keeps re-spawning the dead path until restarted.
+  T8 fully done.
