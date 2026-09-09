@@ -127,3 +127,26 @@ After flipping:
   `mo.pyplot`) — relevant to consumers wiring matplotlib figures; consumer
   library that saves-and-closes figures must render via `mo.image(path)` until
   it adds a fig-returning mode.
+
+## T7 — New consumer session report to review (2026-09-09) ⏳
+
+The consumer filed a full "using the MCP felt like" report from a long live
+feature session: [`session-report-deepseek-harness-2026-09-09.md`]
+(session-report-deepseek-harness-2026-09-09.md). It confirms T2 (auto-bind)
+and adds nine frictions (F1–F9) with a prioritized backlog:
+
+- **P1** `execute` / `set_ui_value` MCP tools (or explicitly document the
+  `cm`-over-HTTP split) — dropdown sets need single-element-list form (O25).
+- **P2** unify error channels: UIElement/`on_change` exceptions currently
+  invisible to `get_errors` (land in cell console; sticky GUI banner).
+- **P3** output model: expose all output blocks incl. UI elements per cell;
+  `get_cell_map.has_output` reads `false` for every cell (unreliable).
+- **P4** agent docs: marimo rules — cell displays only its final expression;
+  a cell cannot read `.value` of a UI element it created; screenshot needs
+  Playwright (ScreenshotError with no capability detection).
+- **P5** sticky session semantics / clearer "human vs agent connection" info.
+
+Review items for the next provider session: triage F1–F9 into this agenda /
+the mcp-upgrade roadmap, and decide whether P1 lands as MCP tools or as
+documented `cm` guidance (consumer currently bridges via
+`marimo-pair/scripts/execute-code.sh`).
