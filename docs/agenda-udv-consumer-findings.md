@@ -387,3 +387,36 @@ now 24 tests.
 **Still open, genuinely browser-dependent:** whether a widget actually *renders*
 in a frontend, and console-only UI-handler exceptions raised in the browser
 context. No automated test claims those; they remain a manual browser gate.
+
+## T10 — Consumer MCP-first adoption review: widget shape contract and single authority (2026-09-10) ⏳
+
+A fresh consumer-side live test exercised the updated MCP resources and tools
+against a disposable copy of `udv-echo-process/notebooks/echo_explorer.py` on a
+real marimo 0.24.0 kernel. Discovery, state binding, inspection, linting,
+runtime error reporting, the full create/read/edit/run/verify/delete lifecycle,
+and invalid graph-edit rejection all passed; the consumer repository remained
+byte-identical after cleanup.
+
+One contract weakness remains: `set_ui_value` returned `status: "ok"` for a
+scalar value sent to a marimo dropdown, but the widget did not change. The
+tested one-element-list form worked and reactively reran descendants;
+multiselect list values also worked. The tool/resource wording currently says
+the JSON shape is preserved and depends on widget type, but does not make this
+required dropdown shape discoverable. Define and test the public contract:
+either normalize scalar dropdown inputs or expose widget-specific expected
+shapes in the tool error/schema/documentation. A successful mutation response
+must not imply completion without read-back verification.
+
+The three packaged resources (`co-work-loop`, `live-safety`, and
+`fallbacks-and-limits`) now cover the MCP-first workflow and explicitly mark
+screenshots, server/kernel lifecycle, and arbitrary CodeMode probes as
+fallbacks. No MCP prompts are currently exposed. This supports retiring
+consumer-installed marimo workflow skills in favor of the MCP as the single
+operational authority, provided consumer documentation teaches installation
+and the remaining fallback boundaries.
+
+**Provider action:** clarify/fix the dropdown value contract, add a live
+regression for scalar and list-shaped dropdown updates, and keep the resource
+text aligned with the tested behavior. Separately consider whether a small
+package-install/harness onboarding resource belongs here, or whether that
+material should remain consumer-repository documentation.
