@@ -222,6 +222,9 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   is truthful ("did NOT move (5 -> 5)") and `kernel_message` carries the handler
   traceback, but the traceback frame (`_on_change` vs `_convert_value`) is the
   available refinement. Unobserved in normal use, unpinned.
+  *Open work:* carried in `docs/agenda-bug-hunt-1.md` §Checkpoint — a prepared,
+  unstarted task exists
+  (`.hermes/plans/2026-09-11_000750-t13-residual-ui-rejection-site.md`).
 
 - **T14** ✅ *A JSON-encoded list argument was silently misread* — found while
   reviewing T3, fixed 2026-09-10. The normalization introduced with T2 wrapped

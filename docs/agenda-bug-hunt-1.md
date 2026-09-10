@@ -1,7 +1,8 @@
 # Agenda (open): bug-hunt #1 findings
 
-> **Status:** **Open — 7 findings verified against the source; H7 fixed and
-> pinned by two live regressions (see its entry).**
+> **Status:** **Open — 9 items: H7 fixed and pinned by two live regressions; 8
+> open (H1–H6, H8, H3 verified against the source; H9/H10 recorded at the
+> 2026-09-11 checkpoint, below).**
 > **Found:** 2026-09-11, one hunt per `docs/bug-hunt-protocol.md` (real task in a
 > live instantiated consumer notebook, driven through the MCP tool surface by a
 > zero-context subagent).
@@ -26,8 +27,39 @@
 | H4 | stale/absent cell ids silently dropped by read tools | misleads | report the ids that matched nothing | P1 |
 | H2 | `get_dependency_graph` accepts and ignores `cell_id`/`depth` | misleads | implement the filter, or refuse the args loudly | P1 |
 | H5 | `did_you_mean` contradicts `accepted_shape` in the same payload | misleads | suggest only a shape the element accepts | P1 |
+| H9 | a *preview* read blesses a full-source baseline for every cell | misleads | **decision needed** (see entry) | P1 |
 | H8 | `get_variables` reports the template's own namespace | misleads | exclude the template's scaffolding names | P2 |
 | H3 | `get_dependency_graph.cell_name` is always `""` | cosmetic | populate it, or drop the field (contract change) | P2 |
+| H10 | the H7 fix's premise is cited from a throwaway probe, not pinned | hardening | add the live invariant test | P2 |
+
+---
+
+## Checkpoint — 2026-09-11
+
+**Landed and committed locally (not pushed):** `4660aec` fixes H7 with two live
+regressions that fail against the pre-fix code plus four hermetic tracker cases;
+`ac07eb7` adds `docs/bug-hunt-protocol.md` and this doc. Verified on the tree:
+`-m "not live"` 303 passed, `-m live` 33 passed (was 31), ruff check/format
+clean, `marimo check notebooks` exit 0.
+
+**The pending work is the sections below — they are the durable specification.**
+Per-fix plan files live under `.hermes/plans/` (gitignored, ephemeral), so treat
+an item's entry here as the authority and a plan file as a convenience:
+
+- `.hermes/plans/2026-09-11_002706-h7-edit-cell-guard-scope.md` — H7, executed.
+- `.hermes/plans/2026-09-11_000750-t13-residual-ui-rejection-site.md` — the T13
+  residual (see the cross-reference below), prepared and **not started**.
+
+**Cross-reference — open work recorded in another agenda.** The T13 residual in
+`docs/agenda-udv-consumer-findings.md` §T13 is still unfixed: a repeat of a value
+the element already holds whose `on_change` handler then raises is reported
+`value_not_applied` instead of `on_change_failed` (unpinned, unobserved in normal
+use). That agenda is closed, so it is listed here to keep the open defects in one
+place; its item id stays `T13`.
+
+**Hunt lab.** The disposable lab hunt #1 used (a `/tmp` copy of a consumer
+notebook served on `127.0.0.1:29417`) is still running in a tmux session owned by
+the user. Nothing pending needs it — the live suite boots its own kernel.
 
 ---
 
@@ -150,6 +182,41 @@ set from the notebook's own definitions) while keeping the documented
 (`"_"`, and a `create_cell(name=…)` name). Nothing consumes the field. *Fix:*
 populate it from the cell implementation if it is available, or remove the field
 (a payload-contract change, so it needs a release note).
+
+### H9 — a *preview* read blesses a full-source baseline for every cell
+**misleads — mechanism verified; the harm is a design decision.** `tools/cells.py:79`
+has `get_cell_map` call `tracker.commit(session_id, fingerprints)` for **every**
+cell it returns — correct for that tool's own purpose (`changes_since_last` is a
+notebook-wide observation diff) — while it returns `preview_lines: 3` by default.
+In staleness-guard terms that is a full read of every cell, so after a
+`get_cell_map` an `edit_cell` overwrites a co-worker's newer source with
+`status: ok`, and the H7 fix does not change that. `co-work-loop.md` §2 tells
+agents to "Start here", and `live-safety.md:21-22` names `get_cell_map` as one of
+the two ways to record the read baseline.
+Surfaced by the H7 task's own test scaffolding, which could not construct a
+never-read cell after a cell-map call (the deviation is recorded in that task's
+report); the mechanism was re-verified at the source.
+*Decision needed, not a patch:*
+1. accept it and say so plainly — a cell-map read *is* a read, preview or not;
+2. separate change-detection from read-baseline tracking so a preview read no
+   longer blesses source freshness — note `changes_since_last` is built on the
+   same snapshot, so this needs a second tracker dimension, not a one-liner;
+3. make the baseline explicit-only (`get_cell_data`, or a dedicated read).
+Whichever wins, the losing option must be removed from `live-safety.md`'s recovery
+instructions, or the doc will keep teaching the behaviour we decided against.
+
+### H10 — the H7 fix's premise is cited from a throwaway probe, not pinned
+**hardening.** Narrowing the tracker commit is safe only because inserting a cell
+leaves every existing cell's `code_hash` unchanged on marimo 0.24.x — measured
+once with `/tmp/hunt_probe/hash_scope_probe.py`, cited in H7's entry, and now
+gone. If a marimo bump changes that property, the guard starts returning false
+`conflict`s for cells nobody touched and no test would say so.
+*Fix:* add a live test asserting the invariant (insert a cell, assert every
+pre-existing cell's `code_hash` is unchanged; same across a delete) and point
+H7's entry at the test instead of the probe.
+*Closure:* the test exists and is shown to fail when the assumption is violated —
+demonstrate by temporarily perturbing the assertion, and record that observation,
+since there is no pre-fix code to stash here.
 
 ---
 
