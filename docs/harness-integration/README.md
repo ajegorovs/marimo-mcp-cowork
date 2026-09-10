@@ -114,8 +114,8 @@ isolated per project, no port to manage; one server process per harness.
 Verified working for **DeepSeek Harness** →
 [deepseek-harness-web-profile.md](deepseek-harness-web-profile.md) and
 **Hermes Agent** → [hermes-agent.md](hermes-agent.md). No note exists
-yet for Claude Desktop/Code, Cursor, Codex, Zed, Windsurf — see [Adding a
-note for your harness](#adding-a-note-for-your-harness).
+yet for Claude Desktop/Code, Cursor, Zed, Windsurf — see [Adding a note for
+your harness](#adding-a-note-for-your-harness).
 
 Two pieces of advice from the DSH note that **generalize to any harness config**:
 
@@ -238,9 +238,10 @@ Then add a row to the table below.
 |---|---|---|---|
 | DeepSeek Harness (web profile) | stdio | [deepseek-harness-web-profile.md](deepseek-harness-web-profile.md) | ✅ verified 2026-09-06 |
 | Hermes Agent (TUI gateway) | stdio | [hermes-agent.md](hermes-agent.md) | ✅ verified 2026-09-09 |
+| Codex Desktop | stdio | [codex-desktop.md](codex-desktop.md) | ❌ Desktop task tools missing; CLI works with both project-local and sibling global setup (2026-09-10) |
 | Claude Desktop / Claude Code | — | — | ❓ no note |
 | Cursor | — | — | ❓ no note |
-| Zed / Codex / Windsurf / other | — | — | ❓ no note |
+| Zed / Windsurf / other | — | — | ❓ no note |
 | Shared HTTP gateway (any `streamable-http` client) | http | — | ❓ no note |
 
 ## Sandbox notes
