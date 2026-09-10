@@ -8,3 +8,8 @@ build/
 .ruff_cache/
 .marimo/
 __marimo__/
+# Harness/agent scratch state (written by the harnesses documented in
+# docs/harness-integration/). Contains absolute local checkout paths, which
+# must never be committed — see AGENTS.md §Privacy.
+.codex/
+.hermes/

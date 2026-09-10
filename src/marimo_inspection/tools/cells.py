@@ -9,18 +9,10 @@ import logging
 from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient
+from marimo_inspection.tools.args import normalize_list_arg
 from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_ids(ids: str | list[str] | None) -> list[str]:
-    """Normalize a list-typed argument (which a harness may deliver as a string)."""
-    if ids is None:
-        return []
-    if isinstance(ids, str):
-        return [ids]
-    return ids
 
 
 async def get_cell_map(
@@ -125,15 +117,15 @@ async def get_cell_data(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        cell_ids: Cell IDs from get_cell_map. Empty = all cells. A bare
-            string (e.g. a single ID mangled by a harness) is treated as a
-            one-element list.
+        cell_ids: Cell IDs from get_cell_map. Empty = all cells. Accepts a
+            single ID, a native array, or a JSON-encoded array — a harness
+            may deliver either of the latter two as a string.
         server_url: Optional server URL override.
 
     Returns:
         Dictionary with cell runtime data.
     """
-    cell_ids = _normalize_ids(cell_ids)
+    cell_ids = normalize_list_arg(cell_ids)
     sid = await resolve_session_id(session_id, ctx)
     if ctx:
         target = f"cells {cell_ids}" if cell_ids else "all cells"
@@ -209,15 +201,15 @@ async def get_cell_outputs(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        cell_ids: Cell IDs from get_cell_map. Empty = all cells. A bare
-            string (e.g. a single ID mangled by a harness) is treated as a
-            one-element list.
+        cell_ids: Cell IDs from get_cell_map. Empty = all cells. Accepts a
+            single ID, a native array, or a JSON-encoded array — a harness
+            may deliver either of the latter two as a string.
         server_url: Optional server URL override.
 
     Returns:
         Dictionary with cell outputs and console streams.
     """
-    cell_ids = _normalize_ids(cell_ids)
+    cell_ids = normalize_list_arg(cell_ids)
     sid = await resolve_session_id(session_id, ctx)
     if ctx:
         target = f"cells {cell_ids}" if cell_ids else "all cells"

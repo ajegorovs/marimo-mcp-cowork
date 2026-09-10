@@ -1,14 +1,15 @@
-# Agenda (open issue): first-consumer integration findings (udv-echo-process)
+# Agenda (resolved): first-consumer integration findings (udv-echo-process)
 
-> **Status:** **Open — 1 item left** (T3, which the DSH harness owns).
-> Everything else from this integration is resolved — T4's version evidence,
-> T6's sandbox gotchas, T9-b's browser pass (which surfaced T12/T13), T10's
-> ownership decision, T11's error-channel split, and T12/T13 themselves (all
-> closed 2026-09-10) — and the §Resolved log keeps a one-line record plus the
-> evidence pointer for each, so a resolved item never needs re-litigating from
-> this file.
+> **Status:** **Closed — no open items.** T3, the last one, was resolved by
+> review on 2026-09-10: the DSH list-argument mangling it reported does not
+> reproduce, and the defensive types it recorded as "no defensive type landed
+> here" had in fact landed in `8a44b8c` (tag v0.2.0) — the same day T3 was
+> filed. That review did surface one real provider-side defect, recorded and
+> fixed as T14. T3 was the only item the harness ever owned, so nothing here is
+> waiting on an upstream fix.
 > **Created:** 2026-09-07 · **Condensed to open items only:** 2026-09-10 ·
-> **T4 + T6 + T9-b + T10 + T11 + T12 + T13 closed:** 2026-09-10.
+> **T4 + T6 + T9-b + T10 + T11 + T12 + T13 closed:** 2026-09-10 ·
+> **T3 + T14 closed (agenda fully resolved):** 2026-09-10.
 > **Evidence labels:** ✅ observed (consumer machine, Linux, Python **3.14.7**
 > kernel, marimo **0.24.0**, this repo's MCP server registered in the DSH
 > harness — or provider-side, as stated) · 📄 from provider docs · ❌ not done /
@@ -41,25 +42,9 @@ server lifecycle.
 
 ## Open items
 
-### T3 — DSH harness delivers list-typed MCP arguments as JSON strings ❌
-
-- Repro ✅ (consumer side): `get_variables(variable_names=[...])` and
-  `get_cell_outputs(cell_ids=[...])` fail with pydantic `list_type` errors
-  through the registered stdio server. **Owner: the harness's MCP bridge, not
-  this repo** — `client.py` is a pure HTTP client and never sees these
-  arguments.
-- Works today: the empty filter (no argument) returns everything.
-- ✅ **Hermes counter-evidence (2026-09-10):** the same two tools accept a real
-  JSON array through the Hermes MCP gateway — `get_variables(variable_names=
-  ["filtered", "data"])` and `get_cell_outputs(cell_ids=["Xref", "BYtC"])` both
-  filtered correctly against a live marimo 0.24.0 session. List transport is
-  therefore not a property of this server or of MCP itself; the mangling is
-  specific to the DSH bridge. (No defensive type landed here — see the item's
-  owner note above.)
-- **Next action:** file against the DSH harness. Provider-side option, not
-  scheduled: accept `str | list[str]` defensively on those two parameters
-  (cheap). DoD: a harness-side repro, or the defensive type landing here with a
-  unit test asserting a JSON-string list is accepted.
+None. Every item from this integration is resolved — T3 was the last, and
+nothing here is waiting on an upstream harness fix. The log below keeps the
+record and the evidence pointer for each item.
 
 ## Resolved log
 
@@ -82,6 +67,25 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   `tests/marimo_inspect/test_session_binding.py`. Residual "call-local"
   reports from the DSH harness are a harness process/reconnect artifact, not
   this bug (T7 triage; reconfirmed over Hermes stdio in T8/T9).
+- **T3** ✅ *DSH list-argument mangling did not reproduce* — the reported
+  pydantic `list_type` failures cannot occur on v0.2.0+: the defensive
+  `str | list[str] | None` types landed in `8a44b8c` (2026-09-07, the first tag
+  containing it is `v0.2.0`), the same day T3 was filed and under the subject
+  "list-arg hardening"; T3's own raw source already recorded that the filtered
+  list args "work on v0.2.0"
+  (`session-report-deepseek-harness-2026-09-09.md`). Re-probed live through the
+  registered DSH bridge (2026-09-10; now `dsh@0.1.5-rc.1` /
+  `dsh-mcp-client@0.1.5-rc.2`, not the `0.1.2-rc.1` the harness note was written
+  against) on an instantiated consumer session:
+  `get_variables(variable_names=["data", "filtered"])` returned both variables,
+  and `get_cell_outputs(cell_ids=["Xref", "BYtC"])` /
+  `get_cell_data(cell_ids=["Xref"])` each filtered exactly. The bridge carries
+  no mangling path — `dsh-mcp-client`'s `createExecutor` forwards the argument
+  object verbatim (its only `JSON.stringify` renders *results*) and
+  `dsh-agent-loop`'s `parseArguments` is a bare `JSON.parse` — so the
+  "owner: the DSH bridge" attribution is withdrawn; the Hermes counter-evidence
+  in T8 stands. The review that closed T3 found a real provider-side defect and
+  became T14.
 - **T4** ✅ *Consumer 3.14 evidence recorded* — `docs/marimo-version-support.md`
   gained a §Cross-version evidence subsection: provider marimo 0.24.0 on Python
   3.12 against a live kernel on **3.14.7**, every live template clean (O21: the
@@ -219,13 +223,35 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   traceback, but the traceback frame (`_on_change` vs `_convert_value`) is the
   available refinement. Unobserved in normal use, unpinned.
 
-## Measured state (2026-09-10, after T4 + T6 + T9 + T9-b + T10 + T11 + T12 + T13)
+- **T14** ✅ *A JSON-encoded list argument was silently misread* — found while
+  reviewing T3, fixed 2026-09-10. The normalization introduced with T2 wrapped
+  *any* string as one literal name, so `cell_ids='["Xref"]'` became
+  `['["Xref"]']`: the filter matched nothing and returned a structurally valid,
+  empty payload — a **silent** miss, strictly worse than the loud pydantic
+  error it had replaced (the exact DoD test T3 asked for was never written).
+  Both list-typed parameters now share one implementation
+  (`tools/args.py::normalize_list_arg`, replacing the separate
+  `_normalize_names`/`_normalize_ids` that had drifted apart): a bare name, a
+  native array, a JSON array (with `"[]"` meaning "all", as an omitted filter
+  does) and a JSON-encoded string are all accepted, while a JSON scalar,
+  nested array, or malformed input stays one literal name — so a
+  numeric-looking id (`"5"`) is not coerced to an int. Pinned by
+  `tests/marimo_inspect/test_list_args.py` (15 shape cases plus one
+  handler-level case per list-typed tool); the JSON-array assertions fail
+  against the pre-fix helper.
 
-- `uv run pytest -m "not live" -q` → **281 passed, 31 deselected**
-- `uv run pytest tests/marimo_inspect/live/ -m live -q` → **31 passed**
-  (includes 7 widget regressions: `tests/marimo_inspect/live/test_ui.py`)
-- `uv run ruff check .` / `uv run ruff format --check .` → clean
-- `uv run marimo check notebooks` → exit 0
+## Measured state (2026-09-10, after T4 + T6 + T9 + T9-b + T10 + T11 + T12 + T13 + T3 + T14)
+
+- `.venv/bin/python -m pytest -m "not live" -q` → **299 passed, 31 deselected**
+  (+18 from `tests/marimo_inspect/test_list_args.py`). Invoked through the venv
+  binary rather than `uv run`: the sandbox's `~/.cache/uv` is read-only, so
+  `uv run` fails before pytest starts — see
+  [harness-integration §Sandbox notes](harness-integration/README.md#sandbox-notes).
+- `.venv/bin/python -m pytest tests/marimo_inspect/live/ -m live -q` → **31
+  passed** (re-run for T14, which edits two live-exercised read handlers;
+  includes the 7 widget regressions in `tests/marimo_inspect/live/test_ui.py`)
+- `.venv/bin/python -m ruff check .` / `… ruff format --check .` → clean
+- `.venv/bin/python -m marimo check notebooks` → exit 0
 
 Counts drift as tests are added; the split (`-m "not live"` vs `-m live`), not
 the exact numbers, is the contract.

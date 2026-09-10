@@ -88,7 +88,7 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-10): `-m "not live"` → **281 passed**, `-m
+Verified on this tree (2026-09-10): `-m "not live"` → **299 passed**, `-m
 live` → **31 passed** (incl. the 2 hermetic mutation regressions, 7 widget
 regressions and 2 console-channel regressions). Counts drift as tests are
 added; treat the split, not the exact numbers, as the contract.
@@ -101,7 +101,8 @@ added; treat the split, not the exact numbers, as the contract.
   served as three read-only native MCP resources), `tools/` (MCP tool
   handlers, change-tracking, mutation with staleness guard, widget
   interaction in `tools/ui.py`, in-process lint in `tools/lint.py`, session
-  binding in `tools/session.py`), `types.py`.
+  binding in `tools/session.py`, list-argument normalization in
+  `tools/args.py`), `types.py`.
 - `tests/marimo_inspect/` — unit tests (no kernel needed).
 - `tests/marimo_inspect/live/` — integration tests that boot a real headless
   marimo server (see "Live tests" below).
@@ -211,13 +212,12 @@ CI-covered: the live suite boots kernels, not frontends.
   break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
   machine. Read before choosing a consumer's topology or touching
   `discovery.py`/`--no-token` assumptions.
-- `docs/agenda-udv-consumer-findings.md` — **OPEN** agenda, condensed to open
-  items only (T-ids kept stable): harness list-arg mangling (T3), consumer 3.14
-  drift evidence not yet recorded in the version contract (T4), sandbox gotchas
-  cross-reference (T6), the browser-dependent half of widget verification
-  (T9-b), and where package-install/harness onboarding material lives (T10).
-  Everything else from that integration is resolved — see its §Resolved log for
-  the one-line record + evidence pointer per item rather than re-deriving them.
+- `docs/agenda-udv-consumer-findings.md` — **CLOSED** (fully resolved) agenda
+  for the first-consumer integration, T-ids kept stable. Every item is resolved
+  and has a one-line record + evidence pointer in its §Resolved log — read that
+  for the decision trail (T1 session-vs-server, T2 auto-bind, T3 harness list
+  args, T4 cross-Python evidence, T9/T12/T13 write surface and error channels,
+  T14 list-argument normalization), not to find open work.
 
 **Bootstrap / harness integration:**
 

@@ -23,6 +23,13 @@ surface as `mcp__marimo__<tool>`.
   -> serves `http://127.0.0.1:3080`.
 - Version: findings verified against `@deepseek-ai/dsh@0.1.2-rc.1`
   (`dsh-mcp-client`, `dsh-base`, `dsh-web-app` all `0.1.2-rc.1`).
+- **Version drift (recorded 2026-09-10):** re-probed on `@deepseek-ai/dsh@0.1.5-rc.1`
+  with `@deepseek-ai/dsh-mcp-client@0.1.5-rc.2`. Both setup findings still hold
+  (the `- insert:` patch form and the venv binary), `serverName: marimo` still
+  surfaces the 14 tools as `mcp__marimo__<tool>`, and list-typed arguments now
+  transport as real arrays. Treat the versions above as the reference the
+  findings were *derived* on, not as a range that has been exhaustively
+  validated — re-check the patch entry after any harness upgrade.
 - Profile root: `~/.dsh/profiles/<name>/`; the web profile is
   `~/.dsh/profiles/web/`.
 - The profile's `cordis.yml` is **generated** ("the tree is composed as patches").
@@ -116,6 +123,12 @@ A sandboxed run needs more than a venv binary: a writable uv cache, a writable
 matplotlib config/temp cache, and a pre-synced dependency set (a cold
 `marimo[recommended]` is ~340 MB / ~13 min). See
 [README §Sandbox notes](README.md#sandbox-notes).
+
+This bites the *provider* too, not just the consumer: with `~/.cache/uv`
+read-only, `uv run pytest` fails before collection
+(`Could not acquire lock … Could not create temporary file`), so run the suite
+through the venv — `.venv/bin/python -m pytest -m "not live"`. Same for
+`ruff` and `marimo check`.
 
 ## Verification
 
