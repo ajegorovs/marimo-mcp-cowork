@@ -199,6 +199,10 @@ CI-covered: the live suite boots kernels, not frontends.
 - `docs/live-tests.md` — canonical "how we run live kernel tests" doc
   (commands, boot mechanics, verified current status). **Read before running
   the live suite.**
+- `docs/bug-hunt-protocol.md` — how we find the silent-payload bugs the suite
+  cannot see (lab recipe, subagent charter, evidence schema, verification and
+  closure rules, adversarial checklist). **Read before hunting bugs, or before
+  triaging a hunt report.**
 
 **Design / decision records (current):**
 
@@ -212,6 +216,12 @@ CI-covered: the live suite boots kernels, not frontends.
   break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
   machine. Read before choosing a consumer's topology or touching
   `discovery.py`/`--no-token` assumptions.
+- `docs/agenda-bug-hunt-1.md` — **OPEN** agenda: the 8 silent-payload findings
+  from hunt #1 (`blocks-work`: the `edit_cell` guard is disarmed by any unrelated
+  write), each with a source-verified mechanism, a proposed priority, and the
+  "repro must fail pre-fix" closure rule. Read before touching
+  `tools/mutation.py` payload/guard code, `tools/session.py` binding claims, or
+  the `templates/*` payload shapes it names.
 - `docs/agenda-udv-consumer-findings.md` — **CLOSED** (fully resolved) agenda
   for the first-consumer integration, T-ids kept stable. Every item is resolved
   and has a one-line record + evidence pointer in its §Resolved log — read that
