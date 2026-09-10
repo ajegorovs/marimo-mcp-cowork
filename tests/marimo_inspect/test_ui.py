@@ -5,10 +5,10 @@ variable name. It deliberately accepts ONLY ``variable_name`` + ``value`` —
 there is no source-code argument, ever. Template tests run against a fake
 code-mode context (no real kernel); handler tests mock the MarimoClient.
 
-The value shape is preserved exactly (a scalar stays scalar, a list stays a
-list) — no coercion, no list-wrapping. Nothing here bootstraps a real widget,
-so true reactive behavior is NOT claimed; that is a release-gate (live,
-browser-instantiated) concern explicitly out of scope for these hermetic tests.
+The tool passes the supplied JSON value through without coercion. Actual widget
+acceptance is widget-specific, and these tests use no real widget; they do not
+claim that every scalar/list form triggers the expected reactive behavior. That
+requires a live, browser-instantiated regression.
 """
 
 from __future__ import annotations

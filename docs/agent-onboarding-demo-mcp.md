@@ -522,8 +522,8 @@ widget_value = vars["variables"]["widget_name"]["value"]["value"]
 
 ### Widget Interaction Pattern
 ```python
-# Set a live widget's value by its kernel-global name (accepts NO source code;
-# JSON value shape is preserved — scalar stays scalar, list stays list).
+# Set a live widget's value by its kernel-global name (accepts NO source code).
+# The accepted JSON shape is widget-specific; verify the effect after setting it.
 r = await set_ui_value("start_s", 10, server_url=server_url)
 
 # The call does not await downstream re-runs — verify the effect:

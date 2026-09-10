@@ -37,8 +37,8 @@ just read (see `workflow://marimo-inspect/live-safety`). Reading with
 ## 5. Interact
 
 `set_ui_value(variable_name, value)` — set a live widget value by its
-kernel-global name. It accepts no source code and preserves the JSON value
-shape exactly.
+kernel-global name. It accepts no source code; the JSON shape is
+widget-specific, so confirm the resulting state in the verification step.
 
 ## 6. Verify
 

@@ -341,8 +341,8 @@ the repo fixture is unchanged (the hermeticity gate).
 
 **Also delivered (same change):**
 - `set_ui_value` (14th tool) — sets a live `mo.ui` element by kernel-global name;
-  no source-code argument by construction; JSON value shape preserved exactly
-  (scalar stays scalar, list stays list); flushed on code-mode context exit, so
+  no source-code argument by construction; the submitted JSON value is passed
+  through without coercion, but widget acceptance is shape-specific. Its
   reactive re-runs are *verified* (`get_variables`/`get_cell_outputs`), not
   awaited. A widget updated from outside no longer requires an `edit_cell`.
 - Truthful reads: `get_cell_map`'s `has_output`/`has_console_output`/`has_errors`

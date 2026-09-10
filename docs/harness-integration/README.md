@@ -1,16 +1,15 @@
-# Adding marimo-inspect to another repo — integration index
+# Adding marimo-inspect to another repo — bootstrap and integration index
 
-> **DRAFT — not yet authoritative.** First pass, assembled by reading the existing
-> docs plus one negative probe (see [Known gaps](#known-gaps--unverified-claims)).
-> Every claim carries an evidence label:
+> **Bootstrap status — normal VCS route verified.** Use the pinned `v0.3.0`
+> consumer installation below, configure the harness to invoke the consumer
+> environment's console script, then read the MCP resources for runtime work.
+> Entries labelled ❓ remain deliberate investigation notes, not setup
+> instructions.
 >
 > - ✅ **verified** — checked against the tree or a command on this machine.
 > - 📄 **documented** — copied from another doc in this repo; trust that doc.
 > - ❓ **unverified** — plausible, stated so it can be checked. Do not wire a
 >   consumer project on an ❓ claim.
->
-> To graduate this doc: re-run the ❓ items, delete the labels, and replace this
-> banner with an `> Updated:` line like the other operational docs.
 
 This is the index for **consumers**: you have a different repo with live marimo
 notebooks, and you want either the MCP tool surface in your agent harness or the
@@ -35,32 +34,27 @@ path (B3) needs no MCP server and no `fastmcp` at all.
 
 ## Axis A — getting the package in
 
-### A1. From the git remote (the documented consumer path) ✅
+### A1. Pinned VCS release — standard consumer path ✅
 
 ```bash
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork"
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.0"
 ```
 
-📄 `AGENTS.md` §Remote/publishing; `README.md` §Install. Public repo — pin a
-tag when you depend on it in a committed `pyproject.toml`:
+Pin the tag in a committed `pyproject.toml`; this is a normal, non-editable
+installation in the consumer project's environment. 📄 `AGENTS.md` §Remote /
+publishing; `README.md` §Install and connect an MCP client.
 
-```bash
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.2.0"
-```
-
-### A2. Local checkout, editable (dev against a sibling clone) ✅
+### A2. Local checkout, editable — provider-contributor override only ✅
 
 ```bash
 uv add --editable /path/to/marimo-inspect
 ```
 
-📄 `README.md`.
-
-**Gotcha found while probing for this draft (2026-09-07):** if the consumer
-project lives *nested inside* this repo — or shares a directory tree with it —
-`uv add` walks up, finds this `pyproject.toml`, silently registers **both** as
-uv workspace members, and **rewrites `pyproject.toml` and `uv.lock` here**.
-Reproduced; reverted. Keep consumer checkouts as siblings, not children:
+Use this only to test unreleased provider changes against a consumer project.
+It is not a normal user or consumer-contributor install mode: restore the
+pinned VCS dependency after the test and do not commit the local source. Keep
+consumer checkouts as siblings, not children, because a nested checkout causes
+uv workspace discovery to rewrite the provider's `pyproject.toml`/`uv.lock`.
 
 ```text
 ~/Repos/marimo-inspect        <- this repo
@@ -68,12 +62,11 @@ Reproduced; reverted. Keep consumer checkouts as siblings, not children:
 ~/Repos/marimo-inspect/.probe <- nested (dirties this repo's lockfile)
 ```
 
-### A3. From a package index ❓
+### A3. From a package index — not supported today ❓
 
-`README.md` shows `uv add marimo-inspect  # from a package index`, but there is
-**no publish workflow in this tree** (no `.github/`, no release CI) and
-`pyproject.toml` has no index config. Treat as **aspirational** — A1/A2 are the
-only working routes today.
+A package-index release is not currently published. Do not use or document
+`uv add marimo-inspect` as a consumer route until a release workflow and an
+end-to-end install verification exist. Use A1 for normal consumers.
 
 ### What you inherit either way
 
@@ -90,7 +83,7 @@ only working routes today.
   exposed through a lazy `__getattr__`, so pure-client consumers pay nothing. ✅
 
 Verified resolution on this machine: `fastmcp 4.0.3`, `marimo 0.24.0`,
-`marimo-inspect 0.2.0`.
+`marimo-inspect 0.3.0`.
 
 ---
 

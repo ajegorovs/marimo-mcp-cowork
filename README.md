@@ -3,8 +3,8 @@
 A pluggable toolkit for **inspecting and editing live marimo notebooks** — over
 the wire or from inside a notebook.
 
-It ships the same machinery the `marimo-pair` agent skill relies on, but as a
-standalone, installable package you can drop into any repo:
+It packages live-session co-work primitives as a standalone, installable
+component you can add to any repo:
 
 - A **Python client** for driving a live marimo session interactively.
 - A **FastMCP server** exposing that tooling to AI agents over the Model Context
@@ -94,10 +94,10 @@ time and cannot be confirmed back through the MCP read surface.
 ### Widget interaction
 
 `set_ui_value(variable_name, value)` sets a live `mo.ui` element's value by its
-kernel-global name. It accepts **no source code**, and preserves the JSON value
-shape exactly (a scalar dropdown key stays a scalar, a multiselect list stays a
-list). The update is flushed and triggers reactive re-execution; the call does
-not wait for it, so verify the effect with `get_variables` / `get_cell_outputs`.
+kernel-global name and accepts **no source code**. The JSON shape is
+widget-specific; callers must verify the resulting value with `get_variables`
+or `get_cell_outputs`. The update is flushed and triggers reactive
+re-execution, but the call does not wait for it.
 
 ## MCP resources
 
@@ -146,16 +146,43 @@ Arbitrary kernel probes, complex multi-operation CodeMode blocks, screenshots,
 and notebook-server lifecycle stay outside the MCP surface — see
 `reference://marimo-inspect/fallbacks-and-limits`.
 
-Per-client setup (Hermes, DeepSeek Harness, Codex, and generic stdio/HTTP) is
-indexed in [docs/harness-integration/README.md](docs/harness-integration/README.md).
+## Install and connect an MCP client
 
-## Install
+The MCP resources explain how to operate a connected live notebook; they cannot
+bootstrap their own installation. Start here, then use the packaged resources
+once the harness reports the server connected.
+
+### Normal consumer installation
+
+Add a pinned release to the notebook project. This is the standard path for
+users and consumer-repository contributors; it is a normal, non-editable
+installation in that project's environment.
 
 ```bash
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.2.0"  # from VCS (pin a tag)
-uv add --editable /path/to/marimo-inspect  # local checkout
-# uv add marimo-inspect                     # from a package index (not yet published)
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.0"
+uv sync
 ```
+
+Configure the harness to execute that environment's console script, not
+`uv run` and not a provider checkout:
+
+```text
+<project-root>/.venv/bin/marimo-inspect --transport stdio
+```
+
+Use the relevant configuration block in
+[docs/harness-integration/README.md](docs/harness-integration/README.md), then
+verify the installed script with `.venv/bin/marimo-inspect --help`. Start a
+marimo notebook with `--no-token`, open it in a browser to materialize a
+session, and call `list_active_notebooks`. After connection, read the MCP
+resources for the co-work loop and safety rules.
+
+### Provider contributors: local override only
+
+Use an editable sibling checkout only when testing unreleased changes to this
+provider against a consumer project. It is not a consumer-installation mode:
+replace the consumer's pinned dependency temporarily, resync, test, then
+restore the pinned version. Do not commit a machine-local dependency source.
 
 ## Requirements
 

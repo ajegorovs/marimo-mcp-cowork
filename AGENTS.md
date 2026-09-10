@@ -25,7 +25,8 @@ Reads / state: `list_active_notebooks`, `set_active_session`,
 `get_dependency_graph`, `get_errors`, `lint_notebook`.
 Writes: `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
 Widget interaction: `set_ui_value` (sets a live UI element's value by
-kernel-global name; accepts no source code and preserves the JSON value shape).
+kernel-global name; accepts no source code; widget-specific JSON values must be
+verified by reading state back).
 
 `list_active_notebooks` auto-binds the first discovered session (`session_id`
 and `server_url`); every other tool accepts an optional `session_id` and
@@ -40,6 +41,23 @@ Three static, read-only MCP resources accompany the tools
 `workflow://marimo-inspect/live-safety`,
 `reference://marimo-inspect/fallbacks-and-limits`) — packaged Markdown under
 `src/marimo_inspection/resources/`, loaded via `importlib.resources`.
+
+## Consumer installation contract
+
+The MCP resources are the authority for **runtime co-work**, but they are only
+available after a client installs and configures the server. The bootstrap
+contract therefore lives in `README.md` and the per-harness docs:
+
+- Normal consumers install a **pinned, non-editable release** into their own
+  project environment and configure their harness to run that environment's
+  `.venv/bin/marimo-inspect --transport stdio`.
+- Do not prescribe `uv run` as a long-lived MCP command: it can resync or fail
+  on a read-only uv cache.
+- An editable sibling source is only a temporary provider-contributor override
+  for testing unreleased changes. It is not part of normal consumer onboarding
+  and must never be committed into a consumer project's dependency source.
+- Once connected, clients list/read the packaged MCP resources for the live
+  co-work workflow and safety boundaries.
 
 ## Tooling
 
@@ -173,13 +191,15 @@ and asserts the repo fixture stays byte-identical (the hermeticity gate).
   harness list-arg mangling (T3), 3.14 private-API drift evidence (T4), and the
   **publishing checklist** for making this repo public (T5).
 
-**Harness / IDE integrations (per-harness MCP setup notes):**
+**Bootstrap / harness integration:**
 
-- `docs/harness-integration/README.md` — **DRAFT** index for consumers: the two
-  install axes (how the package gets in × how the agent reaches it), the marimo
-  0.24.x pin you inherit, runtime prerequisites, the per-harness note template +
-  index, and a "known gaps" graduation checklist. Claims are labelled
-  ✅/📄/❓ — do not treat ❓ as truth until re-verified.
+- `README.md` §Install and connect an MCP client — the canonical pre-MCP
+  bootstrap path: pinned consumer install, console-script invocation,
+  session-materialization prerequisite, then MCP resources for runtime work.
+- `docs/harness-integration/README.md` — consumer integration index: supported
+  package routes, marimo 0.24.x pin, runtime prerequisites, per-harness notes,
+  and explicitly labelled known gaps. Treat its supported normal route as
+  authoritative; do not turn its `❓` sections into consumer instructions.
 - `docs/harness-integration/deepseek-harness-web-profile.md` — registering the
   marimo-inspect FastMCP server with the DeepSeek Harness web profile
   (`~/.dsh/profiles/web/cordis.patch.yml`); the two setup gotchas (bare vs
@@ -246,10 +266,10 @@ Consumers should reference a **tag**, not a moving branch, so a future bump
 can't silently change what they resolve.
 
 - Cut a release tag at the current package version before asking any consumer
-  to depend on this repo: `git tag v0.2.0 && git push origin --tags`.
+  to depend on this repo: `git tag v0.3.0 && git push origin --tags`.
 - Bump `version` in `pyproject.toml` **and** `__version__` in
   `src/marimo_inspection/__init__.py` together (they are duplicated on
   purpose); cut the matching tag in the same change.
-- Consumer form: `uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.2.0"`
-  (or a `[tool.uv.sources]` entry with `tag = "v0.2.0"`).
+- Consumer form: `uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.0"`
+  (or a `[tool.uv.sources]` entry with `tag = "v0.3.0"`).
 - Never move a tag that a consumer already pinned — cut a new one instead.

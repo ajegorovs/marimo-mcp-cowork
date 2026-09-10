@@ -12,10 +12,10 @@ missing from `get_cell_outputs`, inspect the cell's variables instead.
 
 ## Widget value shape
 
-`set_ui_value` preserves the JSON shape exactly (scalar stays scalar, list
-stays list); the expected shape depends on the widget type. Its reactive
-re-run is verified, not awaited: after setting a value, confirm the effect
-with `get_variables` or `get_cell_outputs`.
+`set_ui_value` expects a widget-specific JSON value shape. Do not infer that a
+scalar form works for every single-select widget; after setting a value, confirm
+the effect with `get_variables` or `get_cell_outputs`. Its reactive re-run is
+verified, not awaited.
 
 ## Frontend refresh
 

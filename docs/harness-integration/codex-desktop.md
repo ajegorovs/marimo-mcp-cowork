@@ -35,7 +35,7 @@ The project needs an installed package and its virtual environment before
 Codex starts the MCP server. For a consumer project, pin a release tag:
 
 ```bash
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.2.0"
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.0"
 uv sync
 ```
 
