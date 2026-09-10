@@ -51,8 +51,11 @@ tool call is not proof of a correct result.
   option key goes inside a one-element list, e.g. `["beta"]`). A refused shape
   returns `reason: value_shape_mismatch` with the corrected payload in
   `did_you_mean`; a value the kernel rejected returns `reason:
-  value_not_applied` with the kernel's own message. Read those — the widget is
-  unmoved in both cases. `status: ok` means the value was read back
+  value_not_applied` with the kernel's own message and the widget unmoved,
+  while a widget whose `on_change` handler raised returns `reason:
+  on_change_failed` with `applied: true` — the value DID move, only the
+  callback failed. Read those — never assume the interaction happened.
+  `status: ok` means the value was read back
   (`verified: true`: `applied: true` if it moved, `no_change: true` if it
   already held that value), but dependent cells' reactive re-runs are not
   awaited.

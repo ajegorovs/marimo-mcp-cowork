@@ -105,6 +105,96 @@ def _kernel_rejection(stderr_text: str) -> str | None:
     )
 
 
+def _rejection_payload(
+    variable_name: str,
+    session_id: str,
+    value: Any,
+    data: dict,
+    kernel_message: str,
+) -> dict:
+    """Error payload for a UI update marimo raised on while applying it.
+
+    marimo writes the same stderr notice for both failure points of a UI
+    update, but they are not the same failure:
+
+    * a rejected CONVERSION (an unknown dropdown key) raises inside
+      ``_convert_value`` *before* the element's value is assigned, so the
+      element is genuinely unchanged;
+    * an element ``on_change`` handler raises *after* the assignment, so the
+      value did move and only the callback failed.
+
+    The read-back already performed by the template (``data``: ``verified`` /
+    ``applied`` / ``value_before`` / ``value_after``) tells them apart, so each
+    is reported under a truthful reason code — and no message claims the
+    element was unchanged when its value actually moved.
+    """
+    before = data.get("value_before")
+    after = data.get("value_after")
+    element_type = data.get("element_type")
+    common = {
+        "status": "error",
+        "variable_name": variable_name,
+        "session_id": session_id,
+        "element_type": element_type,
+        "accepted_shape": data.get("accepted_shape"),
+        "submitted_value": value,
+        "kernel_message": kernel_message,
+        "value_before": before,
+        "value_after": after,
+    }
+
+    if data.get("verified") and data.get("applied"):
+        return {
+            **common,
+            "reason": "on_change_failed",
+            "applied": True,
+            "message": (
+                f"marimo applied {value!r} to '{variable_name}' "
+                f"({element_type}) — the read-back confirms {before!r} -> "
+                f"{after!r} — but the element's own on_change handler raised: "
+                f"{kernel_message}"
+            ),
+            "next_steps": [
+                (
+                    "The value change DID apply, so the widget holds its new "
+                    "value; it is the handler's own side effects (and the "
+                    "dependent cells it re-ran) that failed. Fix the handler "
+                    "in the widget's cell, re-run it, then verify the "
+                    "downstream effects with get_variables, get_cell_outputs, "
+                    "and get_errors."
+                ),
+            ],
+        }
+
+    if data.get("verified"):
+        message = (
+            f"The kernel reported an error while applying {value!r} to "
+            f"'{variable_name}' ({element_type}), and the read-back shows the "
+            f"element's value did NOT move ({before!r} -> {after!r}): "
+            f"{kernel_message}"
+        )
+    else:
+        message = (
+            f"The kernel reported an error while applying {value!r} to "
+            f"'{variable_name}' ({element_type}) and the read-back could not "
+            f"confirm the element's value: {kernel_message}"
+        )
+    return {
+        **common,
+        "reason": "value_not_applied",
+        "applied": bool(data.get("applied")),
+        "message": message,
+        "next_steps": [
+            (
+                "Re-send the value in the shape the element accepts "
+                f"({data.get('accepted_shape') or 'see the widget docs'}) — "
+                "for a dropdown or multiselect, option keys go inside a list. "
+                "Do not assume the interaction happened."
+            ),
+        ],
+    }
+
+
 async def set_ui_value(
     variable_name: str,
     value: Any,
@@ -145,9 +235,14 @@ async def set_ui_value(
     Returns:
         Dict with ``status``. On a missing/non-UI variable or a shape mismatch
         the kernel template returns a structured error explaining exactly what
-        went wrong. On success the payload carries ``applied``,
-        ``verified``, and the element's value before and after; downstream
-        re-runs are NOT awaited, so confirm their effects with the read tools.
+        went wrong. A value the kernel raised on while applying it is an error
+        too, under a reason code drawn from the read-back: ``value_not_applied``
+        when the element's value did not move (a rejected conversion), or
+        ``on_change_failed`` with ``applied: true`` when the value moved and
+        the element's own ``on_change`` handler raised. On success the payload
+        carries ``applied``, ``verified``, and the element's value before and
+        after; downstream re-runs are NOT awaited, so confirm their effects
+        with the read tools.
     """
     if not variable_name:
         return {
@@ -175,35 +270,15 @@ async def set_ui_value(
         # mismatch. Each carries its own actionable message.
         return data
 
-    # A rejected update leaves the value unchanged AND prints a traceback to
-    # the kernel's stderr. Reporting `ok` here is the silent-no-op bug.
+    # marimo writes a traceback to the kernel's stderr for BOTH failure points
+    # of a UI update: a rejected CONVERSION (unknown dropdown key) raises
+    # BEFORE the element's value is assigned, an `on_change` handler raises
+    # AFTER it. The template's read-back tells them apart; reporting either as
+    # a plain `ok` is the silent-no-op bug, and reporting the handler failure
+    # as "not applied" contradicts the payload's own before/after values.
     rejection = _kernel_rejection(stderr_text)
     if rejection is not None:
-        return {
-            "status": "error",
-            "reason": "value_not_applied",
-            "variable_name": variable_name,
-            "session_id": sid,
-            "element_type": data.get("element_type"),
-            "accepted_shape": data.get("accepted_shape"),
-            "submitted_value": value,
-            "kernel_message": rejection,
-            "value_before": data.get("value_before"),
-            "value_after": data.get("value_after"),
-            "message": (
-                f"The kernel rejected the value {value!r} for "
-                f"'{variable_name}' ({data.get('element_type')}), so the element "
-                f"was NOT changed: {rejection}"
-            ),
-            "next_steps": [
-                (
-                    "Re-send the value in the shape the element accepts "
-                    f"({data.get('accepted_shape') or 'see the widget docs'}) — "
-                    "for a dropdown or multiselect, option keys go inside a list. "
-                    "Do not assume the interaction happened."
-                ),
-            ],
-        }
+        return _rejection_payload(variable_name, sid, value, data, rejection)
 
     verified = bool(data.get("verified"))
     applied = bool(data.get("applied"))

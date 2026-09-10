@@ -18,7 +18,8 @@ def build_errors_template() -> str:
       sniffing.
     - ``console_stderr``: serialized stderr console events from the cell's
       last execution, using the SAME serialization shape as
-      ``templates/cell_outputs.py`` (shared ``_cell_output_to_dict`` source).
+      ``templates/cell_outputs.py`` (shared ``_cell_output_to_dict`` source,
+      and its shared ``_channel_name`` normalizer for the channel filter).
       This surfaces UI-handler exception tracebacks that marimo records only
       on the console channel.
 
@@ -54,7 +55,7 @@ def _console_exception_evidence(console_outputs):
         text = "\\n".join(
             str(getattr(o, "data", ""))
             for o in console_outputs
-            if str(getattr(o, "channel", "")).lower() == "stderr"
+            if _channel_name(o) == "stderr"
         )
     except Exception:
         return False
@@ -91,7 +92,7 @@ async def get_errors():
                 console_stderr = [
                     _cell_output_to_dict(o)
                     for o in console
-                    if str(getattr(o, "channel", "")).lower() == "stderr"
+                    if _channel_name(o) == "stderr"
                 ]
 
             has_exc = _console_exception_evidence(console or [])

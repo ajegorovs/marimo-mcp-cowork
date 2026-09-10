@@ -22,12 +22,21 @@ def build_cell_outputs_template(cell_ids: list[str]) -> str:
 # Shared CellOutput serializer. Kept as a Python-level source string so that
 # templates/errors.py embeds the SAME console serialization shape (single
 # source of truth for console event serialization across both templates).
-_CELL_OUTPUT_TO_DICT_SRC = """def _cell_output_to_dict(out):
+_CELL_OUTPUT_TO_DICT_SRC = """def _channel_name(out):
+    # Bare lowercase console-channel name ("stdout"/"stderr"/"output"/...), or
+    # "" when unreadable. marimo's CellChannel is a str-mixin enum: repr() is
+    # "stderr" but str() is "CellChannel.STDERR", so a raw str comparison never
+    # matches. Normalize to the final dotted segment, lowercased — the ONE
+    # channel normalization shared by this serializer and the template filters.
+    return str(getattr(out, "channel", "")).split(".")[-1].lower()
+
+
+def _cell_output_to_dict(out):
     # Convert a marimo CellOutput into a serializable summary dict.
     if out is None:
         return None
 
-    channel = str(getattr(out, "channel", "")).split(".")[-1]  # "OUTPUT" -> OUTPUT
+    channel = _channel_name(out)
     mimetype = getattr(out, "mimetype", None)
     data = getattr(out, "data", None)
 
@@ -45,7 +54,7 @@ _CELL_OUTPUT_TO_DICT_SRC = """def _cell_output_to_dict(out):
             except (ValueError, TypeError):
                 payload = data
         return {
-            "channel": channel.lower(),
+            "channel": channel,
             "mimetype": str(mimetype),
             "data": payload[:5000],
             "mime_subtypes": mime_keys,
@@ -53,14 +62,14 @@ _CELL_OUTPUT_TO_DICT_SRC = """def _cell_output_to_dict(out):
 
     if isinstance(data, list):
         return {
-            "channel": channel.lower(),
+            "channel": channel,
             "mimetype": str(mimetype),
             "data": [str(d)[:500] for d in data[:20]],
             "mime_subtypes": None,
         }
 
     return {
-        "channel": channel.lower(),
+        "channel": channel,
         "mimetype": str(mimetype),
         "data": str(data)[:5000],
         "mime_subtypes": None,
@@ -96,11 +105,11 @@ async def get_cell_outputs():
                 "visual_mimetype": str(getattr(out, "mimetype", None)) if out else None,
                 "stdout": [
                     _cell_output_to_dict(o)
-                    for o in console if str(getattr(o, "channel", "")).lower() == "stdout"
+                    for o in console if _channel_name(o) == "stdout"
                 ],
                 "stderr": [
                     _cell_output_to_dict(o)
-                    for o in console if str(getattr(o, "channel", "")).lower() == "stderr"
+                    for o in console if _channel_name(o) == "stderr"
                 ],
                 "console_events": [_cell_output_to_dict(o) for o in console],
             })

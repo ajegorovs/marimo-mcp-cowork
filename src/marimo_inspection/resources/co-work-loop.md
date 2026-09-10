@@ -61,10 +61,22 @@ Send that corrected form; do not repeat the rejected shape.
 element's own value **moved** (`applied: true`, with `value_before` /
 `value_after`), or it already held that value (`applied: false` +
 `no_change: true`). Only a read-back that failed reports `verified: false`, with
-a `warning` saying the value is unconfirmed. A value marimo itself rejected (an
-unknown dropdown key) comes back as `status: error` with
-`reason: value_not_applied`, the kernel's own message in `kernel_message`, and
-the widget unmoved — never treat that call as done.
+a `warning` saying the value is unconfirmed.
+
+A value the kernel raised on while applying it is `status: error` with the
+kernel's own message in `kernel_message`; the `reason` says *which* failure it
+was, straight from the read-back:
+
+- `value_not_applied` — the element's value did **not** move (`applied:
+  false`; `value_before` = `value_after`). marimo rejected the conversion before
+  assigning it, e.g. an unknown dropdown key. Re-send the corrected value; never
+  treat that call as done.
+- `on_change_failed` — the value **did** move (`applied: true`, with
+  `value_before`/`value_after` proving it) and the element's own `on_change`
+  handler raised *after* the assignment. The widget holds its new value; only
+  the handler's side effects and the dependent cells it re-ran failed. Fix the
+  handler in the widget's cell and re-run it — do not re-send the value, and do
+  not report the interaction as "the widget did not change".
 
 ## 6. Verify
 
@@ -74,6 +86,20 @@ context exit, and the reactive re-runs of *dependent* cells are not awaited by
 the write call — so verify their effects, don't assume them. `get_errors`
 reports `structured_errors` and `console_stderr` separately;
 `has_errors`/`total_errors` count structured errors only.
+
+**A failed `run_cell` reports through its own payload, and `get_errors`'
+structured channel can be silent about it.** `run_cell` returns `{"error":
+"Execution failed", "stderr": <traceback>}` while `get_errors` reads marimo's
+*structured* records — which are not written for one failure class: a cell that
+references a name marimo resolves as another cell's **cell-private** variable
+(a leading-underscore name, see §5). That cell ends `status: "exception"` with
+an empty `cell.errors`, so `get_errors` reports `has_errors: false` and counts
+no structured error for it — but its traceback is still visible: in the run
+payload, and in that cell's `console_stderr` entry under the console channel.
+Ordinary runtime failures (`1/0`, or a name that exists nowhere) are recorded in
+both channels. So never use `get_errors`' structured counts alone as the
+post-run check — read the run payload first, and use `get_errors` (structured
+*and* console) for the notebook-wide picture.
 
 ## 7. Lint
 

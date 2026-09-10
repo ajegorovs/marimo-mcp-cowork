@@ -25,6 +25,7 @@ from __future__ import annotations
 import pytest
 
 from marimo_inspection.tools.cells import get_cell_data
+from marimo_inspection.tools.errors import get_errors
 from marimo_inspection.tools.mutation import create_cell, delete_cell, run_cell
 from marimo_inspection.tools.ui import set_ui_value
 from marimo_inspection.tools.variables import get_variables
@@ -53,6 +54,17 @@ _DROPDOWN_SOURCE = (
 )
 
 _DROPDOWN_READER_SOURCE = f"gate_dropdown_readback = str({_DROPDOWN}.value) + '!'"
+
+# A slider whose on_change handler raises: marimo assigns the new value and
+# only THEN calls the handler, so the value moves while the callback fails.
+_BOOM = "gate_boom"
+_BOOM_SOURCE = (
+    "import marimo as mo\n"
+    "def _boom(value):\n"
+    "    raise ValueError('boom from on_change')\n"
+    f"{_BOOM} = mo.ui.slider(0, 10, value=1, on_change=_boom, label='boom')\n"
+    f"{_BOOM}"
+)
 
 
 def _inner_value(payload: dict, name: str):
@@ -203,6 +215,18 @@ async def test_set_ui_value_cannot_address_a_cell_private_widget(mutation_server
         )
         assert "error" in run, run
         assert "_private_slider" in run.get("stderr", ""), run
+
+        # The STRUCTURED channel stays silent about this failure class: the
+        # cell ends `exception` with an EMPTY `cell.errors`, so `has_errors` is
+        # false and nothing is counted as a structured error. The CONSOLE
+        # channel does carry the traceback (the same one the run payload above
+        # holds) — pinned for agenda T11/T12; see co-work-loop.md §6.
+        errors = await get_errors(session_id=session_id, server_url=server_url)
+        assert errors["has_errors"] is False, errors
+        assert errors["total_structured_errors"] == 0, errors
+        flagged = {cell["cell_id"]: cell for cell in errors["cells"]}
+        assert flagged[reader["cell_id"]]["structured_errors"] == [], errors
+        assert flagged[reader["cell_id"]]["console_stderr"], errors
     finally:
         for cell_id in reversed(created):
             deleted = await delete_cell(
@@ -333,11 +357,59 @@ async def test_set_ui_value_invalid_dropdown_key_is_an_error_not_an_ok(
         assert "alpha" in result["kernel_message"], result
         assert result["value_before"] == "alpha", result
         assert result["value_after"] == "alpha", result
+        # A rejected conversion never moved the element: `applied` stays false.
+        assert result["applied"] is False, result
         assert result["next_steps"], result
 
         # Confirmed unmoved by an independent read.
         after = await get_variables(session_id=session_id, server_url=server_url)
         assert _inner_value(after, _DROPDOWN) == "alpha", after
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.live
+async def test_set_ui_value_reports_an_on_change_failure_as_applied(mutation_server):
+    """Agenda T13: a raising on_change handler is not a "value not applied".
+
+    marimo assigns the element's new value and *then* calls ``on_change``, so a
+    handler that raises leaves the value moved and only the callback failed.
+    The kernel's stderr marker is identical for both failure points, but the
+    tool's own read-back is not fooled: a rejection whose read-back moved is
+    reported as ``on_change_failed`` with ``applied: true`` plus the before and
+    after values, and no field claims the element was unchanged.
+    """
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        widget_cell_id = await _make_cell(_BOOM_SOURCE, server_url, session_id)
+        created.append(widget_cell_id)
+
+        before = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(before, _BOOM) == "1", before
+
+        result = await set_ui_value(
+            _BOOM, 5, session_id=session_id, server_url=server_url
+        )
+        assert result["status"] == "error", result
+        assert result["reason"] == "on_change_failed", result
+        assert result["applied"] is True, result
+        assert result["value_before"] == 1, result
+        assert result["value_after"] == 5, result
+        assert result["kernel_message"] == "ValueError: boom from on_change", result
+        assert "boom from on_change" in result["message"], result
+        # Self-consistency: the value moved, so nothing may claim otherwise.
+        assert "NOT changed" not in result["message"], result
+        assert result["next_steps"], result
+
+        # Confirmed moved by an independent read of the live kernel global.
+        after = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after, _BOOM) == "5", after
     finally:
         for cell_id in reversed(created):
             deleted = await delete_cell(

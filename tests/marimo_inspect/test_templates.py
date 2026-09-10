@@ -14,6 +14,10 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+# Private, but pinned to the same marimo 0.24.x range as the templates under
+# test; the fake needs the REAL enum (a plain "stderr" string hides the bug).
+from marimo._messaging.cell_output import CellChannel
+
 # -------------------------------------------------------------------
 # Helpers: execute a scratchpad template against a fake CodeMode context
 # -------------------------------------------------------------------
@@ -132,6 +136,23 @@ class _FakeStderrTracebackEvent:
 class _FakePlainStderrEvent:
     channel = "stderr"
     data = "some warning text without exception markers"
+
+
+class _FakeEnumChannelEvent:
+    """Console event carrying marimo's REAL str-mixin ``CellChannel`` enum.
+
+    ``str(CellChannel.STDERR)`` is ``"CellChannel.STDERR"`` while ``repr``
+    reads ``stderr`` — the exact shape a real kernel hands the templates, and
+    the exact shape a raw ``str(channel)`` comparison never matched.
+    """
+
+    def __init__(
+        self,
+        channel=CellChannel.STDERR,
+        data="Traceback (most recent call last):\nValueError: boom",
+    ):
+        self.channel = channel
+        self.data = data
 
 
 # -------------------------------------------------------------------
@@ -392,6 +413,49 @@ class TestCellOutputsTemplate:
         assert isinstance(TEMPLATE_CELL_OUTPUTS, str)
         assert len(TEMPLATE_CELL_OUTPUTS) > 0
 
+    def test_shares_the_console_channel_normalizer(self):
+        """stdout/stderr filters use the shared channel normalizer."""
+        from marimo_inspection.templates.cell_outputs import (
+            build_cell_outputs_template,
+        )
+
+        code = build_cell_outputs_template([])
+        assert "def _channel_name" in code
+        assert '_channel_name(o) == "stdout"' in code
+        assert '_channel_name(o) == "stderr"' in code
+
+    async def test_enum_channel_events_land_in_the_stdout_stderr_lists(
+        self, monkeypatch
+    ):
+        """A real CellChannel enum lands in stdout/stderr, not just events."""
+        from marimo_inspection.templates.cell_outputs import (
+            build_cell_outputs_template,
+        )
+
+        data = await _exec_template(
+            build_cell_outputs_template([]),
+            SimpleNamespace(
+                cells={
+                    "7": _FakeCell(
+                        "7",
+                        console_outputs=[
+                            _FakeEnumChannelEvent(CellChannel.STDOUT, "hello"),
+                            _FakeEnumChannelEvent(),
+                        ],
+                    )
+                }
+            ),
+            monkeypatch,
+            "get_cell_outputs",
+        )
+        cell = data["cells"][0]
+        assert [e["channel"] for e in cell["stdout"]] == ["stdout"]
+        assert [e["channel"] for e in cell["stderr"]] == ["stderr"]
+        assert [e["channel"] for e in cell["console_events"]] == [
+            "stdout",
+            "stderr",
+        ]
+
 
 class TestVariablesTemplate:
     """Test build_variables_template()."""
@@ -548,7 +612,11 @@ class TestErrorsTemplate:
 
         code = build_errors_template()
         assert "def _cell_output_to_dict" in code
-        assert '"channel": channel.lower()' in code
+        # The channel normalization is shared with the serializer (one helper),
+        # never re-implemented per call site.
+        assert "def _channel_name" in code
+        assert '"channel": channel' in code
+        assert '_channel_name(o) == "stderr"' in code
 
     async def test_fresh_session_zero_summary(self, monkeypatch):
         """An empty session reports a self-consistent zero summary."""
@@ -638,6 +706,36 @@ class TestErrorsTemplate:
         assert cell["structured_errors"] == []
         assert cell["has_console_exception"] is True
         # Only stderr-channel events are serialized into console_stderr.
+        assert [e["channel"] for e in cell["console_stderr"]] == ["stderr"]
+        assert "Traceback" in cell["console_stderr"][0]["data"]
+
+    async def test_enum_channel_stderr_is_not_filtered_out(self, monkeypatch):
+        """A real CellChannel enum must match the stderr channel filter.
+
+        The kernel hands the template marimo's str-mixin enum, whose ``str()``
+        is ``"CellChannel.STDERR"`` — comparing that raw never matched, so the
+        console channel reported nothing.
+        """
+        from marimo_inspection.templates.errors import (
+            build_errors_template,
+        )
+
+        data = await _exec_template(
+            build_errors_template(),
+            SimpleNamespace(
+                cells=[
+                    _FakeCell(
+                        "11",
+                        console_outputs=[_FakeEnumChannelEvent()],
+                    )
+                ]
+            ),
+            monkeypatch,
+            "get_errors",
+        )
+        assert data["has_console_exception"] is True
+        assert data["total_console_exception_cells"] == 1
+        cell = data["cells"][0]
         assert [e["channel"] for e in cell["console_stderr"]] == ["stderr"]
         assert "Traceback" in cell["console_stderr"][0]["data"]
 
