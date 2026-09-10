@@ -27,10 +27,19 @@ async def test_errors_template_structure(live_client, live_session):
 
     assert isinstance(data["has_errors"], bool)
     assert isinstance(data["total_errors"], int)
+    # Backward-compatible totals are the STRUCTURED-only counts.
+    assert isinstance(data["total_structured_errors"], int)
+    assert data["total_structured_errors"] == data["total_errors"]
     assert data["total_errors"] >= 0
     assert isinstance(data["total_cells_with_errors"], int)
+    assert isinstance(data["has_console_exception"], bool)
+    assert isinstance(data["total_console_exception_cells"], int)
     assert isinstance(data["cells"], list)
     assert data["has_errors"] == (data["total_errors"] > 0)
+    for cell in data["cells"]:
+        assert "structured_errors" in cell
+        assert "console_stderr" in cell
+        assert "has_console_exception" in cell
 
 
 @pytest.mark.live
@@ -40,9 +49,14 @@ async def test_errors_consistent_fresh_session(live_client, live_session):
     assert result.status == "ok"
     data = json.loads(result.stdout[0])
 
-    assert len(data["cells"]) == data["total_cells_with_errors"]
+    # Structured and console-exception cells are both subsets of `cells`
+    # (a single cell may carry both channels).
+    assert data["total_cells_with_errors"] <= len(data["cells"])
+    assert data["total_console_exception_cells"] <= len(data["cells"])
     if data["has_errors"]:
         assert data["total_cells_with_errors"] > 0
+    if data["has_console_exception"]:
+        assert data["total_console_exception_cells"] > 0
 
 
 @pytest.mark.live

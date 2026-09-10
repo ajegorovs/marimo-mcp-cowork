@@ -65,3 +65,19 @@ async def test_cell_map_preview_is_truncated(live_client, live_session):
         assert preview_line_count <= 3, (
             f"Preview has {preview_line_count} lines but max is 3"
         )
+
+
+@pytest.mark.live
+async def test_cell_map_truthful_flag_schema(live_client, live_session):
+    """Every cell reports the truthfulness flags (bool or None, never fake)."""
+    result = await live_client.execute(live_session.session_id, TEMPLATE_CELL_MAP)
+    assert result.status == "ok", f"Template failed: stderr={result.stderr}"
+    data = json.loads(result.stdout[0])
+
+    assert data["cells"], "Expected at least one cell in the map"
+    for cell in data["cells"]:
+        for key in ("has_output", "has_console_output", "has_errors"):
+            assert key in cell, f"cell {cell['cell_id']} missing {key}"
+            assert cell[key] is None or isinstance(cell[key], bool), (
+                f"cell {cell['cell_id']} {key}={cell[key]!r} must be bool or None"
+            )

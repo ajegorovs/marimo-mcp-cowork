@@ -18,17 +18,28 @@ Two surfaces over the same kernel:
 2. **FastMCP server** (`create_server`, the `marimo-inspect` console
    script) — exposes the same tooling to AI agents over MCP.
 
-### The MCP tool surface (13 tools)
+### The MCP tool surface (14 tools)
 
 Reads / state: `list_active_notebooks`, `set_active_session`,
 `get_cell_map`, `get_cell_data`, `get_cell_outputs`, `get_variables`,
 `get_dependency_graph`, `get_errors`, `lint_notebook`.
 Writes: `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
+Widget interaction: `set_ui_value` (sets a live UI element's value by
+kernel-global name; accepts no source code and preserves the JSON value shape).
 
-`list_active_notebooks` auto-binds the first discovered session; every other
-tool accepts an optional `session_id` and falls back to the bound session.
-`edit_cell` carries a staleness guard that refuses to overwrite a cell the
-agent has not freshly read.
+`list_active_notebooks` auto-binds the first discovered session (`session_id`
+and `server_url`); every other tool accepts an optional `session_id` and
+falls back to the bound session. `create_cell` defaults to `hide_code=False`.
+`edit_cell` carries a staleness guard (`check_fresh=True` by default):
+never-read → `needs_read`, changed-since-read → `conflict`; recover by
+re-reading (`get_cell_data`/`get_cell_map`) and retrying (`check_fresh=False`
+is a force escape hatch, not the recovery path).
+
+Three static, read-only MCP resources accompany the tools
+(`workflow://marimo-inspect/co-work-loop`,
+`workflow://marimo-inspect/live-safety`,
+`reference://marimo-inspect/fallbacks-and-limits`) — packaged Markdown under
+`src/marimo_inspection/resources/`, loaded via `importlib.resources`.
 
 ## Tooling
 
@@ -53,17 +64,19 @@ agent has not freshly read.
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-06): `-m "not live"` → **175 passed**, `-m
-live` → **19 passed** (~3s). Counts drift as tests are added; treat the split,
-not the exact numbers, as the contract.
+Verified on this tree (2026-09-10): `-m "not live"` → **266 passed**, `-m
+live` → **22 passed** (incl. the 2 hermetic mutation regressions). Counts drift
+as tests are added; treat the split, not the exact numbers, as the contract.
 
 ## Layout
 
 - `src/marimo_inspection/` — `client.py` (HTTP), `discovery.py`
   (registry/network discovery), `server.py` (FastMCP, lazily imported),
-  `templates/` (scratchpad code generators), `tools/` (MCP tool handlers,
-  change-tracking, mutation with staleness guard, in-process lint in
-  `tools/lint.py`, session binding in `tools/session.py`), `types.py`.
+  `templates/` (scratchpad code generators), `resources/` (packaged Markdown
+  served as three read-only native MCP resources), `tools/` (MCP tool
+  handlers, change-tracking, mutation with staleness guard, widget
+  interaction in `tools/ui.py`, in-process lint in `tools/lint.py`, session
+  binding in `tools/session.py`), `types.py`.
 - `tests/marimo_inspect/` — unit tests (no kernel needed).
 - `tests/marimo_inspect/live/` — integration tests that boot a real headless
   marimo server (see "Live tests" below).
@@ -126,6 +139,12 @@ So a future marimo bump is made visible by the behavioral assertions for
 Getting instantiation working (isolate the skew token) is the main remaining
 bite of live-test coverage.
 
+Separately, `tests/marimo_inspect/live/test_mutation.py` (2 tests) exercises the
+**real MCP handler functions** against a real 0.24 kernel on a `tmp_path` copy
+of the fixture: create → read → guarded edit → run → verify → delete, and
+external-conflict → re-read → recover. It boots one isolated server per test
+and asserts the repo fixture stays byte-identical (the hermeticity gate).
+
 ## Docs map
 
 **Operational — read before acting:**
@@ -185,7 +204,7 @@ bite of live-test coverage.
 - `docs/marimo-inspection-tools-comparison.md` — source-inspection
   comparison vs marimo-pair.
 - `docs/marimo-inspect-progress-report.md` — 2026-08-25 snapshot
-  (pre-dates the write tools and the 13-tool surface; numbers are stale).
+  (pre-dates the write tools and the 14-tool surface; numbers are stale).
 - `docs/mcp-tools-test-findings.md` — 2025-01 bug findings (shows old buggy
   code; historical).
 - `docs/mcp-upgrade-roadmap.md` — upgrade roadmap (partially executed).

@@ -15,6 +15,7 @@ from marimo_inspection.tools.mutation import (
     run_cell,
 )
 from marimo_inspection.tools.notebooks import list_active_notebooks
+from marimo_inspection.tools.ui import set_ui_value
 from marimo_inspection.tools.variables import get_variables
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "lint_notebook",
     "list_active_notebooks",
     "run_cell",
+    "set_ui_value",
 ]

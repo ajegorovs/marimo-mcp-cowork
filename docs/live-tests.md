@@ -1,7 +1,7 @@
 # How we run live kernel tests
 
-> Updated: 2026-09-06 — verified against the current working tree (live suite
-> green; see [Current status](#current-status)).
+> Updated: 2026-09-10 — verified against the current working tree (live suite
+> green, incl. the hermetic mutation regressions; see [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
 > is, the commands, the boot mechanics, and its *actual* status today.
 > The redesign that made this suite green is documented in
@@ -76,7 +76,11 @@ All orchestration lives in `tests/marimo_inspect/live/conftest.py`
    - The port is either `$MARIMO_TEST_PORT` or a free port bound at startup
      (no fixed `2718` clash).
    - marimo's state dir (`XDG_STATE_HOME`) is isolated to a temp dir so the
-     suite never touches the developer's real marimo state.
+     suite never touches the developer's real marimo state (and reaped in
+     `stop()` so long pytest sessions don't accumulate temp dirs).
+   - `MarimoServerManager.start(notebook_path=...)` accepts any path and
+     `create_session()` hands that SAME path to the `/sse` handshake — the
+     mutation suite relies on this to boot servers on disposable copies.
    - `start()` health-polls `GET /api/version` instead of sleeping.
 
 2. **Session creation via the `/sse` handshake** (the key fix). marimo
@@ -88,7 +92,9 @@ All orchestration lives in `tests/marimo_inspect/live/conftest.py`
 
 3. **One session per server.** marimo edit mode allows exactly one session per
    server; a second connection replaces the first. So tests share the single
-   session rather than creating fresh ones per test.
+   session rather than creating fresh ones per test — EXCEPT the hermetic
+   mutation regressions, which boot one additional isolated server per test
+   (see below).
 
 4. **`live_client`** (function-scoped) — a **fresh** `MarimoClient` per
    test (function scope avoids SSE/connection-pool reuse problems), closed
@@ -114,19 +120,55 @@ assert the honest, verifiable contract for that state (structure + consistency)
 and note the instantiate-gated limitation. `cell_map`, `cell_data`,
 `cell_outputs`, `variables` read cell *source/structure* and work fully.
 
-## What's tested (19 tests, 6 files)
+## What's tested (24 tests, 8 files)
 
 | File | Tests | Asserts |
 | --- | --- | --- |
-| `test_cell_map.py` | 4 | map reports the fixture's 6 cells incl. hidden setup (`def _double` preview) and the intentional error cell; preview truncated to 3 lines |
+| `test_cell_map.py` | 5 | map reports the fixture's 6 cells incl. hidden setup (`def _double` preview) and the intentional error cell; preview truncated to 3 lines; truthfulness flags (`has_output`/`has_console_output`/`has_errors`) are bool or None, never faked |
 | `test_cell_data.py` | 4 | per-cell code round-trips (computed-value cell, error cell); count agrees with cell map |
 | `test_cell_outputs.py` | 3 | every cell listed with the documented output keys |
 | `test_variables.py` | 3 | runs ok on a live kernel; sees kernel-injected globals; degrades gracefully without numpy/pandas (regression for the unguarded numpy import) |
 | `test_dependency.py` | 2 | template executes against a live kernel; returns documented structure/types (graph content is instantiate-gated — see note above) |
 | `test_errors.py` | 3 | template returns consistent, typed error summary; stable across repeated runs |
+| `test_mutation.py` | 2 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, and external-conflict→re-read→recover — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
+| `test_ui.py` | 2 | **widget regressions**: `set_ui_value` moves a live widget's value and reactively re-runs its dependent cell (3→7 and 103→107, both idle); missing/non-UI names refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
 do **not** need a kernel, so they live in the fast path (`tests/marimo_inspect/`).
+
+## Hermetic mutation regressions
+
+`test_mutation.py` exercises the **real MCP handler functions**
+(`marimo_inspection.tools.mutation/cells/errors`) — not mocks and not bare
+templates — against a real marimo 0.24 kernel. Because the handlers run
+in-process, the change-tracker singleton's staleness guard (`edit_cell`
+refusing to stomp a concurrently-modified cell) behaves exactly as under the
+MCP server. Two flows are locked in:
+
+- **Ordinary path**: `create_cell` → `get_cell_data` (records the baseline) →
+  guarded `edit_cell` (ok, reports the post-context-exit hash) → `run_cell`
+  (runtime state proves execution: fresh cells are `stale`, run cells go
+  `idle`) → re-read (exact edited source) → `get_errors` (no errors) →
+  `delete_cell` in a `finally` → the id is gone from a subsequent read and
+  nothing of it remains on disk.
+- **Recovery path**: `get_cell_data` baseline → a RAW scratchpad snippet
+  (not a package template — a second co-worker editing out-of-band) mutates
+  the cell → guarded `edit_cell` returns `conflict` and mutates nothing →
+  re-read re-arms the baseline → the retried guarded edit applies → cleanup
+  run.
+
+Isolation (the `mutation_server` fixture): every test boots its **own**
+`MarimoServerManager` on a `tmp_path` **copy** of `notebooks/test_marimo.py`
+(own port, own `XDG_STATE_HOME`), creates its own session, and stops the
+server on teardown. The shared session-scoped server is never mounted, and the
+fresh uuid session id keeps the process-wide change tracker's keys separate
+from the shared session's. marimo may re-serialize the notebook file at load,
+which is why only a disposable copy is ever opened; teardown of a passing test
+also re-checks that the repo fixture is byte-identical to what it was at boot
+(a failed body raises out through the fixture first, so this check never masks
+a real error). Observed: in this headless `/sse` flow marimo does **not**
+autosave cell edits back to the `.py` file — the copy is still mandatory
+insurance, and the byte-identity check is the real hermeticity gate.
 
 Fixture notebook: `notebooks/test_marimo.py` — a small, deterministic,
 self-contained notebook (6 cells: hidden setup defining `_double`, an imports
@@ -134,26 +176,71 @@ cell, a computed-values cell, a dependency cell, a polars table cell, and one
 hidden cell that raises `ValueError("integration_test_error")`). No
 third-party image-processing lib, no numpy/pandas requirements.
 
+## Hermetic widget regressions
+
+`test_ui.py` proves `set_ui_value` against a real kernel, in the same
+`mutation_server` isolation.
+
+The plan originally assumed widget behaviour could only be validated against a
+**browser-instantiated** session — the shared fixture's notebook cells never run,
+because the `/sse` session cannot be instantiated without the skew token (see
+the coverage-gap note above). That assumption is too conservative: a cell
+*created through the MCP write tools* runs fine, so a widget can be
+materialized in-kernel with no browser at all. The test:
+
+1. `create_cell` a cell whose **final expression** is a `mo.ui.slider` (so the
+   control is visible), then `run_cell` it.
+2. `create_cell` + `run_cell` a **dependent** cell reading
+   `int(gate_slider.value) + 100` — a cell cannot read the `.value` of a widget
+   it created, so the read must live downstream. That cell is also the
+   reactivity probe.
+3. Assert the baseline: widget `3`, dependent `103`.
+4. `set_ui_value("gate_slider", 7)` → assert the widget is `7` **and the
+   dependent cell re-ran** to `107`, with both cells `idle`.
+5. A second test asserts missing and non-UI names are refused with clear
+   payloads (`datatype` reported, no traceback dump).
+
+Use a **bare** widget name: marimo treats a leading underscore as
+cell-private, so `_slider` is a poor `set_ui_value` target.
+
+Still browser-dependent (no automated test claims it): whether a widget
+actually *renders* in a frontend, and console-only UI-handler exceptions raised
+in the browser context.
+
 Version contract: the live env couples the **in-process** lint (installed
 marimo) and the **in-kernel** templates (server's marimo) to the same installed
 version — see [marimo-version-support.md](marimo-version-support.md). That doc's
 upgrade procedure (step 3) runs `uv run pytest -m live` before widening the
 `<0.25` bound.
 
-## Current status (verified 2026-09-06)
+## Current status (verified 2026-09-10)
 
 **The live suite is green.** On this tree:
 
 ```text
 uv run pytest tests/marimo_inspect/live/ -m live -q
-=> 19 passed in ~3s
+=> 24 passed in ~19s
 ```
 
-Fast path:
+The two mutation regressions alone (they boot one extra isolated server each):
+
+```text
+uv run pytest tests/marimo_inspect/live/test_mutation.py -m live -v
+=> 2 passed in ~8.7s
+```
+
+The two widget regressions alone:
+
+```text
+uv run pytest tests/marimo_inspect/live/test_ui.py -m live -q
+=> 2 passed in ~7.7s
+```
+
+Fast path (unit tests; live tests collected but deselected):
 
 ```text
 uv run pytest -m "not live" -q
-=> 175 passed (incl. test_lint_source.py and 3 new SSE parser edge-case tests)
+=> 266 passed, 24 deselected in ~2.2s
 ```
 
 What fixed the red suite (see [live-test-redesign-plan.md](live-test-redesign-plan.md) §0 for the verified marimo internals):

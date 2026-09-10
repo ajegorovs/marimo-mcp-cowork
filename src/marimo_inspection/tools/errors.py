@@ -20,8 +20,17 @@ async def get_errors(
 ) -> dict:
     """Get all errors in the notebook session, organized by cell.
 
-    Returns runtime errors grouped by cell, including error types, messages,
-    and tracebacks.
+    Two channels are reported and never conflated:
+
+    - ``structured_errors``: marimo's structured CellError records (kind
+      graph|runtime, msg, exception).
+    - ``console_stderr``: serialized stderr console events (same shape as
+      get_cell_outputs), so UI-handler exception tracebacks are visible even
+      when the structured channel is empty.
+
+    ``has_errors`` / ``total_errors`` / ``total_cells_with_errors`` are the
+    STRUCTURED-only counts (backward-compatible); ``has_console_exception`` /
+    ``total_console_exception_cells`` cover the console channel.
 
     Args:
         session_id: Session ID from list_active_notebooks.
@@ -55,11 +64,17 @@ async def get_errors(
         data = json.loads(stdout_text)
         has_errors = data.get("has_errors", False)
         total_errors = data.get("total_errors", 0)
+        has_console_exception = data.get("has_console_exception", False)
 
         next_steps = []
         if has_errors:
             next_steps.append("Use get_cell_data to inspect impacted cells")
             next_steps.append("Re-run the notebook after addressing errors")
+        elif has_console_exception:
+            next_steps.append(
+                "Console stderr shows an exception traceback "
+                "(UI-handler error); inspect the affected cell"
+            )
         else:
             next_steps.append("No errors detected")
 
@@ -67,7 +82,14 @@ async def get_errors(
             "session_id": session.session_id,
             "has_errors": has_errors,
             "total_errors": total_errors,
+            "total_structured_errors": data.get(
+                "total_structured_errors", total_errors
+            ),
             "total_cells_with_errors": data.get("total_cells_with_errors", 0),
+            "has_console_exception": has_console_exception,
+            "total_console_exception_cells": data.get(
+                "total_console_exception_cells", 0
+            ),
             "cells": data.get("cells", []),
             "next_steps": next_steps,
         }

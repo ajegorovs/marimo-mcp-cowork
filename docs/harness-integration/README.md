@@ -122,7 +122,7 @@ Two pieces of advice from the DSH note that **generalize to any harness config**
 - **Point at the venv binary, not `uv run`.** `uv run marimo-inspect …` can hit a
   read-only uv cache (`ROFS … at ~/.cache/uv`) under a constrained FS and may
   attempt a network sync. `<repo>/.venv/bin/marimo-inspect` runs standalone via
-  its own shebang and exposes the same 13 tools. ✅ This failure was hit again
+  its own shebang and exposes the same 14 tools. ✅ This failure was hit again
   *while writing this draft* — see [Sandbox notes](#sandbox-notes).
 - **Give each install a distinct `serverName`/namespace** so two servers never
   alias the same `mcp__<name>__<tool>` prefix. 📄
@@ -201,17 +201,25 @@ Registry location (from `discovery.py::_get_registry_dir`): ✅
 
 ## What the agent sees
 
-13 tools, namespaced `mcp__<serverName>__<tool>` in most harnesses:
+14 tools, namespaced `mcp__<serverName>__<tool>` in most harnesses:
 
 `list_active_notebooks` · `set_active_session` · `get_cell_map` ·
 `get_cell_data` · `get_cell_outputs` · `get_variables` ·
 `get_dependency_graph` · `get_errors` · `lint_notebook` ·
-`create_cell` · `edit_cell` · `run_cell` · `delete_cell`
+`create_cell` · `edit_cell` · `run_cell` · `delete_cell` ·
+`set_ui_value`
 
 `list_active_notebooks` auto-binds the first discovered session's `session_id`
 and `server_url` together; every other tool takes an optional `session_id` and
-`server_url` and falls back to the bound values. `edit_cell` refuses to
-overwrite a cell the agent has not freshly read (staleness guard). 📄 `AGENTS.md`.
+`server_url` and falls back to the bound values. The binding lives in the
+server process/connection — a harness that respawns the server per call loses
+it. `edit_cell` refuses to overwrite a cell the agent has not freshly read
+(staleness guard: `needs_read` → re-read → retry). `set_ui_value` sets a live
+widget's value by kernel-global name and accepts no source code. Three
+read-only MCP resources (`workflow://marimo-inspect/co-work-loop`,
+`workflow://marimo-inspect/live-safety`,
+`reference://marimo-inspect/fallbacks-and-limits`) ship with the server.
+📄 `AGENTS.md`.
 
 ---
 

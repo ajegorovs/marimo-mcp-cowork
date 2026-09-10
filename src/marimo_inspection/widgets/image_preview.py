@@ -41,9 +41,7 @@ class ImagePreview(anywidget.AnyWidget):
     title = traitlets.Unicode("").tag(sync=True)
     images = traitlets.List().tag(sync=True)  # flat pixel lists (gray or RGB)
     shapes = traitlets.List().tag(sync=True)  # [h, w] per image
-    names = traitlets.List(
-        trait=traitlets.Unicode(), default_value=[]
-    ).tag(sync=True)
+    names = traitlets.List(trait=traitlets.Unicode(), default_value=[]).tag(sync=True)
     _esm = load_esm("image_preview.js")
 
     def update(

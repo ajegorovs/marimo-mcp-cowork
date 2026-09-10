@@ -6,15 +6,24 @@
 
 ### What Works
 
-- **Read-only MCP tools** (8 tools): `get_cell_map`, `get_cell_data`, `get_cell_outputs`,
-  `get_variables`, `get_dependency_graph`, `get_errors`, `lint_notebook`,
-  `list_active_notebooks`
+- **Read/state MCP tools** (9 tools): `list_active_notebooks`,
+  `set_active_session`, `get_cell_map`, `get_cell_data`, `get_cell_outputs`,
+  `get_variables`, `get_dependency_graph`, `get_errors`, `lint_notebook`
+- **Write MCP tools** (4): `create_cell`, `edit_cell`, `run_cell`, `delete_cell`
+  — with the `edit_cell` staleness guard (Phase 3 ✓; freshness repair 2026-09)
+- **Widget interaction** (1): `set_ui_value` — set a live UI element's value by
+  kernel-global name; accepts no source code, JSON value shape preserved
+- **Native MCP resources** (3): `workflow://marimo-inspect/co-work-loop`,
+  `workflow://marimo-inspect/live-safety`,
+  `reference://marimo-inspect/fallbacks-and-limits`
 - **Stateful session binding** — `list_active_notebooks` auto-binds the first
   discovered session; all tools accept optional `session_id` falling back to
   bound state; `set_active_session` for explicit switching. (Phase 1 ✓)
-- **Terminal scripts** for mutation: `discover-servers.sh` + `execute-code.sh` via scratchpad
-  + `cm.get_context()`
-- **147 unit tests** pass, all against real marimo 0.24.0 API
+- **Change detection** — `get_cell_map` reports `changes_since_last`. (Phase 2 ✓)
+- **Terminal scripts are fallback only**: `execute-code.sh` for arbitrary probes
+  and complex multi-op `cm` blocks; `discover-servers.sh` is human/debug only
+- **266 unit tests** pass on this tree (measured 2026-09-10;
+  `uv run pytest -m "not live" -q`)
 
 ### Where Friction Lives
 
@@ -27,7 +36,7 @@ after `list_active_notebooks`. Remaining friction:
 1. list_active_notebooks()  →  discovers + auto-binds session
 2. get_cell_map()           →  finds cell of interest (no session_id needed)
 3. get_cell_data(cell_ids=...)  →  reads cell content
-4. [write via execute-code.sh with session resolution]
+4. [write via create_cell/edit_cell/run_cell/delete_cell]
 5. get_cell_data(cell_ids=...)  →  verify
 6. get_errors()             →  check for problems
 ```
@@ -72,9 +81,14 @@ that returns code + error state + staleness in one call.
 **Problem:** Mutation requires terminal scripts (`execute-code.sh`) with inline Python
 using `cm.get_context()`. Agents must write async context managers in prompts.
 
-**Implemented (2026-08):** Four first-class MCP write tools replacing shell
-injection — `create_cell`, `edit_cell`, `run_cell`, `delete_cell`. Each wraps
-`cm.get_context()` server-side and returns structured JSON.
+**Implemented (2026-08; freshness repair 2026-09):** Four first-class MCP write
+tools — `create_cell`, `edit_cell`, `run_cell`, `delete_cell`. Each wraps
+`cm.get_context()` server-side and returns structured JSON. These are MCP-first
+for the normal loop; `execute-code.sh` remains the intentional fallback for
+arbitrary probes and complex multi-op blocks. The staleness guard's
+read-baseline bug (a re-read that returned source without recording the
+baseline) was fixed in 2026-09, so the documented `conflict` → re-read → retry
+recovery actually clears.
 
 **Design decision — direct calls (not `begin/queue/commit`):** The original plan
 proposed a transactional `begin/queue/commit` worker to preserve cm's
@@ -105,7 +119,12 @@ simpler approach:
 
 ### Phase 4: Session Management Tools
 
-**Problem:** Agents currently discover servers via terminal scripts (`discover-servers.sh`).
+**Status: NOT landed.** No lifecycle tools exist; launching, restarting, or
+stopping the notebook server is still a local/operator action (there is no
+kernel-restart tool either).
+
+**Problem:** Agents discover servers via terminal scripts (`discover-servers.sh`
+— now a human/debug fallback).
 
 **Solution:** Add MCP tools for server lifecycle:
 
@@ -166,7 +185,9 @@ state mechanisms available:
 handle) — not live objects.
 
 **What it doesn't solve:** Cannot store `cm.get_context()` context manager instances.
-The Phase 3 worker architecture is still needed for transactional edits.
+The worker architecture would still be needed only for multi-cell **atomic
+batches** (not landed); single-cell edits are covered by per-call atomicity plus
+the staleness guard.
 
 ## Recommendation
 
@@ -174,12 +195,19 @@ The Phase 3 worker architecture is still needed for transactional edits.
 2. **Phase 2 done ✓** — Change detection in `get_cell_map` (`changes_since_last`);
    composite `include_errors` read remains a small optional win.
 3. **Phase 3 done ✓** — Unified write surface (`create_cell`/`edit_cell`/
-   `run_cell`/`delete_cell`) with an `edit_cell` staleness guard.
-4. **Keep terminal scripts as fallback** — `execute-code.sh` remains available for
-   complex `cm` blocks / multi-cell transformations MCP tools don't cover.
-5. **Next: validate with a fresh agent** — the docs (this roadmap + the demo
-   runbook) should let an agent with no prior context run the full demo end-to-end
-   using only MCP tools.
+   `run_cell`/`delete_cell`) with an `edit_cell` staleness guard, plus
+   `set_ui_value` for live widget interaction and three read-only MCP
+   resources. The guard's read-baseline bug was repaired in 2026-09.
+4. **Phase 4 (session lifecycle) NOT landed** — no `start_notebook`/
+   `stop_notebook`/`switch_notebook` tools; server launch/restart/stop stays
+   local/operator.
+5. **Keep terminal scripts as a bounded fallback** — `execute-code.sh` remains
+   the deliberate escape hatch for arbitrary kernel probes, complex multi-op
+   `cm` blocks, and lifecycle; `discover-servers.sh` is human/debug only. The
+   MCP surface is intentionally narrow (no arbitrary-code tool).
+6. **Next: validate with a fresh agent** — the docs (this roadmap + the demo
+   runbook) should let an agent with no prior context run the full demo
+   end-to-end using only MCP tools.
 
 ## Open Questions
 

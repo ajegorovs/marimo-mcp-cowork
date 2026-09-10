@@ -47,11 +47,15 @@ def build_create_cell_template(
     source: str,
     *,
     name: str | None = None,
-    hide_code: bool = True,
+    hide_code: bool = False,
     after: str | None = None,
     before: str | None = None,
 ) -> str:
-    """Build a scratchpad snippet that creates a new cell."""
+    """Build a scratchpad snippet that creates a new cell.
+
+    ``hide_code`` defaults to False: created cells are visible in the UI
+    unless explicitly hidden (e.g. setup/implementation cells).
+    """
     return (
         _PREAMBLE
         + "\nasync def _run():\n"
@@ -75,7 +79,12 @@ def build_edit_cell_template(
     hide_code: bool | None = None,
     name: str | None = None,
 ) -> str:
-    """Build a scratchpad snippet that edits an existing cell's source."""
+    """Build a scratchpad snippet that edits an existing cell's source.
+
+    The edit is queued inside the context and applied on context exit, so no
+    hash computed here can reflect the edited source. The caller re-reads
+    live hashes AFTER the edit and reports that post-exit hash instead.
+    """
     parts = ["    async with cm.get_context() as ctx:"]
     parts.append(f"        ctx.edit_cell({_json_src(cell_id)}, {_json_src(source)}")
     if hide_code is not None:
@@ -83,16 +92,9 @@ def build_edit_cell_template(
     if name is not None:
         parts.append(f", name={_json_src(name)}")
     parts.append(")")
-    # Then sanity-check the edit landed and return the new hash.
     parts.append(
-        "        new_hash = None\n"
-        "        for c in ctx.cells:\n"
-        f"            if str(c.id) == {_json_src(cell_id)}:\n"
-        "                new_hash = _code_hash(getattr(c, 'code', '') or '')\n"
-        "        from json import dumps as _d\n"
-        '        return _d({"status": "ok", "cell_id": '
-        + _json_src(cell_id)
-        + ', "code_hash": new_hash})'
+        "        return json.dumps("
+        '{"status": "ok", "cell_id": ' + _json_src(cell_id) + "})"
     )
     return (
         _PREAMBLE

@@ -69,6 +69,7 @@ EXPECTED_TOOLS = [
     "edit_cell",
     "run_cell",
     "delete_cell",
+    "set_ui_value",
 ]
 
 
@@ -91,7 +92,7 @@ class TestToolRegistration:
         """Exactly the expected number of tools are registered."""
         async with Client(transport=mcp_server) as client:
             tools = await client.list_tools()
-            assert len(tools) == 13
+            assert len(tools) == 14
 
     async def test_tools_have_descriptions(self, mcp_server):
         """All tools have non-empty descriptions."""
@@ -165,6 +166,18 @@ class TestToolRegistration:
             tools = await client.list_tools()
             sas_tool = next(t for t in tools if t.name == "set_active_session")
             assert sas_tool.name == "set_active_session"
+
+    async def test_set_ui_value_signature(self, mcp_server):
+        """set_ui_value accepts variable_name + value (optional session)."""
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            uv_tool = next(t for t in tools if t.name == "set_ui_value")
+            props = set(uv_tool.input_schema.get("properties", {}))
+            assert uv_tool.name == "set_ui_value"
+            assert "variable_name" in props
+            assert "value" in props
+            assert "session_id" in props
+            assert "server_url" in props
 
 
 # -------------------------------------------------------------------

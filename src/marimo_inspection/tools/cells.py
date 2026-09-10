@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 
@@ -155,21 +156,46 @@ async def get_cell_data(
     stdout_text = "\n".join(result.stdout)
     try:
         data = json.loads(stdout_text)
-        return {
-            "session_id": session.session_id,
-            "data": data.get("data", []),
-            "next_steps": [
-                "Review cell code for implementation details",
-                "Check errors for execution issues",
-                "Examine variables to understand cell state",
-            ],
-        }
     except json.JSONDecodeError:
         return {
             "error": "Failed to parse cell data result",
             "raw_output": stdout_text,
             "stderr": result.stderr,
         }
+
+    # A read IS the freshness event: record the exact returned source hash
+    # and runtime state for each returned cell into the change tracker
+    # (merge-only — never erases fingerprints of unread cells). Skipped on
+    # execution error or JSON parse failure above, so a failed read cannot
+    # corrupt the agent's baseline.
+    from marimo_inspection.tools.change_tracking import (
+        CellFingerprint,
+        get_tracker,
+    )
+
+    rows = data.get("data", [])
+    fingerprints: dict[str, CellFingerprint] = {}
+    for row in rows:
+        cell_id = row.get("cell_id")
+        code = row.get("code") or ""
+        if not cell_id:
+            continue
+        code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
+        fingerprints[cell_id] = CellFingerprint(
+            code_hash=code_hash,
+            state=row.get("runtime_state"),
+        )
+    get_tracker().record_cells(session.session_id, fingerprints)
+
+    return {
+        "session_id": session.session_id,
+        "data": rows,
+        "next_steps": [
+            "Review cell code for implementation details",
+            "Check errors for execution issues",
+            "Examine variables to understand cell state",
+        ],
+    }
 
 
 async def get_cell_outputs(

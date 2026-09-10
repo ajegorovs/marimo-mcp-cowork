@@ -160,7 +160,7 @@ explicit `server_url`, then `get_cell_map`.
 ## Hardening
 
 - **DONE — venv binary over `uv run`.** Applied 2026-09-09; the stale
-  consumer-path entry is gone and the 13 tools register cleanly.
+  consumer-path entry is gone and the 14 tools register cleanly.
 - **DONE — minimal args, no `--reload`.** Applied; keep it that way
   (Finding 2).
 - **DONE — CLI-applied config.** Use `hermes config set`, not a text edit.

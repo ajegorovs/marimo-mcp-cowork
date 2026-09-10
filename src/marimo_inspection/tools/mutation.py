@@ -70,16 +70,28 @@ async def _execute_json(client: MarimoClient, sid: str, code: str) -> dict:
 
 async def _refresh_snapshot(
     client: MarimoClient, sid: str
-) -> dict[str, CellFingerprint]:
+) -> dict[str, CellFingerprint] | None:
     """Re-read live hashes and commit them to the change tracker.
 
     After a successful mutation the agent's snapshot is stale; refreshing it
     (an implicit read, like Hermes' `note_write`) keeps change-detection
     coherent so our own writes don't reappear as external changes.
+
+    Returns the fresh fingerprint map, or ``None`` if the hashes payload was
+    an error — in which case the tracker is left UNTOUCHED (the old behavior
+    of committing ``{}`` on error silently wiped the session baseline).
+    Callers must surface a warning on ``None`` rather than crashing.
     """
     from marimo_inspection.templates.mutation import build_cell_hashes_template
 
     data = await _execute_json(client, sid, build_cell_hashes_template())
+    if "error" in data:
+        logger.warning(
+            "Snapshot refresh failed for session %s: %s",
+            sid,
+            data.get("error"),
+        )
+        return None
     hashes = {k: v for k, v in data.items() if isinstance(v, str)}
     fps = {cid: CellFingerprint(code_hash=h) for cid, h in hashes.items()}
     get_tracker().commit(sid, fps)
@@ -90,7 +102,7 @@ async def create_cell(
     source: str,
     *,
     name: str | None = None,
-    hide_code: bool = True,
+    hide_code: bool = False,
     after: str | None = None,
     before: str | None = None,
     session_id: str = "",
@@ -99,10 +111,13 @@ async def create_cell(
 ) -> dict:
     """Create a new cell in the notebook.
 
+    Created cells are visible in the UI by default (hide_code=False); pass
+    hide_code=True explicitly for setup/implementation cells you want hidden.
+
     Args:
         source: Source code for the new cell.
         name: Optional cell name.
-        hide_code: Whether the code is hidden in the UI (default True).
+        hide_code: Whether the code is hidden in the UI (default False).
         after: Optional cell_id to place this cell after.
         before: Optional cell_id to place this cell before.
         session_id: Optional session id (auto-bound if omitted).
@@ -130,13 +145,20 @@ async def create_cell(
     if "error" in data:
         return data
 
-    await _refresh_snapshot(client, sid)
-    return {
+    fps = await _refresh_snapshot(client, sid)
+    response = {
         "status": "ok",
         "cell_id": data.get("cell_id"),
         "session_id": sid,
         "next_steps": ["Use run_cell to execute it, or get_cell_map to see it."],
     }
+    if fps is None:
+        response["warning"] = (
+            "Cell created, but the change-tracking snapshot could not be "
+            "refreshed (hash read failed). Run get_cell_data to re-establish "
+            "the baseline."
+        )
+    return response
 
 
 async def edit_cell(
@@ -185,6 +207,18 @@ async def edit_cell(
     live = await _execute_json(client, sid, build_cell_hashes_template())
     if "error" in live:
         return live
+    if cell_id not in live:
+        # Genuinely absent from the session (not just a None hash): the
+        # staleness guard is meaningless for a nonexistent cell. Refuse
+        # BEFORE mutating.
+        return {
+            "status": "error",
+            "cell_id": cell_id,
+            "message": (
+                f"Cell {cell_id} not found in session {sid}. "
+                "Use get_cell_map to list the current cell ids, then retry."
+            ),
+        }
     live_hash = live.get(cell_id)
 
     tracker = get_tracker()
@@ -192,20 +226,20 @@ async def edit_cell(
 
     if check_fresh:
         if prev is None:
-            # No baseline for this cell — but if the session has been read at
-            # all, this cell was never among the reads, so we cannot prove
-            # freshness. Refuse; the agent must read first.
-            if tracker.has_snapshot(sid):
-                return {
-                    "status": "needs_read",
-                    "cell_id": cell_id,
-                    "message": (
-                        f"Cell {cell_id} was never read by this agent. "
-                        "get_cell_map/get_cell_data first so you edit against "
-                        "a known baseline, then retry edit_cell."
-                    ),
-                }
-        elif live_hash is not None and live_hash != prev.code_hash:
+            # No baseline for this cell — the agent has never read it, so
+            # freshness cannot be proven. This holds even when the session
+            # has no snapshot at all: a first edit of a never-read cell must
+            # never silently bypass the guard.
+            return {
+                "status": "needs_read",
+                "cell_id": cell_id,
+                "message": (
+                    f"Cell {cell_id} was never read by this agent. "
+                    "get_cell_map/get_cell_data first so you edit against "
+                    "a known baseline, then retry edit_cell."
+                ),
+            }
+        if live_hash is not None and live_hash != prev.code_hash:
             return {
                 "status": "conflict",
                 "cell_id": cell_id,
@@ -227,14 +261,33 @@ async def edit_cell(
     if "error" in data:
         return data
 
-    await _refresh_snapshot(client, sid)
-    return {
+    # The template's own hash (if any) is computed inside the edit context,
+    # BEFORE the context-exit applies the queued edit — i.e. stale. Always
+    # report the POST-context-exit hash from the fresh snapshot instead.
+    fps = await _refresh_snapshot(client, sid)
+    response = {
         "status": "ok",
         "cell_id": cell_id,
-        "code_hash": data.get("code_hash"),
         "session_id": sid,
         "next_steps": ["Use run_cell to execute the edited cell."],
     }
+    if fps is None:
+        response["warning"] = (
+            "Edit applied, but the change-tracking snapshot could not be "
+            "refreshed (hash read failed). Run get_cell_data to re-establish "
+            "the baseline."
+        )
+    else:
+        fp = fps.get(cell_id)
+        if fp is not None:
+            response["code_hash"] = fp.code_hash
+        elif fps:
+            response["warning"] = (
+                "Edit applied, but the refreshed snapshot does not contain "
+                f"cell {cell_id}. Run get_cell_data to re-establish the baseline."
+            )
+        # fps == {} (a genuinely cell-free session) — leave the hash out.
+    return response
 
 
 async def run_cell(
@@ -311,9 +364,16 @@ async def delete_cell(
     if "error" in data:
         return data
 
-    await _refresh_snapshot(client, sid)
-    return {
+    fps = await _refresh_snapshot(client, sid)
+    response = {
         "status": "ok",
         "cell_id": cell_id,
         "session_id": sid,
     }
+    if fps is None:
+        response["warning"] = (
+            "Cell deleted, but the change-tracking snapshot could not be "
+            "refreshed (hash read failed). Run get_cell_data to re-establish "
+            "the baseline."
+        )
+    return response

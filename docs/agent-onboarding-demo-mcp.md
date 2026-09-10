@@ -1,8 +1,9 @@
 # Agent Onboarding Demo — MCP Tools Edition
 
 > Redesigned demo that uses the unified MCP tools for discovery, verification,
-> state-reading, **and mutation** (create/edit/run/delete cells). No more
-> `execute-code.sh` shell injection — writes go through first-class MCP tools.
+> state-reading, **and mutation** (create/edit/run/delete cells). MCP-first
+> writes go through first-class MCP tools; `execute-code.sh` is only a bounded
+> fallback for arbitrary probes / multi-op `cm` blocks.
 
 ## Purpose
 
@@ -19,8 +20,11 @@ Showcase two things at once:
 Since the stateful upgrade, `session_id` is **optional** on every read tool:
 after `list_active_notebooks()` discovers and auto-binds a session, subsequent
 calls (e.g. `get_cell_map`, `get_variables`, `get_errors`) work with
-`session_id` omitted. `server_url` is still **required** on every call — pass
-the discovered server URL explicitly. On this Linux machine, the discovery
+`session_id` **and** `server_url` omitted — `list_active_notebooks` binds both,
+and every other tool falls back to that binding. (The binding lives in the MCP
+server process/connection: a harness that spawns or reconnects the server per
+call/turn wipes it, so pass `server_url`/`session_id` explicitly in that case.)
+On this Linux machine, the discovery
 registry lives at `~/.local/state/marimo/servers/` (Windows used
 `~/.marimo/servers`); `list_active_notebooks()` with no args finds servers
 there automatically. `set_active_session(session_id)` rebinds explicitly if
@@ -38,18 +42,31 @@ first.
 
 ## Write surface (Phase 3)
 
-Mutation is now first-class MCP: `create_cell`, `edit_cell`, `run_cell`,
-`delete_cell`. They replace `execute-code.sh` shell injection entirely. Key
-points:
+Mutation is first-class MCP: `create_cell`, `edit_cell`, `run_cell`,
+`delete_cell`. MCP is the normal co-work loop; `execute-code.sh` remains the
+intentional fallback for arbitrary probes and complex multi-op `cm` blocks.
+Key points:
 
-- All four accept the same optional `session_id` / required `server_url` as the
+- All four accept the same optional `session_id` / `server_url` as the
   read tools, and return structured JSON (`status`, `cell_id`, `code_hash`).
-- **`edit_cell` has a staleness guard** (mirrors Hermes' file-edit guard). It
-  compares the cell's live source hash against the change tracker's snapshot
-  from the agent's last read (via `get_cell_map`/`get_cell_data`). If the cell
-  changed since that read, the edit is **refused** (`status: "conflict"` or
-  `"needs_read"`) so the agent re-reads before overwriting a concurrent edit.
-  Pass `check_fresh=False` to force.
+  Both are optional once a session is bound: `list_active_notebooks` binds
+  `session_id` **and** `server_url`, and every other tool falls back to that
+  binding. Pass them explicitly (or call `set_active_session`) when the harness
+  spawns or reconnects the MCP server per call, since that wipes the in-process
+  binding.
+- **`edit_cell` has a staleness guard** (`check_fresh=True` by default; mirrors
+  Hermes' file-edit guard). It compares the cell's live source hash against the
+  change tracker's snapshot from the agent's last read (via
+  `get_cell_map`/`get_cell_data`). A cell this agent has never read returns
+  `status: "needs_read"` unconditionally; a cell whose source changed since the
+  last read returns `status: "conflict"`. Recover by re-reading with
+  `get_cell_data` (which records the read baseline) or `get_cell_map`, then
+  retrying. `check_fresh=False` is an explicit force escape hatch, **not** the
+  recovery path; a missing cell id errors before anything is mutated. A
+  successful edit returns the post-edit `code_hash`.
+- **New cells are visible by default** — `create_cell` defaults to
+  `hide_code=False`, so the code shows in the UI. Pass `hide_code=True`
+  explicitly for a setup/implementation cell you want hidden.
 - The agent's own writes refresh the change-tracker snapshot, so they don't
   reappear as external `changes_since_last` events.
 - `execute-code.sh` remains available as a fallback for complex `cm` blocks, but
@@ -80,13 +97,12 @@ points:
     import asyncio, uuid
     import httpx2 as httpx
 
+
     async def handshake(server_url: str, notebook_path: str) -> str:
         session_id = str(uuid.uuid4())
         params = {"session_id": session_id, "file": notebook_path}
         async with httpx.AsyncClient(timeout=15) as client:
-            async with client.stream(
-                "GET", f"{server_url}/sse", params=params
-            ) as response:
+            async with client.stream("GET", f"{server_url}/sse", params=params) as response:
                 assert response.status_code == 200, await response.aread()
                 async for line in response.aiter_lines():
                     if "kernel-ready" in line:
@@ -94,7 +110,9 @@ points:
         return session_id
     ```
     Then pass the returned `session_id` to `list_active_notebooks(server_url=...)`
-    (or straight to the read tools).
+    (or straight to the read tools). `list_active_notebooks` takes only
+    `server_url` — pass the handshake `session_id` to the read/write tools, or
+    call `set_active_session(session_id)` to rebind explicitly.
 
 ## How an agent loads and runs this
 
@@ -111,6 +129,7 @@ points:
    @app.cell
    def _():
        import marimo as mo
+
        mo.md("# Function Plotting Showcase")
        return (mo,)
 
@@ -126,11 +145,18 @@ points:
        app.run()
    ```
 
-2. **Launch without `--headless`** so the marimo page opens automatically.
-   Use the documented detached launch pattern (see AGENTS.md).
+2. **Launch without `--headless`** so the marimo page opens automatically:
+   ```bash
+   uv run marimo edit notebooks/function_plotting_demo.py --no-token
+   ```
+   Use a detached/session-surviving launch (an `setsid`/`nohup` wrapper) if the
+   agent's shell would otherwise kill the server on exit; see AGENTS.md for the
+   launch pattern. A bare `--headless` launch with no browser creates no
+   session, so nothing is discoverable — if you must stay headless, create the
+   session with the `/sse` handshake below.
 
-3. **Discover via MCP** — use `list_active_notebooks()` instead of
-   `discover-servers.sh`:
+3. **Discover via MCP** — use `list_active_notebooks()`; `discover-servers.sh`
+   is a human/debug fallback only, not part of the agent flow:
    ```python
    from marimo_inspection.tools.notebooks import list_active_notebooks
 
@@ -264,8 +290,10 @@ The user adds a new cell to the notebook (e.g., `arr = np.array([3,4,5])`).
 ```
 
 ### Step 10 — Add controls via MCP
-**Mutate:** call `create_cell(source, hide_code=True, server_url)` for each
-control cell, THEN `run_cell` each one. `create_cell` does **not** auto-run a
+**Mutate:** call `create_cell(source, server_url)` for each
+control cell, THEN `run_cell` each one. (`create_cell` defaults to
+`hide_code=False` — visible — which is what a control cell wants.)
+`create_cell` does **not** auto-run a
 cell — a cell's variables only exist in the kernel once it runs. So run every
 created cell before you depend on its names anywhere else.
 
@@ -333,7 +361,7 @@ each variable carries `{value: {value, datatype}, datatype}`, and scalar
 `int(variables["start_s"]["value"]["value"])`.
 
 ### Step 14 — Create + run plot cell via MCP
-**Mutate:** call `create_cell(source, hide_code=True, server_url)` with the
+**Mutate:** call `create_cell(source, server_url)` (visible by default) with the
 materialized function from the user's choice. Then `run_cell` it.
 
 **Cell — plot (use matplotlib, marimo renders it):**
@@ -371,7 +399,9 @@ selections on the frontend, use `mo.ui.matplotlib(ax)`.
 ### Step 15 — Verify no errors via MCP
 **Call:** `get_errors(session_id, server_url)`
 
-**Verify:** `has_errors=False`, `total_errors=0`.
+**Verify:** `has_errors=False`, `total_errors=0`, and
+`has_console_exception=False` (the console channel is reported separately —
+`structured_errors` vs `console_stderr`).
 
 ### Step 16 — Confirm chart rendered via MCP
 **Call:** `get_cell_outputs(session_id, [plot_cell_id], server_url)`
@@ -405,7 +435,7 @@ Both reads and writes go through MCP tools — no inline Python needed.
 
 | Tool | Purpose | Replaces |
 |------|---------|----------|
-| `list_active_notebooks(server_url)` | Discover sessions | `discover-servers.sh` |
+| `list_active_notebooks(server_url)` | Discover sessions | `discover-servers.sh` (human/debug fallback) |
 | `get_cell_map(session_id, server_url)` | Cell structure + previews + changes | Inline scratchpad |
 | `get_cell_data(session_id, cell_ids, server_url)` | Full cell content | Inline scratchpad |
 | `get_cell_outputs(session_id, cell_ids, server_url)` | Execution outputs | Inline checking |
@@ -413,10 +443,12 @@ Both reads and writes go through MCP tools — no inline Python needed.
 | `get_dependency_graph(session_id, server_url)` | Dataflow relationships | Manual traversal |
 | `get_errors(session_id, server_url)` | Error aggregation | Manual aggregation |
 | `lint_notebook(session_id, server_url)` | Lint diagnostics | `uv run marimo check` |
-| `create_cell(source, ...)` | Write a new cell | `execute-code.sh` |
-| `edit_cell(cell_id, source, ...)` | Update a cell (staleness guard) | `execute-code.sh` |
-| `run_cell(cell_id)` | Execute a cell | `execute-code.sh` |
-| `delete_cell(cell_id)` | Remove a cell | `execute-code.sh` |
+| `create_cell(source, ...)` | Write a new cell | `execute-code.sh` (fallback only) |
+| `edit_cell(cell_id, source, ...)` | Update a cell (staleness guard) | `execute-code.sh` (fallback only) |
+| `run_cell(cell_id)` | Execute a cell | `execute-code.sh` (fallback only) |
+| `delete_cell(cell_id)` | Remove a cell | `execute-code.sh` (fallback only) |
+| `set_active_session(session_id)` | Rebind the active session explicitly | passing `session_id` on every call |
+| `set_ui_value(variable_name, value)` | Set a live widget value (accepts no source code) | manual UI interaction |
 
 ## Key Improvements
 
@@ -433,12 +465,17 @@ Both reads and writes go through MCP tools — no inline Python needed.
 7. **Unified write surface** — `create_cell`/`edit_cell`/`run_cell`/`delete_cell`
    replace shell injection; `edit_cell` guards against clobbering concurrent edits.
 8. **Composability** — all tools return JSON with `next_steps` guidance.
+9. **Widget interaction** — `set_ui_value` sets a live widget's value by its
+   kernel-global name (no source code), preserving the JSON value shape; the
+   reactive re-run is verified, not awaited.
 
 ## Operative rules
 
 - **Reads AND writes via MCP.** Read with `get_cell_map`/`get_cell_data`/
   `get_variables`/`get_errors`/`get_cell_outputs`; mutate with
-  `create_cell`/`edit_cell`/`run_cell`/`delete_cell`. No `execute-code.sh`.
+  `create_cell`/`edit_cell`/`run_cell`/`delete_cell`; set a live widget value
+  with `set_ui_value`. `execute-code.sh` is the bounded fallback for arbitrary
+  probes / multi-op `cm` blocks — not the normal loop.
 - **Respect the edit guard.** Before `edit_cell`, ensure you recently read the
   cell. If it returns `status: "conflict"`/`"needs_read"`, re-read via
   `get_cell_data`/`get_cell_map`, then retry.
@@ -478,8 +515,31 @@ for cell in cells["cells"]:
 vars = await get_variables(
     session_id, variable_names=["widget_name"], server_url=server_url
 )
-widget_value = vars["variables"]["widget_name"]["value"]
+# A UI element's value is NESTED: the outer "value" holds the serialized
+# element, the inner "value" is the actual selection (see Step 13).
+widget_value = vars["variables"]["widget_name"]["value"]["value"]
 ```
+
+### Widget Interaction Pattern
+```python
+# Set a live widget's value by its kernel-global name (accepts NO source code;
+# JSON value shape is preserved — scalar stays scalar, list stays list).
+r = await set_ui_value("start_s", 10, server_url=server_url)
+
+# The call does not await downstream re-runs — verify the effect:
+vars = await get_variables(
+    session_id, variable_names=["start_s"], server_url=server_url
+)
+```
+
+**Naming a widget target.** `variable_name` must be a *kernel global*: the
+widget has to be assigned at cell top level and its cell must have run, so the
+name exists in `ctx.globals`. Use a plain name (`start_s`, `f_pick`) — marimo
+treats a leading-underscore name as cell-private, so `_slider` is a poor
+target. A widget whose cell has never run is not addressable yet.
+`set_ui_value` reads the value back only through `get_variables`/
+`get_cell_outputs`; nothing echoes `hide_code`, so a cell's UI visibility
+cannot be confirmed through the MCP read surface (it is set at creation time).
 
 ### Error Checking Pattern
 ```python
@@ -492,7 +552,9 @@ if errors["has_errors"]:
 ### Write Pattern
 ```python
 # Create a cell
-r = await create_cell(source="x = 42", hide_code=True, server_url=server_url)
+r = await create_cell(
+    source="x = 42", server_url=server_url
+)  # visible (hide_code=False by default)
 cell_id = r["cell_id"]
 
 # Run it
@@ -510,7 +572,9 @@ await delete_cell(cell_id, server_url=server_url)
 
 ### Key Points
 - **Reads AND writes go through MCP tools.** Mutate with
-  `create_cell`/`edit_cell`/`run_cell`/`delete_cell` — no `execute-code.sh`.
+  `create_cell`/`edit_cell`/`run_cell`/`delete_cell`; set live widget values
+  with `set_ui_value`. `execute-code.sh` stays as the bounded fallback for
+  arbitrary probes / multi-op `cm` blocks.
 - **Pass `server_url` explicitly.** Tools accept `server_url` as a parameter;
   do not rely on discovery for every call.
 - **Check `next_steps` field.** Every tool response includes `next_steps` with

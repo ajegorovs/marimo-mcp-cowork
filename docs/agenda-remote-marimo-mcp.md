@@ -183,7 +183,7 @@ but the *auth* question in item 2 remains the actual blocker, not Python version
 2. **Prototype the smallest thing:** `marimo-inspect --transport
    streamable-http --host <tailnet-ip> --port 8090` on one machine, one harness
    `insert:` entry with `transport: streamable-http` + `url` on another. Verify
-   the 13 tools surface. No code change, no new discovery. This is a
+   the 14 tools surface. No code change, no new discovery. This is a
    half-afternoon and it converts most ❓ items above into facts.
 3. **Verify the composed URL shape** (integration draft gap #4) on the way — the
    FastMCP defaults are `/mcp` and `/sse`, but nothing has exercised them

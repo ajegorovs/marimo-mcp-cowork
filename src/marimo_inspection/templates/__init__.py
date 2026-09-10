@@ -23,6 +23,7 @@ from marimo_inspection.templates.errors import (
 from marimo_inspection.templates.lint import (
     TEMPLATE_LINT,
 )
+from marimo_inspection.templates.ui import build_set_ui_value_template
 from marimo_inspection.templates.variables import (
     TEMPLATE_VARIABLES,
 )
@@ -35,4 +36,5 @@ __all__ = [
     "TEMPLATE_ERRORS",
     "TEMPLATE_LINT",
     "TEMPLATE_VARIABLES",
+    "build_set_ui_value_template",
 ]

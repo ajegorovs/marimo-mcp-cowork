@@ -20,6 +20,15 @@ import marimo._code_mode as cm
 def _code_hash(code):
     return hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
 
+def _flag(reader):
+    # bool(reader()) for each truthfulness flag; None when the private
+    # CodeMode field is unreadable (marimo API drift) — NEVER a false
+    # assertion about output/console/error presence.
+    try:
+        return bool(reader())
+    except Exception:
+        return None
+
 async def get_cell_map():
     async with cm.get_context() as ctx:
         cells = []
@@ -41,9 +50,9 @@ async def get_cell_map():
                 "line_count": line_count,
                 "runtime_state": status,
                 "code_hash": _code_hash(code),
-                "has_output": False,
-                "has_console_output": False,
-                "has_errors": False,
+                "has_output": _flag(lambda: c.output is not None),
+                "has_console_output": _flag(lambda: bool(c.console_outputs)),
+                "has_errors": _flag(lambda: bool(c.errors)),
             }})
 
         return json.dumps({{

@@ -14,7 +14,7 @@ Add one entry to the harness profile's **patch layer**
 (`~/.dsh/profiles/web/cordis.patch.yml`) — **not** the composed `cordis.yml`
 (that file is generated). The entry must use the `- insert:` block form; a bare
 `- id:` entry parses fine but is **silently composed away** to an empty list, so
-nothing loads. A working start shows the FastMCP logo; the 13 marimo tools then
+nothing loads. A working start shows the FastMCP logo; the 14 marimo tools then
 surface as `mcp__marimo__<tool>`.
 
 ## Harness background
@@ -104,7 +104,7 @@ file; verify the entry with the loader's own compile step.
 `uv run marimo-inspect …` can hit a read-only uv cache under a constrained FS
 (`ROFS … at ~/.cache/uv`) and may attempt a network sync. The repo's own
 `.venv/bin/marimo-inspect` runs standalone (shebang `.venv/bin/python3`) and
-exposes the same 13 tools. Use:
+exposes the same 14 tools. Use:
 
 ```yaml
 command: ~/Repos/marimo-inspect/.venv/bin/marimo-inspect
@@ -126,7 +126,7 @@ A working server prints the FastMCP logo, then `Starting MCP server
 
 - **DONE — venv binary over `uv run`.** Applied: `command` now points at
   `.venv/bin/marimo-inspect`. Dodges the uv-cache ROFS race / network sync.
-  Same 13-tool surface.
+  Same 14-tool surface.
 - **DONE — `failOnStartupError: true`.** Applied while validating; a bad
   spawn now aborts the harness loudly instead of registering zero tools.
   Tradeoff to revisit after validation: with this on, a *transient* startup

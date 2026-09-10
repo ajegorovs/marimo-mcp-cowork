@@ -57,9 +57,9 @@ class TraceScrubber(anywidget.AnyWidget):
     y_lo = traitlets.Float(0.0).tag(sync=True)
     y_hi = traitlets.Float(1.0).tag(sync=True)
     y_fixed = traitlets.Bool(False).tag(sync=True)
-    pcts = traitlets.List(
-        trait=traitlets.Float(), default_value=[0.01, 0.1]
-    ).tag(sync=True)
+    pcts = traitlets.List(trait=traitlets.Float(), default_value=[0.01, 0.1]).tag(
+        sync=True
+    )
     _esm = load_esm("trace_scrubber.js")
 
     def update(

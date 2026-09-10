@@ -4,9 +4,11 @@ Direct kernel launch with proper session management.
 No manual server start required - tests manage their own kernel lifecycle.
 
 Architecture:
-- MarimoServerManager: Manages marimo server process lifecycle
-- One server + one session per pytest session (marimo edit mode allows a
-  single session per server)
+- MarimoServerManager: Manages marimo server process lifecycle (any notebook
+  path; the shared session uses notebooks/test_marimo.py, the mutation suite
+  boots its own servers on tmp_path copies)
+- One server + one session per pytest session for the shared fixtures; the
+  mutation regressions boot one additional isolated server per test
 - Session created via the `/sse` plain-HTTP handshake (no websocket
   library needed; see docs/live-test-redesign-plan.md)
 - Proper cleanup + log dumping on failure
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -49,6 +52,10 @@ class MarimoServerManager:
         self.process: subprocess.Popen | None = None
         self.server_url: str | None = None
         self.session_id: str | None = None
+        # The notebook path this server was started with; used by the /sse
+        # handshake so a manager can serve ANY notebook, not just the repo
+        # fixture. Set in start(); required by create_session().
+        self.notebook_path: str | None = None
         self._state_dir: Path | None = None
         self._log_lines: deque[str] = deque(maxlen=500)
         self._drain_task: asyncio.Task | None = None
@@ -65,7 +72,13 @@ class MarimoServerManager:
 
     async def start(self, notebook_path: str | None = None) -> str:
         """Start a headless marimo edit server on a free port."""
-        notebook = notebook_path or str(NOTEBOOK_PATH)
+        # Remember which notebook this server owns: create_session() must
+        # hand the SAME file back to the /sse handshake or the kernel opens
+        # the default notebook instead.
+        self.notebook_path = (
+            str(notebook_path) if notebook_path is not None else str(NOTEBOOK_PATH)
+        )
+        notebook = self.notebook_path
         port = self._pick_port()
 
         # Isolate marimo's state (server registry, cli state) in a temp dir so
@@ -168,8 +181,9 @@ class MarimoServerManager:
         guarantees the kernel itself is up before any test runs.
         """
         assert self.server_url is not None, "start() must be called first"
+        assert self.notebook_path is not None, "start() did not set notebook_path"
         session_id = str(uuid.uuid4())
-        params = {"session_id": session_id, "file": str(NOTEBOOK_PATH)}
+        params = {"session_id": session_id, "file": self.notebook_path}
         try:
             async with (
                 httpx.AsyncClient(timeout=HANDLE_TIMEOUT_S) as client,
@@ -212,6 +226,11 @@ class MarimoServerManager:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 - teardown best-effort
                 self._log_lines.append("[stop] drain task cancelled")
             self._drain_task = None
+        # Reap the isolated XDG_STATE_HOME so a long pytest session (or CI)
+        # does not accumulate one temp state dir per booted server.
+        if self._state_dir is not None:
+            shutil.rmtree(self._state_dir, ignore_errors=True)
+            self._state_dir = None
 
 
 # ─── Session-Scoped Fixtures ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -284,6 +303,43 @@ async def live_session(live_client, live_session_id):
     """
     session = await live_client.resolve_session(session_id=live_session_id)
     yield session
+
+
+@pytest.fixture(scope="function")
+async def mutation_server(tmp_path):
+    """Start an ISOLATED marimo server on a tmp_path copy of the fixture notebook.
+
+    The mutation regressions create/edit/run/delete cells, which changes
+    kernel state that must never leak into the shared session — so each test
+    gets its own server + session on a COPY of notebooks/test_marimo.py (a
+    fresh uuid session id also keeps the process-wide change tracker's keys
+    separate from the shared session's). marimo may re-serialize the notebook
+    file, so only a disposable copy is ever mounted.
+
+    Yields (manager, server_url, session_id, notebook_copy). After a PASSING
+    test, teardown re-checks that the repo fixture notebook is byte-identical
+    to what it was at boot (the hermetic binding); a failed body already
+    raised out through the fixture, so that check can never mask a real error.
+    """
+    notebook_copy = tmp_path / "test_marimo.py"
+    original_bytes = NOTEBOOK_PATH.read_bytes()
+    shutil.copyfile(NOTEBOOK_PATH, notebook_copy)
+    manager = MarimoServerManager()
+    try:
+        await manager.start(str(notebook_copy))
+        await manager.create_session()
+        yield manager, manager.server_url, manager.session_id, notebook_copy
+    except Exception:
+        manager.dump_logs()
+        raise
+    finally:
+        await manager.stop()
+
+    # Only reached when setup + the test body succeeded (see docstring).
+    assert NOTEBOOK_PATH.read_bytes() == original_bytes, (
+        "Hermeticity violation: notebooks/test_marimo.py changed under the "
+        "mutation suite. Run `git status` and restore it."
+    )
 
 
 # ─── Failure diagnostics ──────────────────────────────────────────────────────────────────────────

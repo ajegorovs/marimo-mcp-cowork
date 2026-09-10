@@ -108,6 +108,27 @@ class ChangeTracker:
         with self._lock:
             self._snapshots[session_id] = dict(current)
 
+    def record_cells(
+        self,
+        session_id: str,
+        fingerprints: dict[str, CellFingerprint],
+    ) -> None:
+        """Merge ``fingerprints`` into the stored snapshot (upsert).
+
+        Unlike :meth:`commit` — which replaces the whole snapshot — this
+        updates only the fingerprints for exactly the supplied cell_ids and
+        never erases fingerprints for cells not supplied. It creates the
+        session snapshot if none exists yet. This is the write path for
+        selective reads (``get_cell_data``): re-reading one cell refreshes
+        its baseline without dropping the agent's other baselines.
+        """
+        with self._lock:
+            snap = self._snapshots.get(session_id)
+            if snap is None:
+                self._snapshots[session_id] = dict(fingerprints)
+            else:
+                snap.update(fingerprints)
+
     def clear_session(self, session_id: str) -> None:
         with self._lock:
             self._snapshots.pop(session_id, None)

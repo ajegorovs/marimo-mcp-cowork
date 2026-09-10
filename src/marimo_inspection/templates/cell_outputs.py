@@ -19,13 +19,11 @@ def build_cell_outputs_template(cell_ids: list[str]) -> str:
     return _TEMPLATE.replace("__CELL_IDS_JSON__", cell_ids_json)
 
 
-_TEMPLATE = """
-import json
-import marimo._code_mode as cm
-
-
-def _cell_output_to_dict(out):
-    '''Convert a marimo CellOutput into a serializable summary dict.'''
+# Shared CellOutput serializer. Kept as a Python-level source string so that
+# templates/errors.py embeds the SAME console serialization shape (single
+# source of truth for console event serialization across both templates).
+_CELL_OUTPUT_TO_DICT_SRC = """def _cell_output_to_dict(out):
+    # Convert a marimo CellOutput into a serializable summary dict.
     if out is None:
         return None
 
@@ -67,7 +65,14 @@ def _cell_output_to_dict(out):
         "data": str(data)[:5000],
         "mime_subtypes": None,
     }
+"""
 
+
+_TEMPLATE = """
+import json
+import marimo._code_mode as cm
+
+__CELL_OUTPUT_TO_DICT__
 
 async def get_cell_outputs():
     async with cm.get_context() as ctx:
@@ -104,7 +109,8 @@ async def get_cell_outputs():
 
 
 print(await get_cell_outputs())
-"""
+""".replace("__CELL_OUTPUT_TO_DICT__", _CELL_OUTPUT_TO_DICT_SRC)
+
 
 # Pre-built default template
 TEMPLATE_CELL_OUTPUTS = build_cell_outputs_template([])

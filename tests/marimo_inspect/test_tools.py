@@ -276,6 +276,186 @@ class TestGetCellData:
             assert "data" in result
 
 
+class TestGetCellDataChangeTracking:
+    """get_cell_data records selective reads into the change tracker.
+
+    The read must refresh the agent's baseline for exactly the returned
+    cells (merge-only), and must leave the tracker untouched on any failure.
+    """
+
+    SID = "abc123"
+
+    def _code_hash(self, code: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
+
+    def _patch_client(self, stdout_lines: list[str], status: str = "ok"):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_instance = MagicMock()
+        mock_session = MagicMock(
+            session_id=self.SID, file="/test.py", basename="test.py"
+        )
+        mock_instance.resolve_session = AsyncMock(return_value=mock_session)
+        mock_execute_result = MagicMock()
+        mock_execute_result.status = status
+        mock_execute_result.stdout = stdout_lines
+        mock_execute_result.stderr = ["boom"]
+        mock_instance.execute = AsyncMock(return_value=mock_execute_result)
+        return patch(
+            "marimo_inspection.tools.cells.MarimoClient", return_value=mock_instance
+        )
+
+    async def test_records_hash_of_exact_returned_source_and_state(self):
+        """Fingerprints the exact source string and runtime state returned."""
+        import json
+
+        from marimo_inspection.tools.cells import get_cell_data
+        from marimo_inspection.tools.change_tracking import get_tracker
+
+        code = "import numpy as np\nx = np.arange(5)\n"
+        tracker = get_tracker()
+        tracker.clear_session(self.SID)
+        try:
+            with self._patch_client(
+                [
+                    json.dumps(
+                        {
+                            "data": [
+                                {
+                                    "cell_id": "0",
+                                    "code": code,
+                                    "runtime_state": "idle",
+                                    "variables": None,
+                                }
+                            ]
+                        }
+                    )
+                ]
+            ):
+                result = await get_cell_data(
+                    session_id=self.SID, server_url="http://127.0.0.1:8090"
+                )
+            assert "error" not in result
+            fp = tracker.get_cell_fingerprint(self.SID, "0")
+            assert fp is not None
+            assert fp.code_hash == self._code_hash(code)
+            assert fp.state == "idle"
+        finally:
+            tracker.clear_session(self.SID)
+
+    async def test_selective_read_preserves_other_cell_fingerprint(self):
+        """get_cell_data(cell_ids=[...]) must not erase unread cells."""
+        import json
+
+        from marimo_inspection.tools.cells import get_cell_data
+        from marimo_inspection.tools.change_tracking import (
+            CellFingerprint,
+            get_tracker,
+        )
+
+        code_a = "a = 1"
+        tracker = get_tracker()
+        tracker.clear_session(self.SID)
+        try:
+            tracker.record_cells(
+                self.SID, {"B": CellFingerprint(code_hash="bhash", state="idle")}
+            )
+            with self._patch_client(
+                [
+                    json.dumps(
+                        {
+                            "data": [
+                                {
+                                    "cell_id": "A",
+                                    "code": code_a,
+                                    "runtime_state": "stale",
+                                    "variables": None,
+                                }
+                            ]
+                        }
+                    )
+                ]
+            ):
+                result = await get_cell_data(
+                    session_id=self.SID,
+                    cell_ids=["A"],
+                    server_url="http://127.0.0.1:8090",
+                )
+            assert "error" not in result
+            # Unread B survives the selective read.
+            assert tracker.get_cell_fingerprint(self.SID, "B").code_hash == "bhash"
+            # Read A is recorded with the hash of the exact returned source.
+            fp = tracker.get_cell_fingerprint(self.SID, "A")
+            assert fp is not None
+            assert fp.code_hash == self._code_hash(code_a)
+            assert fp.state == "stale"
+        finally:
+            tracker.clear_session(self.SID)
+
+    async def test_get_cell_data_creates_snapshot_when_none_exists(self):
+        """A first get_cell_data establishes the session baseline."""
+        from marimo_inspection.tools.cells import get_cell_data
+        from marimo_inspection.tools.change_tracking import get_tracker
+
+        tracker = get_tracker()
+        tracker.clear_session(self.SID)
+        try:
+            with self._patch_client(['{"data": [{"cell_id": "0", "code": "x = 1"}]}']):
+                result = await get_cell_data(
+                    session_id=self.SID, server_url="http://127.0.0.1:8090"
+                )
+            assert "error" not in result
+            assert tracker.has_snapshot(self.SID)
+        finally:
+            tracker.clear_session(self.SID)
+
+    async def test_json_parse_failure_leaves_tracker_untouched(self):
+        """A failed JSON parse must not record anything."""
+        from marimo_inspection.tools.cells import get_cell_data
+        from marimo_inspection.tools.change_tracking import (
+            CellFingerprint,
+            get_tracker,
+        )
+
+        tracker = get_tracker()
+        tracker.clear_session(self.SID)
+        try:
+            tracker.record_cells(self.SID, {"B": CellFingerprint(code_hash="bhash")})
+            with self._patch_client(["not valid json"]):
+                result = await get_cell_data(
+                    session_id=self.SID, server_url="http://127.0.0.1:8090"
+                )
+            assert "error" in result
+            assert tracker.get_cell_fingerprint(self.SID, "B").code_hash == "bhash"
+            assert tracker.get_cell_fingerprint(self.SID, "0") is None
+        finally:
+            tracker.clear_session(self.SID)
+
+    async def test_execution_error_leaves_tracker_untouched(self):
+        """An execution failure must not record anything."""
+        from marimo_inspection.tools.cells import get_cell_data
+        from marimo_inspection.tools.change_tracking import (
+            CellFingerprint,
+            get_tracker,
+        )
+
+        tracker = get_tracker()
+        tracker.clear_session(self.SID)
+        try:
+            tracker.record_cells(self.SID, {"B": CellFingerprint(code_hash="bhash")})
+            with self._patch_client([], status="error"):
+                result = await get_cell_data(
+                    session_id=self.SID, server_url="http://127.0.0.1:8090"
+                )
+            assert "error" in result
+            assert tracker.get_cell_fingerprint(self.SID, "B").code_hash == "bhash"
+            assert tracker.get_cell_fingerprint(self.SID, "0") is None
+        finally:
+            tracker.clear_session(self.SID)
+
+
 # -------------------------------------------------------------------
 # get_cell_outputs tool tests
 # -------------------------------------------------------------------
@@ -573,7 +753,7 @@ class TestGetErrors:
             mock_execute_result = MagicMock()
             mock_execute_result.status = "ok"
             mock_execute_result.stdout = [
-                '{"has_errors": false, "total_errors": 0, "total_cells_with_errors": 0, "cells": []}'
+                '{"has_errors": false, "total_errors": 0, "total_structured_errors": 0, "total_cells_with_errors": 0, "has_console_exception": false, "total_console_exception_cells": 0, "cells": []}'
             ]
             mock_instance.execute = AsyncMock(return_value=mock_execute_result)
             mock_client_cls.return_value = mock_instance
@@ -584,6 +764,10 @@ class TestGetErrors:
             )
             assert result["has_errors"] is False
             assert result["total_errors"] == 0
+            assert result["total_structured_errors"] == 0
+            assert result["has_console_exception"] is False
+            assert result["total_console_exception_cells"] == 0
+            assert any(step == "No errors detected" for step in result["next_steps"])
 
     async def test_returns_errors(self):
         """Returns error details when errors exist."""
@@ -601,7 +785,7 @@ class TestGetErrors:
             mock_execute_result = MagicMock()
             mock_execute_result.status = "ok"
             mock_execute_result.stdout = [
-                '{"has_errors": true, "total_errors": 1, "total_cells_with_errors": 1, "cells": [{"cell_id": "5", "errors": [{"type": "NameError", "message": "x"}]}]}'
+                '{"has_errors": true, "total_errors": 1, "total_structured_errors": 1, "total_cells_with_errors": 1, "has_console_exception": false, "total_console_exception_cells": 0, "cells": [{"cell_id": "5", "structured_errors": [{"kind": "runtime", "cell": "5", "msg": "name \'x\' is not defined", "exception": "NameError(\'x\')"}], "console_stderr": [], "has_console_exception": false}]}'
             ]
             mock_instance.execute = AsyncMock(return_value=mock_execute_result)
             mock_client_cls.return_value = mock_instance
@@ -612,7 +796,51 @@ class TestGetErrors:
             )
             assert result["has_errors"] is True
             assert result["total_errors"] == 1
+            assert result["total_structured_errors"] == 1
             assert len(result["cells"]) == 1
+            assert result["cells"][0]["structured_errors"][0]["kind"] == "runtime"
+
+    async def test_console_exception_visible_without_structured(self):
+        """Console-only exception evidence is reported and steered to."""
+        from marimo_inspection.tools.errors import get_errors
+
+        with patch("marimo_inspection.tools.errors.MarimoClient") as mock_client_cls:
+            mock_instance = MagicMock()
+            mock_session = MagicMock(
+                session_id="abc123",
+                file="/test.py",
+                basename="test.py",
+            )
+            mock_instance.resolve_session = AsyncMock(return_value=mock_session)
+
+            mock_execute_result = MagicMock()
+            mock_execute_result.status = "ok"
+            mock_execute_result.stdout = [
+                '{"has_errors": false, "total_errors": 0, "total_structured_errors": 0, "total_cells_with_errors": 0, "has_console_exception": true, "total_console_exception_cells": 1, "cells": [{"cell_id": "9", "structured_errors": [], "console_stderr": [{"channel": "stderr", "data": "Traceback (most recent call last):\\nNameError: boom"}], "has_console_exception": true}]}'
+            ]
+            mock_instance.execute = AsyncMock(return_value=mock_execute_result)
+            mock_client_cls.return_value = mock_instance
+
+            result = await get_errors(
+                session_id="abc123",
+                server_url="http://127.0.0.1:8090",
+            )
+            assert result["has_errors"] is False
+            assert result["total_errors"] == 0
+            assert result["total_structured_errors"] == 0
+            assert result["has_console_exception"] is True
+            assert result["total_console_exception_cells"] == 1
+            assert len(result["cells"]) == 1
+            assert result["cells"][0]["structured_errors"] == []
+            assert result["cells"][0]["has_console_exception"] is True
+            # next_steps must not claim a clean session.
+            assert not any(
+                step == "No errors detected" for step in result["next_steps"]
+            )
+            assert any(
+                "exception" in step.lower() or "console" in step.lower()
+                for step in result["next_steps"]
+            )
 
 
 # -------------------------------------------------------------------

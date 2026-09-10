@@ -71,7 +71,7 @@ via `__getattr__` so the base package stays dependency-light:
 
 ```python
 preview = ImagePreview().update(images, names)
-get_i, set_i = mo.state(preview.index)          # init from CURRENT trait
+get_i, set_i = mo.state(preview.index)  # init from CURRENT trait
 preview.observe(lambda _: set_i(preview.index), names=["index"])
 preview
 ```

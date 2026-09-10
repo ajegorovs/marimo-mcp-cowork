@@ -44,11 +44,18 @@ def create_server(
 
         Writes: use `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
         `edit_cell` refuses to overwrite a cell whose source changed since the
-        agent last read it (read with `get_cell_map`/`get_cell_data` first).""",
+        agent last read it (read with `get_cell_map`/`get_cell_data` first).
+
+        Widget interaction: `set_ui_value` sets a live UI element's value by
+        its variable name (scalar or list — exact JSON shape preserved). It is
+        a narrow widget tool and accepts NO source code.""",
     )
 
     # Register tools
     _register_tools(mcp)
+
+    # Register static read-only documentation resources
+    _register_resources(mcp)
 
     return mcp
 
@@ -68,6 +75,7 @@ def _register_tools(mcp: FastMCP) -> None:
         lint_notebook,
         list_active_notebooks,
         run_cell,
+        set_ui_value,
     )
     from marimo_inspection.tools.session import set_active_session
 
@@ -85,6 +93,88 @@ def _register_tools(mcp: FastMCP) -> None:
     mcp.tool()(edit_cell)
     mcp.tool()(run_cell)
     mcp.tool()(delete_cell)
+    # set_ui_value is a write tool that mutates live widget state and is not
+    # idempotent in the reactive sense (each call re-triggers dependent
+    # re-runs), so it is annotated non-read-only, destructive, non-idempotent,
+    # and not open-world (it mutates shared kernel state).
+    mcp.tool(
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )(set_ui_value)
+
+
+def _register_resources(mcp: FastMCP) -> None:
+    """Register the static read-only documentation resources.
+
+    Three fixed URIs serve packaged Markdown verbatim. They are native MCP
+    resources (not tools, not templates, not ResourcesAsTools): immutable
+    operational guides an agent can read on demand.
+
+    Annotation note (FastMCP 4.0.3): resource ``annotations`` is
+    ``mcp.types.Annotations`` (``audience``/``priority``/``lastModified``
+    only). The tool-only ``readOnlyHint``/``idempotentHint`` fields are not
+    accepted here, so read-only-ness is signalled through the
+    ``read-only``/``static`` tags and the descriptions.
+
+    The Markdown is loaded lazily via ``importlib.resources`` (never a CWD
+    relative path), so it resolves from the installed package.
+    """
+    from marimo_inspection.resources import load_resource_text
+
+    @mcp.resource(
+        "workflow://marimo-inspect/co-work-loop",
+        name="Co-work loop",
+        description=(
+            "The MCP-first co-work loop on a live notebook: discover/bind, "
+            "orient, read, write/run, interact, verify, lint — with exact "
+            "tool names and the read-before-edit rule."
+        ),
+        mime_type="text/markdown",
+        tags={"read-only", "static", "workflow"},
+        version="1.0",
+        annotations={"audience": ["assistant"]},
+    )
+    def co_work_loop() -> str:
+        """Return the co-work loop workflow guide (Markdown)."""
+        return load_resource_text("co-work-loop.md")
+
+    @mcp.resource(
+        "workflow://marimo-inspect/live-safety",
+        name="Live-safety rules",
+        description=(
+            "Safety rules for editing a live kernel: read-before-edit, the "
+            "needs_read/conflict recovery protocol, dependency checks before "
+            "delete/merge, post-write verification, and widget visibility."
+        ),
+        mime_type="text/markdown",
+        tags={"read-only", "static", "workflow"},
+        version="1.0",
+        annotations={"audience": ["assistant"]},
+    )
+    def live_safety() -> str:
+        """Return the live-safety rules guide (Markdown)."""
+        return load_resource_text("live-safety.md")
+
+    @mcp.resource(
+        "reference://marimo-inspect/fallbacks-and-limits",
+        name="Fallbacks and limits",
+        description=(
+            "What the MCP surface does not cover and the intentional "
+            "fallbacks: output coverage, widget value shape, frontend "
+            "refresh, screenshots, server lifecycle, and the script hatch."
+        ),
+        mime_type="text/markdown",
+        tags={"read-only", "static", "reference"},
+        version="1.0",
+        annotations={"audience": ["assistant"]},
+    )
+    def fallbacks_and_limits() -> str:
+        """Return the fallbacks-and-limits reference (Markdown)."""
+        return load_resource_text("fallbacks-and-limits.md")
 
 
 def main() -> None:

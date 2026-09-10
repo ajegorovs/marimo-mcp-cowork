@@ -25,7 +25,7 @@ The public classes are also re-exported lazily from
 its no-extra-dependency import path until a widget is actually requested:
 
 ```python
-from marimo_inspection import ImagePreview          # lazy re-export
+from marimo_inspection import ImagePreview  # lazy re-export
 from marimo_inspection.widgets import ImagePreview  # explicit
 ```
 
@@ -60,7 +60,7 @@ A widget becomes a reactive notebook citizen by bridging a traitlet to
 ```python
 # Cell creating the widget
 preview = ImagePreview().update(images, names)
-get_i, set_i = mo.state(preview.index)          # init from current value
+get_i, set_i = mo.state(preview.index)  # init from current value
 preview.observe(lambda _: set_i(preview.index), names=["index"])
 preview  # display the widget
 ```

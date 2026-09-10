@@ -40,9 +40,7 @@ def test_uses_given_names():
 
 
 def test_accepts_title():
-    p = ImagePreview().update(
-        [np.zeros((2, 2))], names=["x"], title="Browse 1 image"
-    )
+    p = ImagePreview().update([np.zeros((2, 2))], names=["x"], title="Browse 1 image")
     assert p.title == "Browse 1 image"
     p.update([])
     assert p.title == ""  # empty update clears it

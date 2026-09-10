@@ -53,14 +53,101 @@ marimo-inspect --transport stdio
 
 ## MCP tools
 
-`list_active_notebooks`, `set_active_session`, `get_cell_map`,
-`get_cell_data`, `get_cell_outputs`, `get_variables`,
-`get_dependency_graph`, `get_errors`, `lint_notebook`, `create_cell`,
-`edit_cell`, `run_cell`, `delete_cell`.
+14 tools over the same live kernel.
 
-`edit_cell` carries a staleness guard that refuses to overwrite a cell an
-agent has not freshly read, so simultaneous human/agent co-work can't silently
-lose edits.
+Reads / state: `list_active_notebooks`, `set_active_session`,
+`get_cell_map`, `get_cell_data`, `get_cell_outputs`, `get_variables`,
+`get_dependency_graph`, `get_errors`, `lint_notebook`.
+Writes: `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
+Widget interaction: `set_ui_value`.
+
+`list_active_notebooks` discovers sessions and auto-binds the first one
+(`session_id` **and** `server_url`); every other tool falls back to that
+binding. The binding lives in the MCP server process/connection — a harness
+that spawns or reconnects the server per call/turn loses it, so pass
+`session_id`/`server_url` explicitly (or call `set_active_session`) in that
+case. A gateway restart requires re-running `list_active_notebooks`.
+
+### Read before you edit
+
+`edit_cell` carries a staleness guard (`check_fresh=True` by default) and
+requires that you read that exact cell first:
+
+- first touch of a never-read cell → `status: "needs_read"` (unconditionally,
+  even on a session with no snapshot);
+- source changed since your last read → `status: "conflict"`.
+
+Recovery is a real re-read, then retry: call `get_cell_data` (which records the
+read baseline) or `get_cell_map`, then retry `edit_cell`. A successful edit
+returns the post-edit `code_hash`. `check_fresh=False` is an explicit force
+escape hatch, **not** the recovery path. A missing cell id returns a clear
+error before anything is mutated.
+
+### New cells are visible by default
+
+`create_cell` defaults to `hide_code=False`, so a new cell's code shows in the
+UI. (This changed from the earlier hidden-by-default behavior.) Pass
+`hide_code=True` explicitly for setup/implementation cells you want hidden.
+Note that no read tool echoes `hide_code`, so visibility is decided at creation
+time and cannot be confirmed back through the MCP read surface.
+
+### Widget interaction
+
+`set_ui_value(variable_name, value)` sets a live `mo.ui` element's value by its
+kernel-global name. It accepts **no source code**, and preserves the JSON value
+shape exactly (a scalar dropdown key stays a scalar, a multiselect list stays a
+list). The update is flushed and triggers reactive re-execution; the call does
+not wait for it, so verify the effect with `get_variables` / `get_cell_outputs`.
+
+## MCP resources
+
+The server also publishes three **static, read-only** documentation resources
+(`text/markdown`, packaged in the wheel and loaded via `importlib.resources`)
+that a client can read on demand:
+
+| URI | Content |
+| --- | --- |
+| `workflow://marimo-inspect/co-work-loop` | the MCP-first co-work loop, step by step |
+| `workflow://marimo-inspect/live-safety` | read-before-edit and live-kernel safety rules |
+| `reference://marimo-inspect/fallbacks-and-limits` | what MCP does not cover + intentional fallbacks |
+
+A client lists them with `list_resources()` and fetches one with
+`read_resource(uri)`; through the Python client you can also read them with
+FastMCP's in-process transport:
+
+```python
+from fastmcp import Client
+from marimo_inspection.server import create_server
+
+async with Client(transport=create_server()) as client:
+    for r in await client.list_resources():
+        print(r.uri, r.mime_type)
+    doc = await client.read_resource("workflow://marimo-inspect/live-safety")
+```
+
+FastMCP 4.0.3 resource annotations only carry
+`audience`/`priority`/`lastModified`, so read-only intent is carried by tags +
+description; tool annotations do support `readOnlyHint`/`destructiveHint`/
+`idempotentHint`/`openWorldHint` (used by `set_ui_value`).
+
+## Output limits
+
+marimo's code-mode snapshot exposes **one main output per cell** plus console
+events — not every frontend UI registration. `get_cell_outputs` returns that
+main output and the serialized console events, so a widget rendered to the user
+may be absent from it; inspect the cell's variables instead.
+`get_cell_map`'s `has_output` / `has_console_output` / `has_errors` flags are
+computed from live fields (`None` when a private field is unreadable, never
+faked). `get_errors` reports `structured_errors` (marimo `cell.errors`) and
+`console_stderr` (console events, including UI-handler tracebacks) as two
+separate channels; `has_errors`/`total_errors` count structured errors only.
+
+Arbitrary kernel probes, complex multi-operation CodeMode blocks, screenshots,
+and notebook-server lifecycle stay outside the MCP surface — see
+`reference://marimo-inspect/fallbacks-and-limits`.
+
+Per-client setup (Hermes, DeepSeek Harness, Codex, and generic stdio/HTTP) is
+indexed in [docs/harness-integration/README.md](docs/harness-integration/README.md).
 
 ## Install
 

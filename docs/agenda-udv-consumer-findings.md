@@ -259,3 +259,131 @@ and self-documenting.
   venv; (5) Finding 1 and a PENDING hardening note record that any gateway
   instance started pre-fix keeps re-spawning the dead path until restarted.
   T8 fully done.
+
+## T9 — Hermes live MCP validation: guarded `edit_cell` false conflict (2026-09-10) ⚠️
+
+Full evidence: [`session-report-hermes-mcp-2026-09-10.md`](session-report-hermes-mcp-2026-09-10.md).
+
+A live consumer notebook was launched locally and reached through the Hermes
+stdio MCP gateway. `list_active_notebooks(server_url=...)` discovered one
+active session; the bind persisted across later calls with neither
+`server_url` nor `session_id`, independently reconfirming T8's Hermes
+transport conclusion.
+
+- **Read/run/verify surface ✅:** `get_cell_map`, `get_cell_data`,
+  `get_cell_outputs`, `get_variables`, `get_dependency_graph`, `get_errors`,
+  `lint_notebook`, and `run_cell` all worked. All 16 cells were driven from
+  stale to idle; errors and lint were both zero; the consumer's static
+  `marimo check` also passed. Live outputs included Plotly, Marimo UI, and an
+  anywidget.
+- **Write surface mixed:** `create_cell` and `delete_cell` worked. But the
+  guarded `edit_cell` path failed reproducibly: create a disposable cell →
+  `get_cell_data` → `edit_cell` gave `status: "conflict"`; a fresh re-read
+  followed by the identical edit gave the same conflict. The cell was then
+  deleted and the consumer tree remained clean.
+- **Provider action:** diagnose and fix this false-conflict loop, then add a
+  live regression for create → read → guarded edit → run → verify → delete.
+  Do not advise routine `check_fresh=False`: that removes the concurrency
+  safety the tool is meant to supply.
+- **Adoption decision:** marimo-inspect can now be the default for discovery,
+  inspection, execution, and verification. Do not retire `execute-code.sh`
+  yet: it remains the fallback for safe existing-cell edits, programmatic UI
+  changes (`set_ui_value` is not yet an MCP tool), arbitrary scratchpad probes,
+  and server lifecycle. `discover-servers.sh` is redundant for the normal
+  agent flow and may be deprecated to a human/debug fallback.
+- **Documentation/resources:** replace the long CodeMode-first pairing skill
+  only after the write defect is fixed. Publish short MCP-first workflow and
+  safety resources, with raw CodeMode/shell recipes explicitly labelled as
+  fallback material; the report proposes the resource breakdown and retirement
+  gates.
+
+## T9 RESOLVED — freshness repair, widget tool, truthful reads, resources (2026-09-10)
+
+Provider fix landed in the working tree (uncommitted at time of writing).
+
+**Root cause confirmed at source.** `edit_cell`'s guard compares the live hash
+against the per-session `ChangeTracker` snapshot, but `get_cell_data` — the very
+read the conflict message told agents to use — never updated that snapshot. Only
+`get_cell_map` recorded fingerprints, so re-reading via `get_cell_data` could not
+advance the baseline: a deterministic re-read → same-conflict loop. Two adjacent
+defects found: a session with no snapshot let a never-read cell bypass the guard
+entirely, and `edit_cell` returned the template's hash computed *before* the
+code-mode context exit applied the queued edit (a stale success hash). A third
+defect found during verification: `_refresh_snapshot` committed an empty
+snapshot when its hash read failed, silently wiping the session baseline.
+
+**Fix.**
+- `ChangeTracker.record_cells()` — merge-only upsert (never erases fingerprints
+  for cells not supplied), distinct from `commit()` which replaces the snapshot.
+- `get_cell_data` now records the exact returned source hash + runtime state for
+  each returned cell; a failed read (execution error or JSON parse failure)
+  leaves the tracker untouched. Selective reads cannot erase other baselines.
+- `edit_cell`: a never-read cell returns `needs_read` **unconditionally**
+  (no-snapshot bypass removed); an absent cell id returns a clear error before
+  mutating; success returns the post-context-exit hash from the refreshed
+  snapshot; a failed refresh returns a warning and preserves the old baseline
+  instead of committing an empty one. `check_fresh=False` remains an explicit
+  force escape hatch, never the documented recovery path.
+
+**Live regression (hermetic).** `tests/marimo_inspect/live/test_mutation.py`
+drives the **real** handler functions against a real marimo 0.24 kernel on a
+`tmp_path` copy of the fixture notebook, in-process so the change tracker is the
+same singleton the MCP server uses:
+- A: create → read (records baseline) → guarded edit (ok, post-exit hash) → run
+  (state `stale`→`idle`) → re-read exact source → `get_errors` clean → delete in
+  `finally` → gone from the live session and from disk.
+- B: baseline read → **external** out-of-band code-mode edit → guarded edit
+  returns `conflict` with nothing stomped → `get_cell_data` re-read re-arms the
+  baseline → retried guarded edit succeeds.
+The harness gained per-test notebook paths (`MarimoServerManager.notebook_path`,
+previously hardcoded in the `/sse` handshake) and a byte-identity assertion that
+the repo fixture is unchanged (the hermeticity gate).
+
+**Also delivered (same change):**
+- `set_ui_value` (14th tool) — sets a live `mo.ui` element by kernel-global name;
+  no source-code argument by construction; JSON value shape preserved exactly
+  (scalar stays scalar, list stays list); flushed on code-mode context exit, so
+  reactive re-runs are *verified* (`get_variables`/`get_cell_outputs`), not
+  awaited. A widget updated from outside no longer requires an `edit_cell`.
+- Truthful reads: `get_cell_map`'s `has_output`/`has_console_output`/`has_errors`
+  are computed from live code-mode fields (`None` when unreadable) — the
+  hardcoded `false` stubs are gone. `get_errors` now reports two distinct
+  channels (`structured_errors`, `console_stderr`) plus a conservative
+  `has_console_exception` marker scan, so console-only UI-handler tracebacks are
+  visible without counting every stderr line as a runtime error.
+- `create_cell` now defaults to `hide_code=False` (visible by default); this is a
+  deliberate behavior change, documented in the README and onboarding runbook.
+- Three static read-only MCP resources: `workflow://marimo-inspect/co-work-loop`,
+  `workflow://marimo-inspect/live-safety`,
+  `reference://marimo-inspect/fallbacks-and-limits` (packaged Markdown, loaded
+  via `importlib.resources`, `text/markdown`, present in the built wheel).
+
+**Verification (measured 2026-09-10).**
+- `uv run pytest -m "not live" -q` → **266 passed, 22 deselected**
+- `uv run pytest tests/marimo_inspect/live/ -m live -q` → **22 passed**
+- `uv run pytest tests/marimo_inspect/live/test_mutation.py -m live -q` → **2 passed**
+- `uv run ruff check .` → clean; `uv run ruff format --check .` → clean
+- `uv run marimo check notebooks` → exit 0
+- `uv build` → wheel member list includes all three
+  `marimo_inspection/resources/*.md`
+- `create_server()` probe → 14 tools, 3 resources (exact URI set)
+
+**Retained fallbacks (unchanged decision).** `execute-code.sh` stays as the
+fallback for arbitrary kernel probes, complex multi-operation code-mode blocks,
+screenshots and server lifecycle — MCP is the default loop, not a total
+replacement. `discover-servers.sh` is now a human/debug fallback only.
+
+**Widget behaviour IS now CI-covered (correcting the plan's assumption).** The
+plan assumed widget validation required a browser-instantiated session. That was
+too conservative: fixture-notebook cells never execute in the `/sse` session,
+but a cell *created through the MCP write tools* runs fine, so a widget can be
+materialized in-kernel. Proven and locked in
+`tests/marimo_inspect/live/test_ui.py` (2 tests, hermetic): setting
+`set_ui_value("gate_slider", 7)` moved the element 3 → 7 **and** reactively
+re-ran its dependent cell (a derived global went 103 → 107), both cells ending
+`idle`; missing and non-UI names are refused with clear payloads. Live suite is
+now 24 tests.
+
+**Still open, genuinely browser-dependent:** whether a widget actually *renders*
+in a frontend, and console-only UI-handler exceptions raised in the browser
+context. No automated test claims those; they remain a manual browser gate.
