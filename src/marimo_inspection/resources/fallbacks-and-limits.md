@@ -12,10 +12,12 @@ missing from `get_cell_outputs`, inspect the cell's variables instead.
 
 ## Widget value shape
 
-`set_ui_value` expects a widget-specific JSON value shape. Do not infer that a
-scalar form works for every single-select widget; after setting a value, confirm
-the effect with `get_variables` or `get_cell_outputs`. Its reactive re-run is
-verified, not awaited.
+`set_ui_value` expects a widget-specific JSON value shape; a shape the element
+cannot accept is refused before anything is applied, and the element's own value
+is read back before the call returns (see
+`workflow://marimo-inspect/co-work-loop` §5 for the per-widget shapes). What is
+*not* awaited is the reactive re-run of dependent cells — confirm its effects
+with `get_variables` or `get_cell_outputs`.
 
 ## Frontend refresh
 

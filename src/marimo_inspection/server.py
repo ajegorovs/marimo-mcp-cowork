@@ -47,8 +47,12 @@ def create_server(
         agent last read it (read with `get_cell_map`/`get_cell_data` first).
 
         Widget interaction: `set_ui_value` sets a live UI element's value by
-        its variable name (scalar or list — exact JSON shape preserved). It is
-        a narrow widget tool and accepts NO source code.""",
+        its variable name. Value shapes are per widget and are never coerced
+        (`dropdown` takes its option key inside a one-element list); a
+        mismatched shape is refused with the corrected payload in
+        `did_you_mean`, and the element's value is read back so `status: ok`
+        means the widget actually moved. It is a narrow widget tool and
+        accepts NO source code.""",
     )
 
     # Register tools

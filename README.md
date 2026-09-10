@@ -94,10 +94,23 @@ time and cannot be confirmed back through the MCP read surface.
 ### Widget interaction
 
 `set_ui_value(variable_name, value)` sets a live `mo.ui` element's value by its
-kernel-global name and accepts **no source code**. The JSON shape is
-widget-specific; callers must verify the resulting value with `get_variables`
-or `get_cell_outputs`. The update is flushed and triggers reactive
-re-execution, but the call does not wait for it.
+kernel-global name and accepts **no source code**. It never coerces the value:
+send the shape the element's declaration accepts — scalar for `slider`/`text`,
+bool for `checkbox`, the option key **inside a one-element list** for a
+`dropdown` (`["beta"]`), a list of keys for `multiselect`, a two-element list
+for `range_slider`. A shape the element cannot accept is refused before
+anything is applied, and the error carries the corrected payload in
+`did_you_mean`.
+
+The element's value is read back before the call returns, so `status: ok` with
+`verified: true` means the read-back succeeded: either the widget's own value was
+observed to move (`applied: true`) or it already held that value
+(`applied: false` + `no_change: true`). A value marimo rejected — an unknown
+dropdown key, say — is returned as `status: error` with `reason:
+value_not_applied` and the kernel's message instead of a misleading success
+(a refused shape uses `reason: value_shape_mismatch`). The update is flushed and
+triggers reactive re-execution of dependent cells, but that re-run is not
+awaited.
 
 ## MCP resources
 

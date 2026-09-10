@@ -117,10 +117,12 @@ instantiation requires the token-gated `/api/kernel/instantiate` endpoint.
 Templates that read executed cell state (`ctx.graph` for the dependency
 template, error records) therefore report empty/fresh values. The live tests
 assert the honest, verifiable contract for that state (structure + consistency)
-and note the instantiate-gated limitation. `cell_map`, `cell_data`,
-`cell_outputs`, `variables` read cell *source/structure* and work fully.
+and note the instantiate-gated limitation. `cell_map` and `cell_data` read cell
+*source/structure* and work fully; `cell_outputs` and `variables` return their
+documented structure, but the *executed* content stays empty until a
+browser-instantiated session exists (the same two tiers AGENTS.md describes).
 
-## What's tested (24 tests, 8 files)
+## What's tested (28 tests, 8 files)
 
 | File | Tests | Asserts |
 | --- | --- | --- |
@@ -131,7 +133,7 @@ and note the instantiate-gated limitation. `cell_map`, `cell_data`,
 | `test_dependency.py` | 2 | template executes against a live kernel; returns documented structure/types (graph content is instantiate-gated — see note above) |
 | `test_errors.py` | 3 | template returns consistent, typed error summary; stable across repeated runs |
 | `test_mutation.py` | 2 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, and external-conflict→re-read→recover — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
-| `test_ui.py` | 2 | **widget regressions**: `set_ui_value` moves a live widget's value and reactively re-runs its dependent cell (3→7 and 103→107, both idle); missing/non-UI names refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
+| `test_ui.py` | 6 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private; missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
 do **not** need a kernel, so they live in the fast path (`tests/marimo_inspect/`).
@@ -186,7 +188,7 @@ The plan originally assumed widget behaviour could only be validated against a
 because the `/sse` session cannot be instantiated without the skew token (see
 the coverage-gap note above). That assumption is too conservative: a cell
 *created through the MCP write tools* runs fine, so a widget can be
-materialized in-kernel with no browser at all. The test:
+materialized in-kernel with no browser at all. The reactivity test:
 
 1. `create_cell` a cell whose **final expression** is a `mo.ui.slider` (so the
    control is visible), then `run_cell` it.
@@ -195,17 +197,27 @@ materialized in-kernel with no browser at all. The test:
    it created, so the read must live downstream. That cell is also the
    reactivity probe.
 3. Assert the baseline: widget `3`, dependent `103`.
-4. `set_ui_value("gate_slider", 7)` → assert the widget is `7` **and the
-   dependent cell re-ran** to `107`, with both cells `idle`.
-5. A second test asserts missing and non-UI names are refused with clear
-   payloads (`datatype` reported, no traceback dump).
+4. `set_ui_value("gate_slider", 7)` → assert `verified`/`applied` are true with
+   `value_before`/`value_after` = 3/7, the widget is `7`, **and the dependent
+   cell re-ran** to `107`, with both cells `idle`.
+
+The remaining five tests cover the dropdown contract, the rejection paths and the cell-private name rule —
+they exist because a flush is not proof of application (`set_ui_value` in
+`tools/ui.py`):
+
+| Test | Locked-in behaviour |
+| --- | --- |
+| scalar → `dropdown` | `status: error`, `reason: value_shape_mismatch`, `accepted_shape: list[str]`, `did_you_mean: ["beta"]`, widget and dependent cell untouched. A scalar trips `assert len(value) == 1` inside `dropdown._convert_value`; marimo **catches** that, writes the traceback to the kernel's stderr and drops the update, so without the guard this returned `ok` with no change |
+| `["beta"]` → `dropdown` | `status: ok` with `verified`/`applied` true, `value_before`/`value_after` = alpha/beta, dependent cell re-ran, and an immediate repeat is `applied: false` + `no_change: true` |
+| `["nope"]` → `dropdown` | `status: error`, `reason: value_not_applied`, `kernel_message` is the kernel's own `ValueError` naming the valid options, widget unmoved — marimo's rejection is converted into a real error instead of a false `ok` |
+| missing / non-UI name | refused with `reason` (`unknown_variable` / `not_a_ui_element`), `datatype` reported, no traceback dump |
 
 Use a **bare** widget name: marimo treats a leading underscore as
 cell-private, so `_slider` is a poor `set_ui_value` target.
 
 Still browser-dependent (no automated test claims it): whether a widget
 actually *renders* in a frontend, and console-only UI-handler exceptions raised
-in the browser context.
+in the browser context. Tracked as agenda T9-b.
 
 Version contract: the live env couples the **in-process** lint (installed
 marimo) and the **in-kernel** templates (server's marimo) to the same installed
@@ -219,7 +231,7 @@ upgrade procedure (step 3) runs `uv run pytest -m live` before widening the
 
 ```text
 uv run pytest tests/marimo_inspect/live/ -m live -q
-=> 24 passed in ~19s
+=> 28 passed in ~23s
 ```
 
 The two mutation regressions alone (they boot one extra isolated server each):
@@ -229,18 +241,18 @@ uv run pytest tests/marimo_inspect/live/test_mutation.py -m live -v
 => 2 passed in ~8.7s
 ```
 
-The two widget regressions alone:
+The six widget regressions alone:
 
 ```text
 uv run pytest tests/marimo_inspect/live/test_ui.py -m live -q
-=> 2 passed in ~7.7s
+=> 6 passed in ~16s
 ```
 
 Fast path (unit tests; live tests collected but deselected):
 
 ```text
 uv run pytest -m "not live" -q
-=> 266 passed, 24 deselected in ~2.2s
+=> 278 passed, 28 deselected in ~1.9s
 ```
 
 What fixed the red suite (see [live-test-redesign-plan.md](live-test-redesign-plan.md) §0 for the verified marimo internals):

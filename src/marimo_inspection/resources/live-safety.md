@@ -42,4 +42,17 @@ tool call is not proof of a correct result.
   mid-cell still works but renders nowhere.
 - A cell cannot read the `.value` of a UI element it created in the same cell.
   Split control creation and value reads into separate cells.
+- Bind a widget to a **bare** top-level name. marimo keeps a
+  leading-underscore name cell-private, so `_slider` is invisible to every
+  other cell AND unreachable from `set_ui_value` (`reason:
+  unknown_variable`) — the tool cannot fix that for you.
 - Update a widget from outside via `set_ui_value`, not by editing its cell.
+  It never coerces the value: send the shape the element accepts (a `dropdown`
+  option key goes inside a one-element list, e.g. `["beta"]`). A refused shape
+  returns `reason: value_shape_mismatch` with the corrected payload in
+  `did_you_mean`; a value the kernel rejected returns `reason:
+  value_not_applied` with the kernel's own message. Read those — the widget is
+  unmoved in both cases. `status: ok` means the value was read back
+  (`verified: true`: `applied: true` if it moved, `no_change: true` if it
+  already held that value), but dependent cells' reactive re-runs are not
+  awaited.

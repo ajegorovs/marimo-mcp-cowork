@@ -107,8 +107,11 @@ server code.
 
 **Finding 3 — the gateway registers 17 tools, not 13.**
 
-The 13 marimo tools come through plus 4 standard FastMCP resource/prompt
-tools: `list_resources`, `read_resource`, `list_prompts`, `get_prompt`.
+On 2026-09-09 the marimo surface was 13 tools, and the gateway adds 4
+resource/prompt tools of its own on top: `list_resources`, `read_resource`,
+`list_prompts`, `get_prompt` (this server's own catalog contains none of them —
+probed 2026-09-10). `set_ui_value` has since taken the marimo surface to 14, so
+a re-registered gateway is expected to list 18 names (14 + 4).
 Gateway log line (verified 2026-09-09):
 
 ```
@@ -160,7 +163,8 @@ explicit `server_url`, then `get_cell_map`.
 ## Hardening
 
 - **DONE — venv binary over `uv run`.** Applied 2026-09-09; the stale
-  consumer-path entry is gone and the 14 tools register cleanly.
+  consumer-path entry is gone and the 14 marimo tools register cleanly (the
+  gateway's own 4 resource/prompt wrappers sit on top — see Finding 3).
 - **DONE — minimal args, no `--reload`.** Applied; keep it that way
   (Finding 2).
 - **DONE — CLI-applied config.** Use `hermes config set`, not a text edit.

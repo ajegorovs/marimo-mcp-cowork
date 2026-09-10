@@ -25,8 +25,14 @@ Reads / state: `list_active_notebooks`, `set_active_session`,
 `get_dependency_graph`, `get_errors`, `lint_notebook`.
 Writes: `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
 Widget interaction: `set_ui_value` (sets a live UI element's value by
-kernel-global name; accepts no source code; widget-specific JSON values must be
-verified by reading state back).
+kernel-global name; accepts no source code). Value shapes are per widget and
+never coerced — the element's own `UIElement[...]` declaration drives a
+pre-flight shape guard (scalar to a `dropdown`/`multiselect`/`range_slider` is
+refused with `reason: value_shape_mismatch` + `did_you_mean`), and the
+element's value is read back afterwards so `status: ok` + `verified: true` means
+the read-back succeeded — `applied: true` if the value moved, `no_change: true`
+if it already held it. A value marimo swallowed (unknown dropdown key: traceback
+on stderr only) returns `status: error`, `reason: value_not_applied`.
 
 `list_active_notebooks` auto-binds the first discovered session (`session_id`
 and `server_url`); every other tool accepts an optional `session_id` and
@@ -82,9 +88,10 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-10): `-m "not live"` → **266 passed**, `-m
-live` → **22 passed** (incl. the 2 hermetic mutation regressions). Counts drift
-as tests are added; treat the split, not the exact numbers, as the contract.
+Verified on this tree (2026-09-10): `-m "not live"` → **278 passed**, `-m
+live` → **28 passed** (incl. the 2 hermetic mutation regressions and 6 hermetic
+widget tests). Counts drift as tests are added; treat the split, not the exact
+numbers, as the contract.
 
 ## Layout
 
@@ -118,10 +125,17 @@ as tests are added; treat the split, not the exact numbers, as the contract.
     could not work). `templates/lint.py` is **dead code**, retained only for
     the template-shape unit tests (`test_templates.py`); do not add new
     logic there.
+  - A template may enter the code-mode context **twice**: queued writes flush
+    on the *first* exit, so `templates/ui.py` re-enters to read back the
+    element's value (marimo swallows a rejected widget update, leaving only a
+    stderr traceback). Never report success from the flush alone — see
+    `tools/ui.py`'s stderr rejection scan.
 - **Version contract**: the in-process lint imports marimo private APIs
-  (`marimo._ast.parse`, `marimo._lint.rule_engine`) — pinned to marimo
-  **0.24.x** (`>=0.24.0,<0.25`). Do **not** widen the bound without running
-  the live suite; see `docs/marimo-version-support.md`.
+  (`marimo._ast.parse`, `marimo._lint.rule_engine`), and `templates/ui.py`
+  reads the widget declaration off `marimo._plugins.ui._core.ui_element.UIElement`
+  (`__orig_bases__`) — pinned to marimo **0.24.x** (`>=0.24.0,<0.25`). Do
+  **not** widen the bound without running the live suite; see
+  `docs/marimo-version-support.md`.
 - **Module hygiene**: pure functions, type hints, docstrings; one concern per
   module; unit-testable. Keep the FastMCP server out of import-time paths where
   it isn't needed.
@@ -162,6 +176,12 @@ Separately, `tests/marimo_inspect/live/test_mutation.py` (2 tests) exercises the
 of the fixture: create → read → guarded edit → run → verify → delete, and
 external-conflict → re-read → recover. It boots one isolated server per test
 and asserts the repo fixture stays byte-identical (the hermeticity gate).
+`tests/marimo_inspect/live/test_ui.py` (6 tests) does the same for the widget
+tool — cells *created through the write tools* do execute, so a widget can be
+materialized in-kernel without a browser: shape refusal, verified apply with a
+reactive dependent re-run, verified no-op on a repeat, kernel rejection
+surfacing as an error, and the cell-private (leading-underscore) name rule. Frontend *rendering* and browser-context console
+exceptions remain a manual gate (agenda T9-b).
 
 ## Docs map
 
@@ -185,11 +205,13 @@ and asserts the repo fixture stays byte-identical (the hermeticity gate).
   break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
   machine. Read before choosing a consumer's topology or touching
   `discovery.py`/`--no-token` assumptions.
-- `docs/agenda-udv-consumer-findings.md` — **OPEN** agenda: first-consumer
-  (udv-echo-process, 2026-09-07) field findings: headless `--no-token` servers
-  skip the discovery registry (T1), `server_url` auto-bind semantics (T2),
-  harness list-arg mangling (T3), 3.14 private-API drift evidence (T4), and the
-  **publishing checklist** for making this repo public (T5).
+- `docs/agenda-udv-consumer-findings.md` — **OPEN** agenda, condensed to open
+  items only (T-ids kept stable): harness list-arg mangling (T3), consumer 3.14
+  drift evidence not yet recorded in the version contract (T4), sandbox gotchas
+  cross-reference (T6), the browser-dependent half of widget verification
+  (T9-b), and where package-install/harness onboarding material lives (T10).
+  Everything else from that integration is resolved — see its §Resolved log for
+  the one-line record + evidence pointer per item rather than re-deriving them.
 
 **Bootstrap / harness integration:**
 
