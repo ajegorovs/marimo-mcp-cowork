@@ -61,58 +61,6 @@ server lifecycle.
   (cheap). DoD: a harness-side repro, or the defensive type landing here with a
   unit test asserting a JSON-string list is accepted.
 
-### T12 — `get_errors`' console channel is dead (channel filter never matches) ❌
-
-Found by the T9-b browser pass (2026-09-10). Every console-channel filter
-compares the **unnormalized** channel string —
-`str(getattr(o, "channel", "")).lower() == "stderr"`.
-`marimo._messaging.cell_output.CellChannel` is a `str`-mixin enum whose `str()`
-is `CellChannel.STDERR` (verified in this venv: `repr` is `stderr`, `str()` is
-`CellChannel.STDERR`, `== "stderr"` is `True`), so the comparison is always
-`False`. The shared serializer two lines away normalizes with
-`.split(".")[-1].lower()` — which is exactly why `get_cell_outputs.console_events`
-carries the events while its own `stdout`/`stderr` lists are empty.
-
-Four sites: `templates/errors.py:57` and `:94`, `templates/cell_outputs.py:99`
-and `:103`.
-
-Consequence, observed live: an unknown dropdown key and a raising `on_change`
-both produced full kernel tracebacks — displayed by the frontend in the widget
-cell's console-output area, and present in `get_cell_outputs.console_events` —
-while `get_errors` returned `has_errors: false`,
-`has_console_exception: false`, `cells: []`. So the advertised "console-only
-UI-handler exceptions are visible even when `c.errors` is empty" channel has
-never actually delivered, and `get_errors.console_stderr` plus
-`get_cell_outputs.stdout/stderr` are always empty.
-
-- **Owner:** provider. **Next action:** normalize at all four sites (share one
-  helper with the serializer) and add a live regression: a console-only
-  UI-handler failure must flag its cell in `get_errors`, and a `print()` must
-  appear in `get_cell_outputs.stdout`. DoD: that test fails before the fix and
-  passes after.
-- ⚠️ Until fixed, read a UI update's failure from the `set_ui_value` payload
-  (`status: error` + `kernel_message`, captured by the tool's own stderr scan),
-  never from `get_errors`.
-
-### T13 — `set_ui_value` mislabels an `on_change`-handler failure ❌
-
-Same pass, same session. Setting a slider whose `on_change` raises returned
-`reason: value_not_applied` and *"The kernel rejected the value … so the element
-was NOT changed"* — while the same payload reported `value_before: 1` →
-`value_after: 5`, and `get_variables` confirmed `boom.value == 5`. The value
-**did** move; only the callback failed.
-
-The kernel's own traceback shows the two cases are different code paths:
-`runtime.py:2030` → `ui_element.py:468 self._value = self._convert_value(value)`
-(a bad option key raises **before** assignment, so "not changed" is truthful
-there) versus `ui_element.py:473 self._on_change(self._value)` (assigned first,
-handler raises after). The tool collapses both into one reason.
-
-- **Owner:** provider. **Next action:** keep `value_not_applied` for a rejected
-  conversion and report the handler case as its own reason (e.g.
-  `on_change_failed`) with `applied: true` when the read-back moved. DoD: a
-  self-consistent payload for both cases, pinned by the widget live suite.
-
 ## Resolved log
 
 One line each, with the pointer that holds the detail. Ordered by item id.
