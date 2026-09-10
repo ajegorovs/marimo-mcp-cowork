@@ -21,6 +21,7 @@ snapshot yet, the first observation is treated as the baseline (no diff).
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 
@@ -128,6 +129,20 @@ class ChangeTracker:
                 self._snapshots[session_id] = dict(fingerprints)
             else:
                 snap.update(fingerprints)
+
+    def forget_cells(self, session_id: str, cell_ids: Iterable[str]) -> None:
+        """Drop fingerprints for ``cell_ids``; never touch other baselines.
+
+        Used by the delete path: the removed cell has no live hash to record,
+        and leaving its fingerprint behind would misreport it as a still-known
+        cell. A no-op when the session has no snapshot.
+        """
+        with self._lock:
+            snap = self._snapshots.get(session_id)
+            if snap is None:
+                return
+            for cid in cell_ids:
+                snap.pop(cid, None)
 
     def clear_session(self, session_id: str) -> None:
         with self._lock:

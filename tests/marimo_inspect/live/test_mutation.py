@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from marimo_inspection.tools.cells import get_cell_data
+from marimo_inspection.tools.cells import get_cell_data, get_cell_outputs
 from marimo_inspection.tools.errors import get_errors
 from marimo_inspection.tools.mutation import (
     create_cell,
@@ -58,6 +58,22 @@ def _raw_external_edit(cell_id: str, code: str) -> str:
 
 def _rows_by_id(data: dict) -> dict[str, dict]:
     return {row["cell_id"]: row for row in data["data"]}
+
+
+async def _execute_raw(server_url: str, session_id: str, code: str):
+    """Run a raw scratchpad snippet against the live kernel.
+
+    Used to simulate a *second* actor (another co-worker / an out-of-band
+    editor) mutating the notebook without going through this package's tools,
+    which is exactly the situation the staleness guard exists for.
+    """
+    from marimo_inspection.client import MarimoClient
+
+    client = MarimoClient(server_url)
+    try:
+        return await client.execute(session_id, code)
+    finally:
+        await client.close()
 
 
 @pytest.mark.live
@@ -211,3 +227,79 @@ async def test_external_conflict_reread_recover(mutation_server):
     assert cleanup_status == "ok"
     assert original_code != final_code  # sanity: the fixture cell did change
     await client.close()
+
+
+@pytest.mark.live
+async def test_unrelated_write_does_not_disarm_the_guard(mutation_server):
+    """H7: a write to ANOTHER cell must not bless this cell's baseline.
+
+    Pre-fix, `_refresh_snapshot` committed a whole-session hash map, so the
+    unrelated create_cell below forged a last-read baseline for the externally
+    edited cell and this edit_cell returned 'ok' — overwriting a concurrent
+    edit with no re-read.
+    """
+    _manager, server_url, session_id, _copy = mutation_server
+    created: list[str] = []
+    try:
+        target = await create_cell(
+            _A_INITIAL_SOURCE, session_id=session_id, server_url=server_url
+        )
+        target_id = target["cell_id"]
+        created.append(target_id)
+
+        # Baseline: the agent reads the cell it just created.
+        read = await get_cell_data(
+            cell_ids=[target_id], session_id=session_id, server_url=server_url
+        )
+        assert _rows_by_id(read)[target_id]["code"]
+
+        # A second co-worker edits it out of band.
+        raw = await _execute_raw(
+            server_url, session_id, _raw_external_edit(target_id, _A_EDITED_SOURCE)
+        )
+        assert raw.status == "ok", f"raw external edit failed: stderr={raw.stderr}"
+
+        # An UNRELATED write in our own process.
+        other = await create_cell(
+            "h7_unrelated = 1", session_id=session_id, server_url=server_url
+        )
+        created.append(other["cell_id"])
+
+        # The guard must still refuse: our baseline predates the foreign edit.
+        result = await edit_cell(
+            target_id,
+            f"{_A_EDITED_SOURCE}  # ours",
+            session_id=session_id,
+            server_url=server_url,
+        )
+        assert result["status"] == "conflict", result
+    finally:
+        for cid in reversed(created):
+            await delete_cell(cid, session_id=session_id, server_url=server_url)
+
+
+@pytest.mark.live
+async def test_unrelated_write_does_not_bless_a_never_read_cell(mutation_server):
+    """H7: a never-read cell must still report needs_read after another write."""
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+    created: list[str] = []
+    try:
+        # Discover a fixture cell id WITHOUT reading its source: get_cell_data
+        # AND get_cell_map both commit fingerprints to the change tracker, so
+        # either one would create the very baseline this test proves is absent.
+        # get_cell_outputs reads executed outputs only and records nothing.
+        outputs = await get_cell_outputs(session_id=session_id, server_url=server_url)
+        fixture_cell = outputs["cells"][0]["cell_id"]
+
+        other = await create_cell(
+            "h7_unrelated_2 = 1", session_id=session_id, server_url=server_url
+        )
+        created.append(other["cell_id"])
+
+        result = await edit_cell(
+            fixture_cell, "x = 1", session_id=session_id, server_url=server_url
+        )
+        assert result["status"] == "needs_read", result
+    finally:
+        for cid in reversed(created):
+            await delete_cell(cid, session_id=session_id, server_url=server_url)

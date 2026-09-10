@@ -16,6 +16,11 @@ exact cell first. On a first touch it returns status `needs_read`
 unconditionally — even on a session with no snapshot. If the source changed
 since your last read it returns `conflict`.
 
+A mutation refreshes only the cell it touched: `create_cell`/`edit_cell`/
+`delete_cell` record that one cell's baseline, so an unrelated write by another
+co-worker can never bless a cell you have not read, and a `conflict` stays
+reported until *you* re-read.
+
 Recovery is a real re-read, then retry:
 
 1. `get_cell_data` for that cell (this records the read baseline), or

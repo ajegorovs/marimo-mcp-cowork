@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 
 from fastmcp import Context
 
@@ -69,32 +70,47 @@ async def _execute_json(client: MarimoClient, sid: str, code: str) -> dict:
 
 
 async def _refresh_snapshot(
-    client: MarimoClient, sid: str
+    client: MarimoClient,
+    sid: str,
+    *,
+    record: Iterable[str] = (),
+    forget: Iterable[str] = (),
 ) -> dict[str, CellFingerprint] | None:
-    """Re-read live hashes and commit them to the change tracker.
+    """Re-read live hashes; commit ONLY the cells this mutation touched.
 
-    After a successful mutation the agent's snapshot is stale; refreshing it
-    (an implicit read, like Hermes' `note_write`) keeps change-detection
-    coherent so our own writes don't reappear as external changes.
+    After a successful mutation the agent's baseline for the cell it just wrote
+    is stale; refreshing that one cell (an implicit read, like Hermes'
+    ``note_write``) keeps change-detection coherent so our own write does not
+    reappear as an external change.
 
-    Returns the fresh fingerprint map, or ``None`` if the hashes payload was
-    an error — in which case the tracker is left UNTOUCHED (the old behavior
-    of committing ``{}`` on error silently wiped the session baseline).
-    Callers must surface a warning on ``None`` rather than crashing.
+    It must NOT commit the whole session. ``ChangeTracker.commit`` replaces the
+    snapshot, which forges a last-read baseline for every OTHER cell — a write
+    to any cell would then disable the ``edit_cell`` guard for all of them
+    (every foreign edit silently stops reporting ``conflict``, and a never-read
+    cell stops reporting ``needs_read``). That is H7 in
+    ``docs/agenda-bug-hunt-1.md``.
+
+    Returns the fresh fingerprint map (the caller reports the post-write hash
+    from it), or ``None`` if the hashes payload was an error — in which case
+    the tracker is left UNTOUCHED. Callers must surface a warning on ``None``
+    rather than crashing.
     """
     from marimo_inspection.templates.mutation import build_cell_hashes_template
 
     data = await _execute_json(client, sid, build_cell_hashes_template())
     if "error" in data:
         logger.warning(
-            "Snapshot refresh failed for session %s: %s",
-            sid,
-            data.get("error"),
+            "Snapshot refresh failed for session %s: %s", sid, data.get("error")
         )
         return None
     hashes = {k: v for k, v in data.items() if isinstance(v, str)}
     fps = {cid: CellFingerprint(code_hash=h) for cid, h in hashes.items()}
-    get_tracker().commit(sid, fps)
+    tracker = get_tracker()
+    touched = {cid: fps[cid] for cid in record if cid in fps}
+    if touched:
+        tracker.record_cells(sid, touched)
+    if forget:
+        tracker.forget_cells(sid, forget)
     return fps
 
 
@@ -145,10 +161,17 @@ async def create_cell(
     if "error" in data:
         return data
 
-    fps = await _refresh_snapshot(client, sid)
+    # Record the NEW cell's baseline (deliberate: the caller authored its
+    # source, so the documented create → run → edit flow must not force a
+    # re-read of a cell the agent just wrote). Only that cell is touched —
+    # never the whole session (H7).
+    new_cell_id = data.get("cell_id")
+    fps = await _refresh_snapshot(
+        client, sid, record=[new_cell_id] if new_cell_id else ()
+    )
     response = {
         "status": "ok",
-        "cell_id": data.get("cell_id"),
+        "cell_id": new_cell_id,
         "session_id": sid,
         "next_steps": ["Use run_cell to execute it, or get_cell_map to see it."],
     }
@@ -264,7 +287,9 @@ async def edit_cell(
     # The template's own hash (if any) is computed inside the edit context,
     # BEFORE the context-exit applies the queued edit — i.e. stale. Always
     # report the POST-context-exit hash from the fresh snapshot instead.
-    fps = await _refresh_snapshot(client, sid)
+    # Record ONLY this cell's baseline: an unrelated cell's baseline must
+    # survive this write (H7).
+    fps = await _refresh_snapshot(client, sid, record=[cell_id])
     response = {
         "status": "ok",
         "cell_id": cell_id,
@@ -364,7 +389,10 @@ async def delete_cell(
     if "error" in data:
         return data
 
-    fps = await _refresh_snapshot(client, sid)
+    # The cell is gone, so there is nothing to record: drop its fingerprint
+    # without touching any other cell's baseline (H7). A re-used id would
+    # then report `needs_read` — the safe direction.
+    fps = await _refresh_snapshot(client, sid, forget=[cell_id])
     response = {
         "status": "ok",
         "cell_id": cell_id,

@@ -109,6 +109,35 @@ def test_record_cells_never_erases_unlisted_cells():
     assert t.get_cell_fingerprint("s1", "C").code_hash == "c2"
 
 
+def test_record_cells_keeps_other_baselines():
+    tracker = ChangeTracker()
+    tracker.commit("s1", {"a": CellFingerprint(code_hash="h_a")})
+    tracker.record_cells("s1", {"b": CellFingerprint(code_hash="h_b")})
+    assert tracker.get_cell_fingerprint("s1", "a") is not None  # NOT dropped
+    assert tracker.get_cell_fingerprint("s1", "b").code_hash == "h_b"
+
+
+def test_record_cells_updates_the_named_cell_only():
+    tracker = ChangeTracker()
+    tracker.commit("s1", {"a": CellFingerprint(code_hash="h_a")})
+    tracker.record_cells("s1", {"a": CellFingerprint(code_hash="h_a2")})
+    assert tracker.get_cell_fingerprint("s1", "a").code_hash == "h_a2"
+
+
+def test_forget_cells_drops_only_the_named_cells():
+    tracker = ChangeTracker()
+    tracker.commit("s1", {"a": CellFingerprint("h_a"), "b": CellFingerprint("h_b")})
+    tracker.forget_cells("s1", ["a"])
+    assert tracker.get_cell_fingerprint("s1", "a") is None
+    assert tracker.get_cell_fingerprint("s1", "b") is not None
+
+
+def test_forget_cells_is_a_noop_without_a_snapshot():
+    tracker = ChangeTracker()
+    tracker.forget_cells("missing", ["a"])  # must not raise, must not create a snapshot
+    assert tracker.has_snapshot("missing") is False
+
+
 def test_to_dict_shape():
     t = ChangeTracker()
     t.commit("s1", {"A": _fp("a"), "B": _fp("b")})
