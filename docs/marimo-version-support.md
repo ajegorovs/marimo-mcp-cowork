@@ -52,6 +52,37 @@ on 0.25.x while marimo-inspect runs on 0.24.x); the in-kernel templates are
 expected to keep working for 0.24.x-lineage kernels, but only the tested
 combination is guaranteed.
 
+### Cross-version evidence: a 3.14 kernel on marimo 0.24.x
+
+What is pinned is the **marimo** version, not the kernel's Python minor. The one
+piece of cross-Python evidence we have comes from the first consumer integration
+(2026-09-07; the consumer's append-only log is
+`udv-echo-process/docs/marimo-integration-log.md`, entries S11–S13 and O21):
+
+| Side | marimo | Python |
+| --- | --- | --- |
+| Provider (`marimo-inspect`'s own venv) | 0.24.0 | 3.12 |
+| Live kernel under test | 0.24.0 | **3.14.7** |
+
+Against that kernel every live template ran clean — `cell_map`, `errors`,
+`variables`, `cell_outputs`, and `edit_cell`'s `_code_mode.get_context()`
+round-trip (O21: the full co-work loop ran green, `get_errors` reported 0
+errors, `marimo check` exited 0) — **including error paths**: a hand-written
+cross-cell redefinition was caught at runtime by `get_errors` as
+`kind: "graph"` (S13). A provider-side probe the same day, recorded in
+[agenda-remote-marimo-mcp.md](agenda-remote-marimo-mcp.md) §Evidence gathered,
+observed the same combination independently.
+
+Read it for exactly what it is, and no more:
+
+- **Observed integration evidence, not a suite-enforced leg.** `-m live` boots
+  its server from the dev environment (3.12), so the suite has no 3.14 leg and a
+  regression that appears only on a 3.14 kernel would not be caught here.
+  Adding that leg is open work, deliberately not claimed.
+- It says nothing about a **0.25+ kernel** — the drift risk this document
+  exists for — and nothing about marimo differing between the two sides.
+- Same host, loopback; no network involved.
+
 ## Validating a marimo upgrade
 
 Before widening `<0.25`:

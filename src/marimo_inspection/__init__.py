@@ -32,7 +32,7 @@ from __future__ import annotations
 from marimo_inspection.client import ExecuteResult, MarimoClient, SessionInfo
 from marimo_inspection.discovery import DiscoveredServer, discover_servers
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "DiscoveredServer",

@@ -112,6 +112,11 @@ args: ['--transport', 'stdio']
 cwd: '~/Repos/marimo-inspect'
 ```
 
+A sandboxed run needs more than a venv binary: a writable uv cache, a writable
+matplotlib config/temp cache, and a pre-synced dependency set (a cold
+`marimo[recommended]` is ~340 MB / ~13 min). See
+[README §Sandbox notes](README.md#sandbox-notes).
+
 ## Verification
 
 ```bash

@@ -80,7 +80,7 @@ contract therefore lives in `README.md` and the per-harness docs:
 
 | Task | Command |
 | --- | --- |
-| Install / sync | `uv sync` |
+| Install / sync | `uv sync --all-extras` (test deps are an optional extra — a bare `uv sync` prunes pytest) |
 | Unit tests (no kernel) | `uv run pytest -m "not live"` |
 | Live tests (real kernel) | `uv run pytest -m live` |
 | Lint | `uv run ruff check .` |
@@ -88,10 +88,10 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-10): `-m "not live"` → **278 passed**, `-m
-live` → **28 passed** (incl. the 2 hermetic mutation regressions and 6 hermetic
-widget tests). Counts drift as tests are added; treat the split, not the exact
-numbers, as the contract.
+Verified on this tree (2026-09-10): `-m "not live"` → **281 passed**, `-m
+live` → **31 passed** (incl. the 2 hermetic mutation regressions, 7 widget
+regressions and 2 console-channel regressions). Counts drift as tests are
+added; treat the split, not the exact numbers, as the contract.
 
 ## Layout
 
@@ -176,12 +176,18 @@ Separately, `tests/marimo_inspect/live/test_mutation.py` (2 tests) exercises the
 of the fixture: create → read → guarded edit → run → verify → delete, and
 external-conflict → re-read → recover. It boots one isolated server per test
 and asserts the repo fixture stays byte-identical (the hermeticity gate).
-`tests/marimo_inspect/live/test_ui.py` (6 tests) does the same for the widget
+`tests/marimo_inspect/live/test_ui.py` (7 tests) does the same for the widget
 tool — cells *created through the write tools* do execute, so a widget can be
 materialized in-kernel without a browser: shape refusal, verified apply with a
 reactive dependent re-run, verified no-op on a repeat, kernel rejection
-surfacing as an error, and the cell-private (leading-underscore) name rule. Frontend *rendering* and browser-context console
-exceptions remain a manual gate (agenda T9-b).
+surfacing as an error, an `on_change` handler that raises reported as
+`on_change_failed` with `applied: true` (the value moved; only the callback
+failed), and the cell-private (leading-underscore) name rule — that case also
+pins the error-channel split (the structured channel stays silent,
+`has_errors: false`, while the traceback is visible in the run payload and in
+the cell's `console_stderr`; see `co-work-loop.md` §6). Frontend *rendering* was
+verified once by hand against a real browser (agenda T9-b) and is still not
+CI-covered: the live suite boots kernels, not frontends.
 
 ## Docs map
 
@@ -288,10 +294,10 @@ Consumers should reference a **tag**, not a moving branch, so a future bump
 can't silently change what they resolve.
 
 - Cut a release tag at the current package version before asking any consumer
-  to depend on this repo: `git tag v0.3.0 && git push origin --tags`.
+  to depend on this repo: `git tag v0.3.1 && git push origin --tags`.
 - Bump `version` in `pyproject.toml` **and** `__version__` in
   `src/marimo_inspection/__init__.py` together (they are duplicated on
   purpose); cut the matching tag in the same change.
-- Consumer form: `uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.0"`
-  (or a `[tool.uv.sources]` entry with `tag = "v0.3.0"`).
+- Consumer form: `uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.1"`
+  (or a `[tool.uv.sources]` entry with `tag = "v0.3.1"`).
 - Never move a tag that a consumer already pinned — cut a new one instead.

@@ -1,6 +1,6 @@
 [project]
 name = "marimo-inspect"
-version = "0.3.0"
+version = "0.3.1"
 description = "A FastMCP server and Python client for inspecting and editing live marimo notebooks"
 readme = "README.md"
 authors = [

@@ -1,6 +1,6 @@
 # Adding marimo-inspect to another repo — bootstrap and integration index
 
-> **Bootstrap status — normal VCS route verified.** Use the pinned `v0.3.0`
+> **Bootstrap status — normal VCS route verified.** Use the pinned `v0.3.1`
 > consumer installation below, configure the harness to invoke the consumer
 > environment's console script, then read the MCP resources for runtime work.
 > Entries labelled ❓ remain deliberate investigation notes, not setup
@@ -37,7 +37,7 @@ path (B3) needs no MCP server and no `fastmcp` at all.
 ### A1. Pinned VCS release — standard consumer path ✅
 
 ```bash
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.0"
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.1"
 ```
 
 Pin the tag in a committed `pyproject.toml`; this is a normal, non-editable
@@ -81,9 +81,16 @@ end-to-end install verification exist. Use A1 for normal consumers.
   for the demo notebooks, not needed by the client or server core). ✅
 - Importing `marimo_inspection` does **not** import `fastmcp` — the server is
   exposed through a lazy `__getattr__`, so pure-client consumers pay nothing. ✅
+- **matplotlib rendering in a 0.24 kernel: `mo.mpl` exposes only `interactive`.**
+  ✅ In marimo 0.24.0 there is no `mo.plt` / `mo.pyplot`
+  (`dir(mo.mpl) == ['interactive']`). A plotting helper that saves a figure to
+  disk and closes it is invisible to the agent unless you give it a
+  figure-returning path and wrap the result:
+  `mo.mpl.interactive(plot(..., return_fig=True))`. The first consumer hit
+  exactly this (O23) — decide it before writing display code, not after.
 
 Verified resolution on this machine: `fastmcp 4.0.3`, `marimo 0.24.0`,
-`marimo-inspect 0.3.0`.
+`marimo-inspect 0.3.1`.
 
 ---
 
@@ -247,7 +254,7 @@ Then add a row to the table below.
 
 ## Sandbox notes
 
-Two environment-specific facts that shape consumer config on constrained
+Environment-specific facts that shape consumer config on constrained
 filesystems:
 
 - `uv add` / `uv run` need a **writable uv cache**. Under a filesystem sandbox
@@ -255,6 +262,25 @@ filesystems:
   error 30) at path "~/.cache/uv/..."`. ✅ Workarounds: set
   `UV_CACHE_DIR` to a writable path, or — for the server process itself — skip
   `uv run` and exec the venv binary.
+- **matplotlib wants a writable config/cache dir — it degrades, it does not
+  fail.** ✅ Verified here on matplotlib 3.11.1 / Python 3.12 with
+  `MPLCONFIGDIR` set to an unwritable directory (the read-only-`$HOME` case,
+  where the default is `~/.config/matplotlib`): matplotlib prints
+  `…is not a writable directory` and `Matplotlib created a temporary cache
+  directory at /tmp/matplotlib-<rand> because there was an issue with the
+  default path ({configdir})…`, then **imports and plots fine** (repeatable in a
+  fresh process; the literal `{configdir}` is matplotlib's own message, not a
+  redaction). The cost is a font cache rebuilt per process, not a crash. Set
+  `MPLCONFIGDIR` to a writable path to silence it and keep the cache. The first
+  consumer recorded this as a hard failure under their sandbox (S12) — on this
+  box it reproduces as a warning plus temp-dir fallback, so treat the workaround
+  as the shared fact and the severity as environment-dependent.
+- **A cold `marimo[recommended]` install is expensive — pre-sync once.** ~340 MB
+  (polars-runtime-32 55.8 MB, duckdb 20.5 MB, pyarrow 47.8 MB, sqlglot 26 MB,
+  marimo itself 37.7 MB) and ~13 min on a cacheless `uv sync --no-cache` before
+  `marimo edit` binds (consumer box, O18). Repeated `uv run --with
+  'marimo[recommended]>=0.24.0,<0.25'` probes pay that every time; sync once
+  during onboarding instead. 📄
 - A consumer project **nested inside** this repo makes uv treat it as a workspace
   member and rewrite this repo's `pyproject.toml`/`uv.lock`. ✅ See A2.
 

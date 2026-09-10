@@ -1,10 +1,14 @@
 # Agenda (open issue): first-consumer integration findings (udv-echo-process)
 
-> **Status:** **Open — 6 items left** (T3, T4, T6, T9-browser-half,
-> T10-ownership, T11). Everything else from this integration is resolved; the
-> §Resolved log keeps a one-line record plus the evidence pointer for each, so
-> a resolved item never needs re-litigating from this file.
-> **Created:** 2026-09-07 · **Condensed to open items only:** 2026-09-10.
+> **Status:** **Open — 1 item left** (T3, which the DSH harness owns).
+> Everything else from this integration is resolved — T4's version evidence,
+> T6's sandbox gotchas, T9-b's browser pass (which surfaced T12/T13), T10's
+> ownership decision, T11's error-channel split, and T12/T13 themselves (all
+> closed 2026-09-10) — and the §Resolved log keeps a one-line record plus the
+> evidence pointer for each, so a resolved item never needs re-litigating from
+> this file.
+> **Created:** 2026-09-07 · **Condensed to open items only:** 2026-09-10 ·
+> **T4 + T6 + T9-b + T10 + T11 + T12 + T13 closed:** 2026-09-10.
 > **Evidence labels:** ✅ observed (consumer machine, Linux, Python **3.14.7**
 > kernel, marimo **0.24.0**, this repo's MCP server registered in the DSH
 > harness — or provider-side, as stated) · 📄 from provider docs · ❌ not done /
@@ -37,24 +41,6 @@ server lifecycle.
 
 ## Open items
 
-### T11 — a failed run reports through `run_cell`, not `get_errors` ❓
-
-Observed while locking in the bare-name rule (2026-09-10): create a cell that
-references a cell-private name (`int(_private_slider.value)`) and run it —
-`run_cell` returns `{"error": "Execution failed", "stderr": <NameError
-traceback>}` while a subsequent `get_errors` reports `has_errors: false`,
-`total_errors: 0` for that same cell. So after a failed run the structured
-error channel is empty and the only traceback is in the run's own payload.
-
-- ❓ Open: is that marimo's own record (the cell never reached a normal
-  execution path, so no `cell.errors` entry exists) or a gap in this repo's
-  aggregation? Nothing pins the behavior today — the live mutation suite never
-  asserts a *failing* run's payload.
-- **Next action:** one probe — run a cell that raises an ordinary runtime error
-  (`1/0`) through `run_cell`, then compare `get_errors` with the run payload.
-  Then either document the split in `co-work-loop.md` §6 or widen the error
-  aggregation. DoD: the behavior is documented, or the channels agree.
-
 ### T3 — DSH harness delivers list-typed MCP arguments as JSON strings ❌
 
 - Repro ✅ (consumer side): `get_variables(variable_names=[...])` and
@@ -63,93 +49,115 @@ error channel is empty and the only traceback is in the run's own payload.
   this repo** — `client.py` is a pure HTTP client and never sees these
   arguments.
 - Works today: the empty filter (no argument) returns everything.
+- ✅ **Hermes counter-evidence (2026-09-10):** the same two tools accept a real
+  JSON array through the Hermes MCP gateway — `get_variables(variable_names=
+  ["filtered", "data"])` and `get_cell_outputs(cell_ids=["Xref", "BYtC"])` both
+  filtered correctly against a live marimo 0.24.0 session. List transport is
+  therefore not a property of this server or of MCP itself; the mangling is
+  specific to the DSH bridge. (No defensive type landed here — see the item's
+  owner note above.)
 - **Next action:** file against the DSH harness. Provider-side option, not
   scheduled: accept `str | list[str]` defensively on those two parameters
   (cheap). DoD: a harness-side repro, or the defensive type landing here with a
   unit test asserting a JSON-string list is accepted.
 
-### T4 — the consumer's 3.14 kernel evidence is not recorded in the version contract ❌
+### T12 — `get_errors`' console channel is dead (channel filter never matches) ❌
 
-- Evidence exists ✅ (consumer, marimo 0.24.0 kernel on Python 3.14.7): every
-  live template ran clean — `cell_map`, `errors`, `variables`, `cell_outputs`,
-  and `edit_cell`'s `_code_mode.get_context()` round-trip — including error
-  paths (a cross-cell redefinition surfaced as `kind: "graph"` via
-  `get_errors`).
-- `docs/marimo-version-support.md` still describes drift evidence as
-  provider-side only, and the `-m live` suite has no 3.14 leg.
-- **Next action:** cite `udv-echo-process/docs/marimo-integration-log.md` O21
-  in that doc; add a 3.14 leg to the live suite when one is wanted. DoD: the
-  doc names the consumer evidence, or explains why it stays provider-only.
+Found by the T9-b browser pass (2026-09-10). Every console-channel filter
+compares the **unnormalized** channel string —
+`str(getattr(o, "channel", "")).lower() == "stderr"`.
+`marimo._messaging.cell_output.CellChannel` is a `str`-mixin enum whose `str()`
+is `CellChannel.STDERR` (verified in this venv: `repr` is `stderr`, `str()` is
+`CellChannel.STDERR`, `== "stderr"` is `True`), so the comparison is always
+`False`. The shared serializer two lines away normalizes with
+`.split(".")[-1].lower()` — which is exactly why `get_cell_outputs.console_events`
+carries the events while its own `stdout`/`stderr` lists are empty.
 
-### T6 — sandbox/environment gotchas still to cross-reference ❌
+Four sites: `templates/errors.py:57` and `:94`, `templates/cell_outputs.py:99`
+and `:103`.
 
-- ✅ Already covered: a read-only `~/.cache/uv` breaks `uv add`/`uv run`
-  (`UV_CACHE_DIR` workaround) — `docs/harness-integration/README.md`
-  §Sandbox notes.
-- ❌ Still uncaptured: matplotlib needs a writable `MPLCONFIGDIR` (it fails on
-  an unwritable `~/.config/matplotlib`) in the same sandboxed setups; the
-  cold-install cost of `marimo[recommended]` (≈340 MB / ~13 min cacheless) —
-  pre-sync once instead of probing per `--with`; and marimo 0.24.0's
-  `mo.mpl` exposing only `interactive` (no `mo.plt`/`mo.pyplot`), which decides
-  how a consumer renders saved matplotlib figures.
-- **Next action:** fold these into
-  `docs/harness-integration/deepseek-harness-web-profile.md` (already carries
-  the `uv run` vs venv-binary gotcha) or §Sandbox notes — whichever stays
-  self-sufficient. DoD: a sandboxed consumer following the doc does not hit
-  them.
+Consequence, observed live: an unknown dropdown key and a raising `on_change`
+both produced full kernel tracebacks — displayed by the frontend in the widget
+cell's console-output area, and present in `get_cell_outputs.console_events` —
+while `get_errors` returned `has_errors: false`,
+`has_console_exception: false`, `cells: []`. So the advertised "console-only
+UI-handler exceptions are visible even when `c.errors` is empty" channel has
+never actually delivered, and `get_errors.console_stderr` plus
+`get_cell_outputs.stdout/stderr` are always empty.
 
-### T9-b — the browser-dependent half of widget verification ❌ (manual gate)
+- **Owner:** provider. **Next action:** normalize at all four sites (share one
+  helper with the serializer) and add a live regression: a console-only
+  UI-handler failure must flag its cell in `get_errors`, and a `print()` must
+  appear in `get_cell_outputs.stdout`. DoD: that test fails before the fix and
+  passes after.
+- ⚠️ Until fixed, read a UI update's failure from the `set_ui_value` payload
+  (`status: error` + `kernel_message`, captured by the tool's own stderr scan),
+  never from `get_errors`.
 
-- ✅ Automated and hermetic now: the write surface (create → read → guarded
-  edit → run → verify → delete, plus the external-conflict → re-read → recover
-  path) and `set_ui_value` against a real widget with a real reactive re-run
-  (`tests/marimo_inspect/live/test_mutation.py`, `…/test_ui.py`).
-- ❌ No automation claims: whether a widget actually **renders** in a
-  frontend, and console-only `on_change` handler exceptions raised **in the
-  browser context** (`get_errors.console_stderr` is exercised only for
-  kernel-side failures).
-- **Next action:** one manual browser pass — launch the demo notebook *without*
-  `--headless`, drive `set_ui_value`, confirm the control moves in the UI,
-  induce a bad dropdown key, and read `get_errors` (`structured_errors` vs
-  `console_stderr`). Record the evidence in this item. This is the last
-  widget-behaviour gap; it needs a browser, so it cannot be CI-covered.
+### T13 — `set_ui_value` mislabels an `on_change`-handler failure ❌
 
-### T10 — widget value-shape contract ✅ resolved in code, ❓ one ownership decision left
+Same pass, same session. Setting a slider whose `on_change` raises returned
+`reason: value_not_applied` and *"The kernel rejected the value … so the element
+was NOT changed"* — while the same payload reported `value_before: 1` →
+`value_after: 5`, and `get_variables` confirmed `boom.value == 5`. The value
+**did** move; only the callback failed.
 
-- ✅ **Fixed** in the working tree (see §Resolved log for the mechanism). The
-  live suite locks: scalar → `dropdown` refused with `did_you_mean` and no
-  change; `["beta"]` applied + verified + dependent cell re-ran; a repeat with
-  the same value is a verified no-op; an unknown option key returns the
-  kernel's own `ValueError` as `status: error` / `reason: value_not_applied`
-  with the widget unmoved; and a widget bound to a leading-underscore name is
-  unreachable (`reason: unknown_variable`).
-- ❓ **Still open (decision, not code):** does a package-install / harness
-  onboarding resource belong in this repo's MCP resources, or does that
-  material stay consumer-repo documentation? The three packaged resources cover
-  *runtime* co-work only.
-- **Next action:** decide; if "provider", add a fourth resource in its own
-  change and update the resource tests' URI-set assertion. DoD: a recorded
-  decision either way.
+The kernel's own traceback shows the two cases are different code paths:
+`runtime.py:2030` → `ui_element.py:468 self._value = self._convert_value(value)`
+(a bad option key raises **before** assignment, so "not changed" is truthful
+there) versus `ui_element.py:473 self._on_change(self._value)` (assigned first,
+handler raises after). The tool collapses both into one reason.
+
+- **Owner:** provider. **Next action:** keep `value_not_applied` for a rejected
+  conversion and report the handler case as its own reason (e.g.
+  `on_change_failed`) with `applied: true` when the read-back moved. DoD: a
+  self-consistent payload for both cases, pinned by the widget live suite.
 
 ## Resolved log
 
 One line each, with the pointer that holds the detail. Ordered by item id.
 
-- **T1** ✅ *Headless `--no-token` servers are invisible to discovery* — by
-  design: `marimo/_server/server_registry.py` is registered only on the
-  browser path. Consumer caveat documented: `harness-integration/README.md`
-  ("a server alone is not a session") and `agent-onboarding-demo-mcp.md`
-  §Prerequisites (`/sse` handshake, or launch with a browser).
+- **T1** ✅ *A server alone is not a session* (mechanism corrected 2026-09-10) —
+  a headless `--no-token` launch **does** write its registry entry (observed:
+  `~/.local/state/marimo/servers/127.0.0.1_59309.json` present before any
+  browser connected), and `discovery.py` calls a server healthy on
+  `GET /api/sessions → 200` alone, so discovery is not what hides it:
+  `list_active_notebooks` enumerates *sessions*, and a fresh server has none.
+  The original phrasing ("invisible to discovery … registered only on the
+  browser path") overstated the mechanism. The consumer caveat itself stands,
+  as documented in `harness-integration/README.md` §Runtime prerequisites and
+  `agent-onboarding-demo-mcp.md` §Prerequisites (`/sse` handshake, or launch
+  with a browser).
 - **T2** ✅ *`list_active_notebooks` auto-bind* — fixed in `8a44b8c` / v0.2.0:
   the bind stores **both** `session_id` and `server_url`
   (`tools/session.py`), every handler resolves from the bound state, covered by
   `tests/marimo_inspect/test_session_binding.py`. Residual "call-local"
   reports from the DSH harness are a harness process/reconnect artifact, not
   this bug (T7 triage; reconfirmed over Hermes stdio in T8/T9).
+- **T4** ✅ *Consumer 3.14 evidence recorded* — `docs/marimo-version-support.md`
+  gained a §Cross-version evidence subsection: provider marimo 0.24.0 on Python
+  3.12 against a live kernel on **3.14.7**, every live template clean (O21: the
+  loop ran green, `get_errors` 0, `marimo check` exit 0) including an error path
+  caught as `kind: "graph"` (S13), plus the provider-side probe recorded in
+  `agenda-remote-marimo-mcp.md`. Labelled *observed integration evidence, not a
+  suite-enforced leg*: `-m live` boots from the dev environment (3.12), so a
+  3.14-only regression is still invisible to the suite — that leg is deferred
+  open work, deliberately unclaimed.
 - **T5** ✅ *Publishing checklist* — repo flipped public; items 1–4 executed
   (AGENTS.md, `harness-integration/README.md` §A1, README); tags cut:
   `v0.2.0`, `v0.3.0`. The tag/release practice is documented in AGENTS.md
   §Git tags.
+- **T6** ✅ *Sandbox/environment gotchas cross-referenced* —
+  `harness-integration/README.md` §Sandbox notes gained the matplotlib
+  config-dir finding, verified locally (matplotlib 3.11.1 / Python 3.12): an
+  unwritable `MPLCONFIGDIR` **warns and falls back to a temp cache** — imports
+  and plots still succeed, at the cost of a per-process font cache — so the
+  consumer's "it fails" severity (S12) did not reproduce; the workaround
+  (`MPLCONFIGDIR` → writable path) is the shared fact. Also recorded: the cold
+  install cost (O18: ~340 MB / ~13 min cacheless → pre-sync once) and marimo
+  0.24.0's `mo.mpl` exposing only `interactive` (no `mo.plt`/`mo.pyplot`; O23),
+  which now lives under §What you inherit either way. The DSH note points at
+  §Sandbox notes from Finding 2.
 - **T7** ✅ *Consumer session-report triage* — every code-verifiable claim
   checked out except the headline (F7 did **not** confirm T2). Two findings
   were real and became work: the hardcoded read flags (`cell_map` `has_output`,
@@ -177,6 +185,23 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   `structured_errors` / `console_stderr` in `get_errors`, `create_cell` visible
   by default, and the three packaged MCP resources. Residual browser half is
   T9-b.
+- **T9-b** ✅ *Browser pass executed* — a headless `--no-token` server on a
+  scratch notebook (dropdown + reactive readback + a slider whose `on_change`
+  raises), driven through this repo's MCP tools with a real browser attached to
+  the *same* session. Verified: the widget **renders**
+  (`<marimo-dropdown data-options='["alpha","beta","gamma"]'>` in the DOM after
+  `run_cell`), and `set_ui_value("gate", ["beta"])` — kernel read-back
+  `alpha → beta` — made the frontend re-render the dependent cell
+  (`[readback] alpha` → `[readback] beta` on the page). The "browser-context
+  exception" premise did not survive contact: an unknown dropdown key and a
+  raising `on_change` both surface as **kernel stderr**, shown by the frontend
+  in the widget cell's console-output area, and raise **no** JS exception (the
+  only console noise was the unrelated copilot language server). Two provider
+  defects fell out and became T12/T13. Recipe to repeat (~2 min): launch
+  `marimo edit --headless --no-token --port <p> <nb>`, open the URL in a browser
+  (the page performs the session handshake), then drive with the MCP tools
+  passing `server_url`/`session_id` explicitly. Still not CI-coverable — but on
+  demand, not "manual-unverifiable".
 - **T10** ✅ *Widget shape contract* — never coerces: the pre-flight guard
   derives the accepted shape from the element's own `UIElement[...]`
   declaration (`list[str]` for a dropdown, `int | float` for a slider) and
@@ -188,13 +213,69 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   `reason: value_not_applied` with the kernel's own message. Split across
   `templates/ui.py` (guard + read-back), `tools/ui.py` (stderr rejection scan,
   payload semantics), the widget tests, and `co-work-loop.md` §5 (per-widget
-  shape table). Ownership question tracked in T10 above.
+  shape table). **Ownership decided (2026-09-10):** package-install /
+  harness-onboarding material stays in `README.md` §Install and connect an MCP
+  client plus `docs/harness-integration/`; the three packaged resources remain
+  **runtime-only** and no fourth resource is added (their authority is the
+  co-work loop, not environment setup).
+- **T11** ✅ *A failed run reports through `run_cell`, not `get_errors`* — the
+  channels are truthful; the split is marimo's. Probe (2026-09-10, real 0.24.0
+  kernel, isolated server): a cell raising `1/0`, or a NameError for a name
+  that exists nowhere, records a structured runtime error (status `exception`,
+  `cell.errors` populated) that `get_errors` reports; a cell referencing
+  another cell's **cell-private** (leading-underscore) variable ends
+  `exception` with `cell.errors == []`, so `get_errors` counts no structured error
+ (`has_errors: false`). Not an aggregation gap — widening it would mean inferring errors
+  from output mimebundle channels, while the structured record already covers
+  every other failure class. Documented in the packaged `co-work-loop.md` §6 and
+  pinned by the private-name case in
+  `tests/marimo_inspect/live/test_ui.py`
+  (`test_set_ui_value_cannot_address_a_cell_private_widget`).
+  *Amended 2026-09-10 after T12:* with the console channel actually working the
+  traceback is no longer "run-payload only" — the cell now appears in
+  `get_errors.cells` with an empty `structured_errors` and a populated
+  `console_stderr`. The structured counts stay silent, and that is what the pin
+  asserts.
 
-## Measured state (2026-09-10, after T9 + T10)
+- **T12** ✅ *`get_errors`' console channel was dead code* — found by the T9-b
+  browser pass, fixed 2026-09-10. marimo's `CellChannel` is a `str`-mixin enum:
+  `str(CellChannel.STDERR)` is `CellChannel.STDERR` while
+  `CellChannel.STDERR == "stderr"` is True, so every filter written as
+  `str(getattr(o, "channel", "")).lower() == "stderr"` compared against a string
+  that never occurs. Four sites (`templates/errors.py` ×2,
+  `templates/cell_outputs.py` ×2) now share one normalizer with the serializer
+  (`_channel_name`), so `get_errors.console_stderr`, `has_console_exception` and
+  `get_cell_outputs.stdout/stderr` deliver for the first time — the channel was
+  added in `5eb9615` (2026-09-10) in answer to the DSH consumer's F3 finding
+  ("UI-element handler exceptions are invisible here") and had never matched a
+  single event. Pinned live by
+  `test_console_stderr_flags_a_console_only_ui_handler_exception` and
+  `test_print_output_lands_in_the_stdout_channel` (both fail pre-fix), plus 3
+  hermetic template tests whose fakes carry the **real** enum — a plain
+  `"stderr"` string hides the bug. Consequence for T11 recorded above.
+- **T13** ✅ *`set_ui_value` mislabelled an `on_change` failure* — fixed
+  2026-09-10. marimo prints the same stderr notice for both failure points of a
+  UI update, but they differ: a rejected conversion (`_convert_value`, unknown
+  dropdown key) raises *before* the assignment, while the element's `on_change`
+  runs *after* it. The tool now classifies from the read-back it already does
+  (`tools/ui.py::_rejection_payload`): value did not move →
+  `value_not_applied` (`applied: false`); value moved → `on_change_failed` with
+  `applied: true`, before/after, and the handler's message — and no payload
+  claims the element was unchanged when `value_after != value_before`.
+  Documented in the packaged `co-work-loop.md` §5 and in a minimal correction to
+  `live-safety.md` (it had said "the widget is unmoved in both cases"), pinned
+  live by `test_set_ui_value_reports_an_on_change_failure_as_applied`.
+  *Residual:* a repeat of the value the element already holds whose handler then
+  raises reads back unmoved and so still reports `value_not_applied`; the message
+  is truthful ("did NOT move (5 -> 5)") and `kernel_message` carries the handler
+  traceback, but the traceback frame (`_on_change` vs `_convert_value`) is the
+  available refinement. Unobserved in normal use, unpinned.
 
-- `uv run pytest -m "not live" -q` → **278 passed, 28 deselected**
-- `uv run pytest tests/marimo_inspect/live/ -m live -q` → **28 passed**
-  (includes 6 hermetic widget tests: `tests/marimo_inspect/live/test_ui.py`)
+## Measured state (2026-09-10, after T4 + T6 + T9 + T9-b + T10 + T11 + T12 + T13)
+
+- `uv run pytest -m "not live" -q` → **281 passed, 31 deselected**
+- `uv run pytest tests/marimo_inspect/live/ -m live -q` → **31 passed**
+  (includes 7 widget regressions: `tests/marimo_inspect/live/test_ui.py`)
 - `uv run ruff check .` / `uv run ruff format --check .` → clean
 - `uv run marimo check notebooks` → exit 0
 

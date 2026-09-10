@@ -131,9 +131,9 @@ browser-instantiated session exists (the same two tiers AGENTS.md describes).
 | `test_cell_outputs.py` | 3 | every cell listed with the documented output keys |
 | `test_variables.py` | 3 | runs ok on a live kernel; sees kernel-injected globals; degrades gracefully without numpy/pandas (regression for the unguarded numpy import) |
 | `test_dependency.py` | 2 | template executes against a live kernel; returns documented structure/types (graph content is instantiate-gated — see note above) |
-| `test_errors.py` | 3 | template returns consistent, typed error summary; stable across repeated runs |
+| `test_errors.py` | 5 | template returns consistent, typed error summary; stable across repeated runs — plus **console-channel regressions**: a UI-handler traceback marimo never records structurally is flagged through `console_stderr` (`has_console_exception: true`), and a `print()` lands in `get_cell_outputs.stdout` |
 | `test_mutation.py` | 2 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, and external-conflict→re-read→recover — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
-| `test_ui.py` | 6 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private; missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
+| `test_ui.py` | 7 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
 do **not** need a kernel, so they live in the fast path (`tests/marimo_inspect/`).
@@ -231,7 +231,7 @@ upgrade procedure (step 3) runs `uv run pytest -m live` before widening the
 
 ```text
 uv run pytest tests/marimo_inspect/live/ -m live -q
-=> 28 passed in ~23s
+=> 31 passed in ~30s
 ```
 
 The two mutation regressions alone (they boot one extra isolated server each):
@@ -241,18 +241,25 @@ uv run pytest tests/marimo_inspect/live/test_mutation.py -m live -v
 => 2 passed in ~8.7s
 ```
 
-The six widget regressions alone:
+The seven widget regressions alone:
 
 ```text
 uv run pytest tests/marimo_inspect/live/test_ui.py -m live -q
-=> 6 passed in ~16s
+=> 7 passed in ~17s
+```
+
+The console-channel regressions alone:
+
+```text
+uv run pytest tests/marimo_inspect/live/test_errors.py -m live -q
+=> 5 passed in ~6s
 ```
 
 Fast path (unit tests; live tests collected but deselected):
 
 ```text
 uv run pytest -m "not live" -q
-=> 278 passed, 28 deselected in ~1.9s
+=> 281 passed, 31 deselected in ~1.9s
 ```
 
 What fixed the red suite (see [live-test-redesign-plan.md](live-test-redesign-plan.md) §0 for the verified marimo internals):

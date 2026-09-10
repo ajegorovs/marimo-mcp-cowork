@@ -172,7 +172,7 @@ users and consumer-repository contributors; it is a normal, non-editable
 installation in that project's environment.
 
 ```bash
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.0"
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.1"
 uv sync
 ```
 
@@ -209,7 +209,7 @@ restore the pinned version. Do not commit a machine-local dependency source.
 ## Development
 
 ```bash
-uv sync
+uv sync --all-extras           # test deps are an optional extra; a bare sync prunes pytest
 uv run ruff check .
 uv run pytest -m "not live"   # unit tests (fast, no kernel)
 uv run pytest -m live         # live kernel tests (boots its own headless server)
