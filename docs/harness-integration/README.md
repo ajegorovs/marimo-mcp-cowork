@@ -1,6 +1,6 @@
 # Adding marimo-inspect to another repo — bootstrap and integration index
 
-> **Bootstrap status — normal VCS route verified.** Use the pinned `v0.3.1`
+> **Bootstrap status — normal VCS route verified.** Use the pinned `v0.3.2`
 > consumer installation below, configure the harness to invoke the consumer
 > environment's console script, then read the MCP resources for runtime work.
 > Entries labelled ❓ remain deliberate investigation notes, not setup
@@ -37,7 +37,7 @@ path (B3) needs no MCP server and no `fastmcp` at all.
 ### A1. Pinned VCS release — standard consumer path ✅
 
 ```bash
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.1"
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.2"
 ```
 
 Pin the tag in a committed `pyproject.toml`; this is a normal, non-editable
