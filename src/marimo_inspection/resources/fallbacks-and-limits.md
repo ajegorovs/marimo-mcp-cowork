@@ -43,6 +43,16 @@ deliberate script escape hatch: run `marimo._code_mode` via the scratchpad.
 The MCP surface is intentionally narrow — there is no general execute /
 arbitrary-code tool.
 
+## Session binding needs a session-stable client
+
+`session_id`/`server_url` are omittable only where the client keeps **one MCP
+session across calls** — the binding is server-side state keyed by that
+session's identity. An `mcp`-SDK-based client qualifies. fastmcp's own `Client`
+does not (pinned fastmcp 4.0.3: a fresh MCP session per request, over stdio and
+HTTP alike), so its argument-less calls fail with "no active session bound" even
+though the bind returned success. Pass both arguments explicitly on such
+clients; they always win. See `workflow://marimo-inspect/co-work-loop` §1.
+
 ## Version pin
 
 marimo is pinned to 0.24.x because private APIs are used. Do not widen the

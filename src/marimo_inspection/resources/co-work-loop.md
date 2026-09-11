@@ -8,10 +8,26 @@ the exact tool to call.
 ## 1. Discover and bind
 
 `list_active_notebooks` — lists live sessions and auto-binds the first one,
-setting both `session_id` and `server_url`. The binding lives in the MCP
-server process/connection: a client that spawns or reconnects the server per
-call loses it, so pass `session_id`/`server_url` explicitly (or call
-`set_active_session`) in that case.
+setting both `session_id` and `server_url`.
+
+The binding is **server-side session state, keyed by the MCP session identity
+your client negotiates**, so it reaches the next call only if the client keeps
+**one MCP session for the connection**:
+
+- An `mcp`-SDK-based client does. Verified 2026-09-11: one stdio connection to
+  this server kept a single session id and the bound value was visible on the
+  following call.
+- **fastmcp's own `Client` does not.** On the pinned fastmcp 4.0.3 it starts a
+  fresh MCP session per request — over **stdio and HTTP alike** — so the
+  auto-bind and `set_active_session` return success while the next
+  argument-less call fails with "no active session bound" (measured
+  2026-09-11).
+
+So do not assume the binding: when the client is not known to keep one MCP
+session, pass `session_id` and `server_url` explicitly on every call. Explicit
+arguments always win, and they cost one line. This is a limitation of the
+client's session handling, not of the notebook session — the server-side
+promise (`binding_scope`) is scoped to the MCP session that made it.
 
 ## 2. Orient
 

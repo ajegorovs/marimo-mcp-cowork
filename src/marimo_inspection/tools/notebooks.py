@@ -21,7 +21,15 @@ async def list_active_notebooks(
 
     Returns all active sessions with their file paths and session IDs.
     The first discovered session is automatically bound as the active
-    session — subsequent tools can omit both `session_id` and `server_url`.
+    session, so later calls that share this MCP session can omit both
+    `session_id` and `server_url`.
+
+    The binding is server-side state keyed by the MCP session identity the
+    client negotiates, so it reaches the *next* call only when the client keeps
+    one MCP session for the connection — an `mcp`-SDK-based client does,
+    fastmcp's own `Client` does not on the pinned fastmcp 4.0.3 (it starts a
+    new session per request). Where that is the case, pass `session_id` and
+    `server_url` explicitly on every call.
 
     Args:
         server_url: Optional explicit server URL.
@@ -101,7 +109,7 @@ async def list_active_notebooks(
         },
         "notebooks": all_notebooks,
         "next_steps": [
-            "Use get_cell_map to get the structure of a notebook (session_id and server_url are now optional)",
+            "Use get_cell_map to get the structure of a notebook (omit session_id and server_url only if your client keeps one MCP session across calls — see the tool docstring)",
             "Use get_errors to debug errors",
             "Pass session_id explicitly to target a different notebook",
         ],

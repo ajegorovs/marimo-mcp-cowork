@@ -229,7 +229,8 @@ async def set_ui_value(
     Args:
         variable_name: Name of the live kernel global holding the UI element.
         value: New value for the element, in the shape that element accepts.
-        session_id: Optional session id (auto-bound if omitted).
+        session_id: Session ID; omit only when the active-session binding holds
+            for this call (see `list_active_notebooks`).
         server_url: Server URL override.
 
     Returns:

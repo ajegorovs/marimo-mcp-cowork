@@ -136,7 +136,8 @@ async def create_cell(
         hide_code: Whether the code is hidden in the UI (default False).
         after: Optional cell_id to place this cell after.
         before: Optional cell_id to place this cell before.
-        session_id: Optional session id (auto-bound if omitted).
+        session_id: Session ID; omit only when the active-session binding holds
+            for this call (see `list_active_notebooks`).
         server_url: Server URL override.
 
     Returns:
@@ -207,7 +208,8 @@ async def edit_cell(
         name: Optional new cell name.
         hide_code: Optional new hide_code value.
         check_fresh: Refuse to edit a cell that changed since last read.
-        session_id: Optional session id (auto-bound if omitted).
+        session_id: Session ID; omit only when the active-session binding holds
+            for this call (see `list_active_notebooks`).
         server_url: Server URL override.
 
     Returns:
@@ -326,7 +328,8 @@ async def run_cell(
 
     Args:
         cell_id: Target cell id.
-        session_id: Optional session id (auto-bound if omitted).
+        session_id: Session ID; omit only when the active-session binding holds
+            for this call (see `list_active_notebooks`).
         server_url: Server URL override.
 
     Returns:
@@ -367,7 +370,8 @@ async def delete_cell(
 
     Args:
         cell_id: Target cell id.
-        session_id: Optional session id (auto-bound if omitted).
+        session_id: Session ID; omit only when the active-session binding holds
+            for this call (see `list_active_notebooks`).
         server_url: Server URL override.
 
     Returns:

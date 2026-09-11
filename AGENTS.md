@@ -35,8 +35,13 @@ if it already held it. A value marimo swallowed (unknown dropdown key: traceback
 on stderr only) returns `status: error`, `reason: value_not_applied`.
 
 `list_active_notebooks` auto-binds the first discovered session (`session_id`
-and `server_url`); every other tool accepts an optional `session_id` and
-falls back to the bound session. `create_cell` defaults to `hide_code=False`.
+and `server_url`); every other tool accepts an optional `session_id` and falls
+back to the bound session **only when the client keeps one MCP session across
+calls** — an `mcp`-SDK-based client does, fastmcp's own `Client` does not on the
+pinned fastmcp 4.0.3 (fresh MCP session per request, stdio and HTTP alike), so
+there the arguments are not omittable in practice (open defect H11; the wording
+in `tools/session.py`, `server.py` and the resources is deliberately
+conditional). `create_cell` defaults to `hide_code=False`.
 `edit_cell` carries a staleness guard (`check_fresh=True` by default):
 never-read → `needs_read`, changed-since-read → `conflict`; recover by
 re-reading (`get_cell_data`/`get_cell_map`) and retrying (`check_fresh=False`
@@ -88,11 +93,13 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-11): `-m "not live"` → **303 passed**, `-m
+Verified on this tree (2026-09-11): `-m "not live"` → **307 passed**, `-m
 live` → **33 passed** (incl. the 4 mutation regressions — 2 hermetic flow cases
 plus the 2 hunt-H7 guard cases, 7 widget regressions and 2 console-channel
-regressions). Counts drift as tests are added; treat the split, not the exact
-numbers, as the contract.
+regressions). The not-live tier also carries the two session-binding subprocess
+cases that spawn the console script and pin the client-session split (H1/H11).
+Counts drift as tests are added; treat the split, not the exact numbers, as the
+contract.
 
 ## Layout
 
@@ -217,11 +224,12 @@ CI-covered: the live suite boots kernels, not frontends.
   break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
   machine. Read before choosing a consumer's topology or touching
   `discovery.py`/`--no-token` assumptions.
-- `docs/agenda-bug-hunt-1.md` — **OPEN** agenda: the 10 hunt #1 findings (9
+- `docs/agenda-bug-hunt-1.md` — **OPEN** agenda: the 11 hunt #1 findings (10
   silent-payload items plus one hardening item), each with a source-verified
   mechanism, a proposed priority, and the "repro must fail pre-fix" closure rule;
-  H7 (the `edit_cell` guard disarmed by any unrelated write) is resolved and
-  lives in its §Resolved log. Read before touching
+  H7 (the `edit_cell` guard disarmed by any unrelated write) and H1's binding
+  *claim* are resolved and live in its §Resolved log, H11 carrying the capability
+  gap H1's fix left behind. Read before touching
   `tools/mutation.py` payload/guard code, `tools/session.py` binding claims, or
   the `templates/*` payload shapes it names.
 - `docs/agenda-udv-consumer-findings.md` — **CLOSED** (fully resolved) agenda

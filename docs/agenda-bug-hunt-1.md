@@ -1,10 +1,11 @@
 # Agenda (open): bug-hunt #1 findings
 
-> **Status:** **Open — 9 items: H1–H6, H8, H9, H10.** H7 is the only resolved
-> item; it was fixed on 2026-09-11 and is kept in §Resolved log. H1–H6 and H8
-> were verified against the source; H9/H10 were recorded at the 2026-09-11
-> checkpoint (§Checkpoint). One further open defect lives in another agenda —
-> the `T13` residual, id unchanged (§Checkpoint).
+> **Status:** **Open — 9 items: H2–H6, H8, H9, H10, H11.** H7 (guard) and H1's
+> *claim* are resolved and kept in §Resolved log; H1's capability gap was split
+> out as H11 on 2026-09-11. H2–H6 and H8 were verified against the source;
+> H9/H10 were recorded at the 2026-09-11 checkpoint (§Checkpoint). One further
+> open defect lives in another agenda — the `T13` residual, id unchanged
+> (§Checkpoint).
 > **Found:** 2026-09-11, one hunt per `docs/bug-hunt-protocol.md` (real task in a
 > live instantiated consumer notebook, driven through the MCP tool surface by a
 > zero-context subagent).
@@ -23,7 +24,7 @@
 
 | # | Item | Severity | Fix shape | Priority |
 | --- | --- | --- | --- | --- |
-| H1 | binding promised, never in effect (non-Hermes clients) | misleads | truthful claim + a decision on a fallback binding | **P0** |
+| H11 | argument-less calls fail on a session-per-request client | misleads | process-global fallback, scoped after an isolation analysis | P1 |
 | H6 | `Error:` log text counted as a console exception | misleads | tighten the marker scan; stop asserting "traceback" | P1 |
 | H4 | stale/absent cell ids silently dropped by read tools | misleads | report the ids that matched nothing | P1 |
 | H2 | `get_dependency_graph` accepts and ignores `cell_id`/`depth` | misleads | implement the filter, or refuse the args loudly | P1 |
@@ -47,6 +48,8 @@ H9/H10 checkpoint. Verified on the tree: `-m "not live"` 303 passed, `-m live`
 Per-fix plan files live under `.hermes/plans/` (gitignored, ephemeral), so treat
 an item's entry here as the authority and a plan file as a convenience:
 
+- `.hermes/plans/2026-09-11_140500-h1-binding-claim-conditional.md` — H1's claim
+  fix (H11 split out), executed 2026-09-11.
 - `.hermes/plans/2026-09-11_000750-t13-residual-ui-rejection-site.md` — the T13
   residual (see the cross-reference below), prepared and **not started**.
 
@@ -69,24 +72,6 @@ needs a lab — the live suite boots its own kernel.
 ---
 
 ## Open items
-
-### H1 — `list_active_notebooks` / `set_active_session` promise a binding that never takes effect
-**misleads.** Both return success and tell the caller `session_id`/`server_url`
-are "now optional" (`tools/session.py:104-110`, `server.py:37-43`,
-`resources/co-work-loop.md:10-14`), while with a harness-shaped FastMCP `Client`
-over stdio every argument-less call raises "No session_id provided and no active
-session bound" — for auto-bind, for a doubled auto-bind, and for an explicit
-`set_active_session`. Root cause is outside this package: FastMCP 4.0.3 keys
-session state by a prefix derived in `Context.session_id` and cached on
-`session._connection`; where the SDK builds the session fresh per request and no
-stable connection exists (stdio), a fresh `uuid4()` prefix is used per request,
-so `set_state` and `get_state` never agree. Through the Hermes gateway the
-binding *does* persist, so the claim is conditionally true and unconditionally
-stated. *Fix:* make the promise conditional and name the condition (the current
-resource text blames "a client that spawns or reconnects the server per call",
-which is not the real condition), then decide separately whether a
-process-global fallback binding is acceptable — that decision has multi-client
-isolation consequences and should not be smuggled into the doc fix.
 
 ### H6 — `get_errors` reports a console *exception* for a plain log line
 **misleads.** `templates/errors.py:62` uses `markers = ("Traceback (most recent
@@ -183,6 +168,33 @@ H7's entry at the test instead of the probe.
 demonstrate by temporarily perturbing the assertion, and record that observation,
 since there is no pre-fix code to stash here.
 
+### H11 — argument-less calls do not work on a session-per-request client
+**misleads (capability gap, split out of H1 on 2026-09-11).** Making H1's
+*claim* truthful left the capability behind it broken for a whole client class:
+the advertised optional-arguments flow works only where the client keeps one MCP
+session across calls. fastmcp's own `Client` does not — it starts a fresh MCP
+session per request on the pinned fastmcp 4.0.3 (stdio *and* HTTP) — so every
+argument-less call fails there immediately after a successful bind. That is the
+client shape of the hunt's own subagents and of the codex / dsh / DeepSeek
+harnesses, which all launch `marimo-inspect --transport stdio`.
+*Evidence so far:*
+`tests/marimo_inspect/test_session_binding.py::test_fastmcp_client_starts_a_new_mcp_session_per_request`
+pins the failure; `.hermes/probes/state_prefix_*.py` measures the rotating
+session id, and the same probe through the `mcp` SDK client is stable.
+*Fix shape (decision gated, not a one-liner):* a **process-global fallback
+binding**, consulted only when the MCP-session state has nothing bound.
+**The isolation analysis must come first:** over stdio one server process serves
+exactly one client, so a process-global binding is equivalent to a
+connection-global one — no leakage; over `--transport http` one process serves
+many clients, and an unscoped fallback would let a client that never bound pick
+up another client's session and mutate the wrong notebook. So the fallback must
+be scoped (by transport, or by "only one client has ever connected to this
+process"), and the scope is the deliverable — not just the store.
+*Closure:* one test that an argument-less call after a bind succeeds through the
+fastmcp-`Client` path (fails today), plus one test that two concurrent HTTP
+clients never see each other's binding. Any wording change in
+`co-work-loop.md` §1 / `fallbacks-and-limits.md` lands in the same change.
+
 ---
 
 ## Resolved log
@@ -190,6 +202,47 @@ since there is no pre-fix code to stash here.
 One entry per closed item, with the evidence pointer that holds the detail. Ids
 stay stable (`H<n>` = hunt finding `F<n>`); an item leaves §Open items the moment
 it lands here.
+
+- **H1** ✅ *`list_active_notebooks` / `set_active_session` promise a binding that
+  never takes effect* — **claim resolved 2026-09-11; the capability gap behind it
+  was split out and is open as H11.** Both tools returned success and told the
+  caller `session_id`/`server_url` were "now optional"
+  (`tools/session.py:104-110` pre-fix, `server.py:37-43`,
+  `resources/co-work-loop.md:10-14`), while every argument-less call raised "No
+  session_id provided and no active session bound" — for auto-bind and for an
+  explicit `set_active_session`.
+  *Mechanism, re-measured 2026-09-11 on fastmcp 4.0.3 / mcp 2.1.1:* session state
+  is keyed by the MCP session identity the client negotiates —
+  `Context.session_id` caches a state prefix on the SDK connection and
+  `_make_state_key` prefixes every key with it
+  (`fastmcp/server/context.py:708-791`, `:1106-1108`). So the binding reaches the
+  next call only for a client that keeps one MCP session for the connection:
+  an `mcp`-SDK stdio client keeps it (the stored value reads back), while
+  fastmcp's own `Client` rotates the prefix on **every request, over stdio and
+  HTTP alike** (three calls, three different session ids). The pre-fix wording
+  ("a client that spawns or reconnects the server per call") named the wrong
+  condition — fastmcp's `Client` keeps one subprocess — and the corrected
+  mechanism is also why the 2026-09-09 Hermes-gateway verification passed: that
+  path is session-stable.
+  *Fix (landed):* the promise is scoped and names its condition —
+  `set_active_session` returns `binding_scope` plus a conditional `message`, the
+  refusal text explains why an earlier binding can be invisible, `server.py` and
+  `list_active_notebooks` carry the same wording, and `co-work-loop.md` §1 +
+  `fallbacks-and-limits.md` state the split with the measurement date.
+  *Evidence:* four new tests in
+  `tests/marimo_inspect/test_session_binding.py` —
+  `test_set_active_session_message_is_scoped_to_the_mcp_session` and
+  `test_missing_binding_error_names_the_condition` **fail against the pre-fix
+  code** (demonstrated by stashing the source change: 2 failed), while
+  `test_binding_is_visible_to_a_session_stable_sdk_client` and
+  `test_fastmcp_client_starts_a_new_mcp_session_per_request` pin each side of the
+  split against the real server binary — the latter is the tripwire that forces
+  the docs to be relaxed again if fastmcp starts keeping one session.
+  *Left open:* H11 (the capability gap for session-per-request clients).
+  Probes kept for reuse: `.hermes/probes/h1_binding_probe.py`,
+  `.hermes/probes/state_prefix_driver.py`,
+  `.hermes/probes/state_prefix_sdk_client.py`,
+  `.hermes/probes/state_prefix_http_driver.py`.
 
 - **H7** ✅ *the `edit_cell` freshness guard is silently disarmed by any unrelated
   write* — **resolved 2026-09-11** (`4660aec`). `_refresh_snapshot`

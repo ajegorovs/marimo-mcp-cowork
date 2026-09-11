@@ -35,8 +35,14 @@ def create_server(
         - Create/edit/run/delete cells (unified write surface)
 
         Start with `list_active_notebooks` to discover sessions. The first
-        session found is auto-bound as the active session — subsequent tool
-        calls can omit both `session_id` and `server_url`.
+        session found is auto-bound as the active session, so later calls on
+        the same MCP session can omit both `session_id` and `server_url`.
+        The binding is server-side state keyed by the MCP session identity the
+        client negotiates: it reaches the next call only when the client keeps
+        one MCP session for the connection (an `mcp`-SDK-based client does;
+        fastmcp's own `Client` does not, on the pinned fastmcp 4.0.3). Where a
+        client starts a new MCP session per request, pass `session_id` and
+        `server_url` explicitly on every call.
 
         Use `set_active_session` to switch to a different notebook session,
         or pass `session_id`/`server_url` explicitly to any tool to override
