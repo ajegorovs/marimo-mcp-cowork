@@ -226,10 +226,11 @@ CI-covered: the live suite boots kernels, not frontends.
   `discovery.py`/`--no-token` assumptions.
 - `docs/agenda-bug-hunt-1.md` — **OPEN** agenda: the 11 hunt #1 findings (10
   silent-payload items plus one hardening item), each with a source-verified
-  mechanism, a proposed priority, and the "repro must fail pre-fix" closure rule;
-  H7 (the `edit_cell` guard disarmed by any unrelated write) and H1's binding
-  *claim* are resolved and live in its §Resolved log, H11 carrying the capability
-  gap H1's fix left behind. Read before touching
+  mechanism, a proposed priority, and the "repro must fail pre-fix" closure rule.
+  Resolved and logged: H7 (the `edit_cell` guard disarmed by any unrelated write),
+  H1's binding *claim*, and the payload cluster H2–H6; open are H8, H9 (decided,
+  implementation pending), H10 and H11 (the capability gap H1's fix left behind).
+  Read before touching
   `tools/mutation.py` payload/guard code, `tools/session.py` binding claims, or
   the `templates/*` payload shapes it names.
 - `docs/agenda-udv-consumer-findings.md` — **CLOSED** (fully resolved) agenda
