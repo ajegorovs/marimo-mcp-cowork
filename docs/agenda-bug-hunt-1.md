@@ -1,8 +1,10 @@
 # Agenda (open): bug-hunt #1 findings
 
-> **Status:** **Open — 9 items: H7 fixed and pinned by two live regressions; 8
-> open (H1–H6, H8, H3 verified against the source; H9/H10 recorded at the
-> 2026-09-11 checkpoint, below).**
+> **Status:** **Open — 9 items: H1–H6, H8, H9, H10.** H7 is the only resolved
+> item; it was fixed on 2026-09-11 and is kept in §Resolved log. H1–H6 and H8
+> were verified against the source; H9/H10 were recorded at the 2026-09-11
+> checkpoint (§Checkpoint). One further open defect lives in another agenda —
+> the `T13` residual, id unchanged (§Checkpoint).
 > **Found:** 2026-09-11, one hunt per `docs/bug-hunt-protocol.md` (real task in a
 > live instantiated consumer notebook, driven through the MCP tool surface by a
 > zero-context subagent).
@@ -21,7 +23,6 @@
 
 | # | Item | Severity | Fix shape | Priority |
 | --- | --- | --- | --- | --- |
-| H7 | ~~`edit_cell` guard disarmed by any unrelated write~~ (fixed) | blocks-work | scope the snapshot commit to the mutated cell | **resolved** (was P0) |
 | H1 | binding promised, never in effect (non-Hermes clients) | misleads | truthful claim + a decision on a fallback binding | **P0** |
 | H6 | `Error:` log text counted as a console exception | misleads | tighten the marker scan; stop asserting "traceback" | P1 |
 | H4 | stale/absent cell ids silently dropped by read tools | misleads | report the ids that matched nothing | P1 |
@@ -38,15 +39,14 @@
 
 **Landed and committed locally (not pushed):** `4660aec` fixes H7 with two live
 regressions that fail against the pre-fix code plus four hermetic tracker cases;
-`ac07eb7` adds `docs/bug-hunt-protocol.md` and this doc. Verified on the tree:
-`-m "not live"` 303 passed, `-m live` 33 passed (was 31), ruff check/format
-clean, `marimo check notebooks` exit 0.
+`ac07eb7` adds `docs/bug-hunt-protocol.md` and this doc; `8ad4b3a` records the
+H9/H10 checkpoint. Verified on the tree: `-m "not live"` 303 passed, `-m live`
+33 passed (was 31), ruff check/format clean, `marimo check notebooks` exit 0.
 
 **The pending work is the sections below — they are the durable specification.**
 Per-fix plan files live under `.hermes/plans/` (gitignored, ephemeral), so treat
 an item's entry here as the authority and a plan file as a convenience:
 
-- `.hermes/plans/2026-09-11_002706-h7-edit-cell-guard-scope.md` — H7, executed.
 - `.hermes/plans/2026-09-11_000750-t13-residual-ui-rejection-site.md` — the T13
   residual (see the cross-reference below), prepared and **not started**.
 
@@ -57,53 +57,18 @@ the element already holds whose `on_change` handler then raises is reported
 use). That agenda is closed, so it is listed here to keep the open defects in one
 place; its item id stays `T13`.
 
-**Hunt lab.** The disposable lab hunt #1 used (a `/tmp` copy of a consumer
-notebook served on `127.0.0.1:29417`) is still running in a tmux session owned by
-the user. Nothing pending needs it — the live suite boots its own kernel.
+**Hunt lab — gone.** The disposable lab hunt #1 used (a `/tmp` copy of a consumer
+notebook served on `127.0.0.1:29417`) is dead: nothing listens on that port and
+the tmux session that owned it no longer exists (re-checked 2026-09-11 after a
+full system restart — the only tmux sessions now are the user's own agent
+instances, not labs). Its registry entry
+`~/.local/state/marimo/servers/127.0.0.1_29417.json` is a stale leftover and
+harmless (a dead server fails `discovery.py`'s health check). Nothing pending
+needs a lab — the live suite boots its own kernel.
 
 ---
 
 ## Open items
-
-### H7 — the `edit_cell` freshness guard is silently disarmed by any unrelated write — **RESOLVED 2026-09-11**
-**blocks-work.** `tools/mutation.py:71-98` (`_refresh_snapshot`) reads every
-cell's hash and calls `get_tracker().commit(sid, fps)` — a **whole-session**
-baseline — after every successful `create_cell` (`:148`), `edit_cell` (`:267`)
-and `delete_cell` (`:367`). A write to *any* cell therefore forges a last-read
-baseline for *every* other cell, which defeats both guard branches in
-`edit_cell` (`:227-252`): a foreign edit that was correctly reported as
-`conflict` stops being reported after one unrelated `create_cell`, and a
-never-read cell becomes editable with no `needs_read`. Observed with two client
-processes plus an independent witness. Contradicts `live-safety.md:12-17` and the
-module docstring's "impossible silent stomps during simultaneous co-work".
-*Fix:* commit only the fingerprints that actually changed (at minimum the
-mutated cell) instead of the full map; keep the refresh for the written cell, so
-our own writes still do not resurface as external changes.
-
-**Resolved (2026-09-11).** `_refresh_snapshot` (`tools/mutation.py`) no longer
-commits a whole-session snapshot. It gained `record`/`forget` arguments and now
-touches ONLY the cell the operation mutated: `create_cell` records the new
-cell's baseline (deliberate — the caller authored its source, so the documented
-create → run → edit flow must not force a re-read), `edit_cell` records
-`[cell_id]`, and `delete_cell` drops the removed cell via the new
-`ChangeTracker.forget_cells` (`tools/change_tracking.py`; a no-op without a
-snapshot, never erases other baselines). The fresh hash read stays — `edit_cell`
-still returns the post-exit `code_hash` and every `fps is None` warning path is
-unchanged.
-
-*Measured before fixing* (`/tmp/hunt_probe/hash_scope_probe.py`, 2026-09-11):
-creating a cell leaves every existing cell's `code_hash` unchanged (10 → 11
-cells, `changed hashes: []`; deleting the probe cell: 11 → 10, `changed hashes:
-[]`). A selective commit therefore cannot introduce neighbour false-conflicts on
-marimo 0.24.x.
-
-*Pinned by* two live regressions in `tests/marimo_inspect/live/test_mutation.py`:
-`test_unrelated_write_does_not_disarm_the_guard` and
-`test_unrelated_write_does_not_bless_a_never_read_cell`. Both **fail against the
-pre-fix code** — with `mutation.py` + `change_tracking.py` stashed, the first
-returns `status: ok` instead of `conflict` and the second `ok` instead of
-`needs_read` — and pass after. `resources/live-safety.md` §"Read before edit"
-now states the narrowed invariant.
 
 ### H1 — `list_active_notebooks` / `set_active_session` promise a binding that never takes effect
 **misleads.** Both return success and tell the caller `session_id`/`server_url`
@@ -217,6 +182,42 @@ H7's entry at the test instead of the probe.
 *Closure:* the test exists and is shown to fail when the assumption is violated —
 demonstrate by temporarily perturbing the assertion, and record that observation,
 since there is no pre-fix code to stash here.
+
+---
+
+## Resolved log
+
+One entry per closed item, with the evidence pointer that holds the detail. Ids
+stay stable (`H<n>` = hunt finding `F<n>`); an item leaves §Open items the moment
+it lands here.
+
+- **H7** ✅ *the `edit_cell` freshness guard is silently disarmed by any unrelated
+  write* — **resolved 2026-09-11** (`4660aec`). `_refresh_snapshot`
+  (`tools/mutation.py:71-98` pre-fix) read every cell's hash and committed it as a
+  **whole-session** baseline after every successful `create_cell`/`edit_cell`/
+  `delete_cell`, so a write to *any* cell forged a last-read baseline for *every*
+  other cell and defeated both guard branches: a correctly-reported foreign
+  `conflict` stopped being reported after one unrelated `create_cell`, and a
+  never-read cell became editable with no `needs_read`.
+  *Fix:* `_refresh_snapshot` gained `record`/`forget` and now touches only the
+  cell the operation mutated — `create_cell` records the new cell's baseline
+  (deliberate: the caller authored its source, so the documented create → run →
+  edit flow must not force a re-read), `edit_cell` records `[cell_id]`,
+  `delete_cell` drops the removed cell via the new `ChangeTracker.forget_cells`
+  (`tools/change_tracking.py`; no-op without a snapshot, never erases other
+  baselines). The fresh post-write hash read and every `fps is None` warning path
+  are unchanged.
+  *Evidence:* two live regressions,
+  `tests/marimo_inspect/live/test_mutation.py::test_unrelated_write_does_not_disarm_the_guard`
+  and `…::test_unrelated_write_does_not_bless_a_never_read_cell` — both **fail
+  against the pre-fix code** (with `mutation.py` + `change_tracking.py` stashed
+  the first returns `status: ok` instead of `conflict`, the second `ok` instead of
+  `needs_read`) and pass after — plus four hermetic tracker cases and the narrowed
+  invariant in `resources/live-safety.md` §"Read before edit".
+  *Carried debt:* the premise the narrowing rests on (insert/delete leaves
+  neighbour `code_hash` values unchanged on marimo 0.24.x) was measured once with
+  a throwaway probe and is **not pinned by a test** — tracked as H10, open.
+  Plan: `.hermes/plans/2026-09-11_002706-h7-edit-cell-guard-scope.md`.
 
 ---
 

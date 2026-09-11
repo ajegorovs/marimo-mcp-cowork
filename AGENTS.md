@@ -88,10 +88,11 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-10): `-m "not live"` → **299 passed**, `-m
-live` → **31 passed** (incl. the 2 hermetic mutation regressions, 7 widget
-regressions and 2 console-channel regressions). Counts drift as tests are
-added; treat the split, not the exact numbers, as the contract.
+Verified on this tree (2026-09-11): `-m "not live"` → **303 passed**, `-m
+live` → **33 passed** (incl. the 4 mutation regressions — 2 hermetic flow cases
+plus the 2 hunt-H7 guard cases, 7 widget regressions and 2 console-channel
+regressions). Counts drift as tests are added; treat the split, not the exact
+numbers, as the contract.
 
 ## Layout
 
@@ -216,10 +217,11 @@ CI-covered: the live suite boots kernels, not frontends.
   break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
   machine. Read before choosing a consumer's topology or touching
   `discovery.py`/`--no-token` assumptions.
-- `docs/agenda-bug-hunt-1.md` — **OPEN** agenda: the 8 silent-payload findings
-  from hunt #1 (`blocks-work`: the `edit_cell` guard is disarmed by any unrelated
-  write), each with a source-verified mechanism, a proposed priority, and the
-  "repro must fail pre-fix" closure rule. Read before touching
+- `docs/agenda-bug-hunt-1.md` — **OPEN** agenda: the 10 hunt #1 findings (9
+  silent-payload items plus one hardening item), each with a source-verified
+  mechanism, a proposed priority, and the "repro must fail pre-fix" closure rule;
+  H7 (the `edit_cell` guard disarmed by any unrelated write) is resolved and
+  lives in its §Resolved log. Read before touching
   `tools/mutation.py` payload/guard code, `tools/session.py` binding claims, or
   the `templates/*` payload shapes it names.
 - `docs/agenda-udv-consumer-findings.md` — **CLOSED** (fully resolved) agenda

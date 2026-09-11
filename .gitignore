@@ -12,4 +12,6 @@ __marimo__/
 # docs/harness-integration/). Contains absolute local checkout paths, which
 # must never be committed — see AGENTS.md §Privacy.
 .codex/
+.codex-build/
+.codex-output/
 .hermes/
