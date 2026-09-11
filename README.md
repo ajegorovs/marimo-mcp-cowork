@@ -177,7 +177,7 @@ users and consumer-repository contributors; it is a normal, non-editable
 installation in that project's environment.
 
 ```bash
-uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.2"
+uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.3"
 uv sync
 ```
 
