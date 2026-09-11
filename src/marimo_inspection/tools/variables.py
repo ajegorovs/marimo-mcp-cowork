@@ -23,7 +23,9 @@ async def get_variables(
     """Get tables and variables information in the session.
 
     Returns information about kernel variables and DataFrames.
-    If variable_names is empty, returns all variables.
+    If variable_names is empty, returns all variables — meaning the notebook's
+    own session names, with the inspection template's scaffolding (its imports
+    and helpers) excluded, since the scratchpad shares the kernel namespace.
 
     Args:
         session_id: Session ID from list_active_notebooks.

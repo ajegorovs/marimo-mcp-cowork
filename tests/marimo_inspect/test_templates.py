@@ -50,12 +50,17 @@ async def _exec_template(
     fake_ctx,
     monkeypatch,
     fn_name: str,
+    namespace_extra: dict | None = None,
 ) -> dict:
     """Execute a scratchpad template against a fake CodeMode context.
 
     ``marimo._code_mode.get_context`` is monkeypatched to yield ``fake_ctx``;
     the template body runs in a fresh namespace, then its async entry
     function is invoked. Returns the JSON payload the template prints.
+
+    ``namespace_extra`` seeds that namespace before the template body runs —
+    the way a notebook's own globals are already present in the real kernel,
+    which is what any "all names in globals()" path actually sees.
     """
     import marimo._code_mode as cm
 
@@ -64,7 +69,7 @@ async def _exec_template(
         yield fake_ctx
 
     monkeypatch.setattr(cm, "get_context", _fake_get_context)
-    ns: dict = {}
+    ns: dict = dict(namespace_extra or {})
     # Executing the generated scratchpad template is the point of this
     # harness; the code is repo-authored, not user input.
     exec(_compile_template_body(template_code), ns)  # noqa: S102
@@ -572,6 +577,52 @@ class TestVariablesTemplate:
 
         assert isinstance(TEMPLATE_VARIABLES, str)
         assert len(TEMPLATE_VARIABLES) > 0
+
+    async def test_all_variables_excludes_template_scaffolding(self, monkeypatch):
+        """H8: "all" reports the notebook's names, not the tool's own imports.
+
+        The scratchpad shares its namespace with the template, so the bare
+        ``globals()`` enumeration returned ``json``, ``cm`` and
+        ``get_variables`` for every call — names no cell defines.
+        """
+        from marimo_inspection.templates.variables import (
+            build_variables_template,
+        )
+
+        data = await _exec_template(
+            build_variables_template([]),
+            SimpleNamespace(),
+            monkeypatch,
+            "get_variables",
+            namespace_extra={"my_var": 7},
+        )
+
+        assert set(data["variables"]) == {"my_var"}
+        assert "json" not in data["variables"]
+        assert "cm" not in data["variables"]
+        assert "get_variables" not in data["variables"]
+
+    def test_scaffold_names_are_still_bound_by_the_template(self):
+        """The exclusion list must track the template body it describes.
+
+        If the template starts binding another module-level name, this fails
+        instead of that name silently appearing as a session variable.
+        """
+        import re
+
+        from marimo_inspection.templates.variables import (
+            _SCAFFOLD_NAMES,
+            TEMPLATE_VARIABLES,
+        )
+
+        for name in _SCAFFOLD_NAMES:
+            assert re.search(
+                rf"^(?:import .*\b{name}\b|(?:async )?def {name}\b)",
+                TEMPLATE_VARIABLES,
+                re.MULTILINE,
+            ), f"{name} is no longer bound by the template"
+        # And the injected set reaches the payload path.
+        assert '"json"' in TEMPLATE_VARIABLES
 
 
 class TestDependencyGraphTemplate:

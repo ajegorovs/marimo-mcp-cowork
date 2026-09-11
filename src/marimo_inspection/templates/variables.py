@@ -15,8 +15,18 @@ def build_variables_template(variable_names: list[str]) -> str:
         Python code string that runs in the scratchpad.
     """
     var_names_json = json.dumps(variable_names)
+    scaffold_json = json.dumps(list(_SCAFFOLD_NAMES))
 
-    return _TEMPLATE.replace("__VAR_NAMES_JSON__", var_names_json)
+    return _TEMPLATE.replace("__VAR_NAMES_JSON__", var_names_json).replace(
+        "__SCAFFOLD_NAMES_JSON__", scaffold_json
+    )
+
+
+# Module-level names THIS template binds in the scratchpad namespace it shares
+# with the notebook. "All variables" must not report them: they are the tool's
+# own scaffolding, not session variables. Kept next to the template body it
+# describes, and pinned by a test that checks each name is still bound there.
+_SCAFFOLD_NAMES = ("json", "cm", "get_variables", "_is_ui", "_serialize")
 
 
 _TEMPLATE = """
@@ -76,9 +86,15 @@ async def get_variables():
         if target_names:
             to_check = target_names
         else:
+            # "All" means the notebook's own names. The scratchpad shares this
+            # namespace with the template, so its own scaffolding (imports and
+            # helpers) is excluded explicitly - otherwise every call reports
+            # names no cell defines.
+            scaffold = set(__SCAFFOLD_NAMES_JSON__)
             to_check = [
                 name for name in globals().keys()
                 if not name.startswith("_") and name != "__builtins__"
+                and name not in scaffold
             ]
 
         variables = {}
