@@ -48,7 +48,8 @@ behind H1/H11's evidence are kept for reuse under `.hermes/probes/`
 the element already holds whose `on_change` handler then raises is reported
 `value_not_applied` instead of `on_change_failed` (unpinned, unobserved in normal
 use). That agenda is closed, so it is listed here to keep the open defects in one
-place; its item id stays `T13`.
+place; its item id stays `T13`. It is now carried, together with the open
+post-hunt check round (`T-V1`), by `docs/agenda-verification-round.md`.
 
 **Hunt lab — gone.** The disposable lab hunt #1 used (a `/tmp` copy of a consumer
 notebook served on `127.0.0.1:29417`) is dead: nothing listens on that port and

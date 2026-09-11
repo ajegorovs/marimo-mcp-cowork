@@ -237,10 +237,15 @@ CI-covered: the live suite boots kernels, not frontends.
   and the H11 fallback that replaced the capability gap, H2–H6's payload
   truthfulness, H7's guard scope, H9's explicit-only read baseline, H10's pinned
   hash invariant). Its §Checkpoint still carries the one open cross-agenda item —
-  the `T13` widget residual.
-  Read before touching
+  the `T13` widget residual. Read its §Resolved log before touching
   `tools/mutation.py` payload/guard code, `tools/session.py` binding claims, or
   the `templates/*` payload shapes it names.
+- `docs/agenda-verification-round.md` — **OPEN** agenda: the post-hunt check round
+  (`T-V1`) that re-verifies the eleven closed findings through the tool surface
+  and the packaged resources from a fresh zero-context agent, plus the carried
+  `T13` widget residual. Read it before re-running tests "to check" — that round
+  exists because a green suite cannot see whether the docs still teach the old
+  behaviour.
 - `docs/agenda-udv-consumer-findings.md` — **CLOSED** (fully resolved) agenda
   for the first-consumer integration, T-ids kept stable. Every item is resolved
   and has a one-line record + evidence pointer in its §Resolved log — read that
