@@ -1,12 +1,9 @@
-# Agenda (open): bug-hunt #1 findings
+# Agenda (closed): bug-hunt #1 findings
 
-> **Status:** **Open — 4 items: H8, H9, H10, H11.** Resolved and kept in
-> §Resolved log: H1's *claim* (`efac57d`), the payload cluster H2–H6
-> (`ad72710`) and H7 (the guard, `4660aec`); H1's capability gap is open as H11.
-> H8 is verified against the source; H9/H10 were recorded at the 2026-09-11
-> checkpoint (§Checkpoint), and H9 now carries a **decision** awaiting
-> implementation; H11 was split out of H1 on 2026-09-11. One further open defect
-> lives in another agenda — the `T13` residual, id unchanged (§Checkpoint).
+> **Status:** **CLOSED — all 11 findings resolved (2026-09-11).** Every item is
+> in §Resolved log with the repro that fails pre-fix (or, for H10, the inverse
+> perturbation demonstration). One further open defect lives in another agenda —
+> the `T13` residual, id unchanged (§Checkpoint).
 > **Found:** 2026-09-11, one hunt per `docs/bug-hunt-protocol.md` (real task in a
 > live instantiated consumer notebook, driven through the MCP tool surface by a
 > zero-context subagent).
@@ -21,36 +18,30 @@
 > **Item ids** are local to this doc (`H<n>` = hunt finding `F<n>`); the udv
 > agenda's `T-ids` are untouched.
 
-## Priority (proposed — not yet agreed)
-
-| # | Item | Severity | Fix shape | Priority |
-| --- | --- | --- | --- | --- |
-| H11 | argument-less calls fail on a session-per-request client | misleads | process-global fallback, scoped after an isolation analysis | P1 |
-| H9 | a *preview* read blesses a full-source baseline for every cell | misleads | **decided**: read baseline becomes explicit-only — implementation pending | P1 |
-| H8 | `get_variables` reports the template's own namespace | misleads | exclude the template's scaffolding names | P2 |
-| H10 | the H7 fix's premise is cited from a throwaway probe, not pinned | hardening | add the live invariant test | P2 |
+**No open items.** The priority table is retired with this closure; each entry
+in §Resolved log records the mechanism, the fix and the evidence pointer that
+holds the detail.
 
 ---
 
 ## Checkpoint — 2026-09-11
 
-**Landed and committed locally (not pushed):** `4660aec` fixes H7 with two live
-regressions that fail against the pre-fix code plus four hermetic tracker cases;
-`ac07eb7` adds `docs/bug-hunt-protocol.md` and this doc; `8ad4b3a` records the
-H9/H10 checkpoint; `13acfb6` folds H7 out of §Open items into §Resolved log;
-`efac57d` scopes the session-binding promise (H1, H11 split out); `ad72710` fixes
-the payload cluster H2–H6. Verified on the tree after each: `-m "not live"` 316
-passed, `-m live` 33 passed, ruff check/format clean, `marimo check notebooks`
-exit 0.
+**Landed and committed locally (not pushed):** `4660aec` H7 (+ two live
+regressions), `ac07eb7` the protocol + this doc, `8ad4b3a` the H9/H10 checkpoint,
+`13acfb6` the H7 close-out, `efac57d` H1's claim, `ad72710` the H2–H6 payload
+cluster, `4cbfb37` the H2–H6 close-out and the H9 decision, `a15cc85` H8,
+`f6fa732` H9 + H10 + H11. Verified after each: `-m "not live"` 323 passed,
+`-m live` 37 passed, ruff check/format clean, `marimo check notebooks` exit 0.
 
-**The pending work is the sections below — they are the durable specification.**
-Per-fix plan files live under `.hermes/plans/` (gitignored, ephemeral), so treat
-an item's entry here as the authority and a plan file as a convenience:
-
-- `.hermes/plans/2026-09-11_140500-h1-binding-claim-conditional.md` — H1's claim
-  fix (H11 split out), executed 2026-09-11.
-- `.hermes/plans/2026-09-11_000750-t13-residual-ui-rejection-site.md` — the T13
-  residual (see the cross-reference below), prepared and **not started**.
+**Nothing in this agenda is pending.** The plan files under `.hermes/plans/`
+(gitignored, ephemeral) are executed or superseded —
+`2026-09-11_002706-h7-edit-cell-guard-scope.md` (H7) and
+`2026-09-11_140500-h1-binding-claim-conditional.md` (H1's claim, H11 split out) —
+except `2026-09-11_000750-t13-residual-ui-rejection-site.md`, which is **not
+started**: the T13 residual below is the one item still open anywhere. The probes
+behind H1/H11's evidence are kept for reuse under `.hermes/probes/`
+(`h1_binding_probe.py`, `state_prefix_driver.py`, `state_prefix_sdk_client.py`,
+`state_prefix_http_driver.py`).
 
 **Cross-reference — open work recorded in another agenda.** The T13 residual in
 `docs/agenda-udv-consumer-findings.md` §T13 is still unfixed: a repeat of a value
@@ -67,102 +58,6 @@ instances, not labs). Its registry entry
 `~/.local/state/marimo/servers/127.0.0.1_29417.json` is a stale leftover and
 harmless (a dead server fails `discovery.py`'s health check). Nothing pending
 needs a lab — the live suite boots its own kernel.
-
----
-
-## Open items
-
-### H9 — a *preview* read blesses a full-source baseline for every cell
-**misleads — mechanism verified; the harm was a design decision, and the
-decision is taken.** `tools/cells.py:79` has `get_cell_map` call
-`tracker.commit(session_id, fingerprints)` for **every** cell it returns —
-correct for that tool's own purpose (`changes_since_last` is a notebook-wide
-observation diff) — while it returns `preview_lines: 3` by default. In
-staleness-guard terms that is a full read of every cell, so after a
-`get_cell_map` an `edit_cell` overwrites a co-worker's newer source with
-`status: ok`, and the H7 fix does not change that. `co-work-loop.md` §2 tells
-agents to "Start here", and `live-safety.md:21-22` names `get_cell_map` as one of
-the two ways to record the read baseline.
-Surfaced by the H7 task's own test scaffolding, which could not construct a
-never-read cell after a cell-map call (the deviation is recorded in that task's
-report); the mechanism was re-verified at the source.
-
-**Decision (2026-09-11, user): the read baseline becomes explicit-only.** A
-3-line preview is not "I read the source": only a full-source read
-(`get_cell_data`, or a dedicated read) blesses a cell's freshness. `get_cell_map`
-keeps its change-detection snapshot — that is a different question — so the
-tracker needs a **second dimension** rather than a re-pointed `commit` (the
-snapshot `changes_since_last` is built on must not be the freshness baseline).
-
-*Implementation checklist (the remaining work):*
-1. split the tracker so change-detection and read-baseline are separate
-   (new baseline store; `commit` keeps feeding `changes_since_last`);
-2. `get_cell_map` stops writing the freshness baseline, `get_cell_data` keeps
-   writing it (it already does, via `record_cells`);
-3. update `live-safety.md` §"Recovery is a real re-read" to name
-   `get_cell_data` only — `get_cell_map` must be removed as a recovery step, or
-   the doc keeps teaching the behaviour we decided against (and `co-work-loop.md`
-   §2/§3 plus `server.py`'s `edit_cell` note say the same thing);
-4. probe the blast radius: `get_cell_map` is the documented "start here", so the
-   first patch of every session now owes one `get_cell_data` before an edit —
-   check the live co-work tests and the demo runbook for a flow that silently
-   depended on the old blessing.
-
-*Closure:* a live test that a preview read no longer blesses a never-read cell
-(`edit_cell` → `needs_read` after `get_cell_map`, `ok` after `get_cell_data`) —
-it must **fail against today's code**, which is the easy direction for once.
-
-### H8 — `get_variables` reports the evaluating template's namespace as session variables
-**misleads.** `templates/variables.py:79-82` enumerates `globals()` when no names
-are given, which includes the template's own `import json`, `import
-marimo._code_mode as cm` and `get_variables` itself — so every "all variables"
-call deterministically returns names no cell defines (cross-checked against
-`get_dependency_graph.variable_owners`). A caller iterating the map sees five
-foreign names. *Fix:* exclude the template's scaffolding names (or derive the
-set from the notebook's own definitions) while keeping the documented
-"empty = all" semantics for real session names.
-
-### H10 — the H7 fix's premise is cited from a throwaway probe, not pinned
-**hardening.** Narrowing the tracker commit is safe only because inserting a cell
-leaves every existing cell's `code_hash` unchanged on marimo 0.24.x — measured
-once with `/tmp/hunt_probe/hash_scope_probe.py`, cited in H7's entry, and now
-gone. If a marimo bump changes that property, the guard starts returning false
-`conflict`s for cells nobody touched and no test would say so.
-*Fix:* add a live test asserting the invariant (insert a cell, assert every
-pre-existing cell's `code_hash` is unchanged; same across a delete) and point
-H7's entry at the test instead of the probe.
-*Closure:* the test exists and is shown to fail when the assumption is violated —
-demonstrate by temporarily perturbing the assertion, and record that observation,
-since there is no pre-fix code to stash here.
-*Ordering note:* H9 changes which reads write the baseline, so write H10's
-invariant test after H9, against the final baseline semantics.
-
-### H11 — argument-less calls do not work on a session-per-request client
-**misleads (capability gap, split out of H1 on 2026-09-11).** Making H1's
-*claim* truthful left the capability behind it broken for a whole client class:
-the advertised optional-arguments flow works only where the client keeps one MCP
-session across calls. fastmcp's own `Client` does not — it starts a fresh MCP
-session per request on the pinned fastmcp 4.0.3 (stdio *and* HTTP) — so every
-argument-less call fails there immediately after a successful bind. That is the
-client shape of the hunt's own subagents and of the codex / dsh / DeepSeek
-harnesses, which all launch `marimo-inspect --transport stdio`.
-*Evidence so far:*
-`tests/marimo_inspect/test_session_binding.py::test_fastmcp_client_starts_a_new_mcp_session_per_request`
-pins the failure; `.hermes/probes/state_prefix_*.py` measures the rotating
-session id, and the same probe through the `mcp` SDK client is stable.
-*Fix shape (decision gated, not a one-liner):* a **process-global fallback
-binding**, consulted only when the MCP-session state has nothing bound.
-**The isolation analysis must come first:** over stdio one server process serves
-exactly one client, so a process-global binding is equivalent to a
-connection-global one — no leakage; over `--transport http` one process serves
-many clients, and an unscoped fallback would let a client that never bound pick
-up another client's session and mutate the wrong notebook. So the fallback must
-be scoped (by transport, or by "only one client has ever connected to this
-process"), and the scope is the deliverable — not just the store.
-*Closure:* one test that an argument-less call after a bind succeeds through the
-fastmcp-`Client` path (fails today), plus one test that two concurrent HTTP
-clients never see each other's binding. Any wording change in
-`co-work-loop.md` §1 / `fallbacks-and-limits.md` lands in the same change.
 
 ---
 
@@ -315,6 +210,101 @@ it lands here.
   Plan: `.hermes/plans/2026-09-11_002706-h7-edit-cell-guard-scope.md`.
   *Follow-on:* H9 (a preview read still blesses every cell) is the guard's
   remaining hole and is decided, not yet implemented.
+
+- **H8** ✅ *`get_variables` reported the evaluating template's namespace as
+  session variables* — **resolved 2026-09-11** (`a15cc85`). The "all variables"
+  path enumerated `globals()` in the scratchpad namespace it shares with the
+  notebook, so every call deterministically returned the template's own
+  `import json`, `import marimo._code_mode as cm` and `get_variables` — names no
+  cell defines (`_is_ui`/`_serialize` were hidden only by the leading-underscore
+  filter), cross-checked against `get_dependency_graph.variable_owners`.
+  *Fix:* the builder injects a `_SCAFFOLD_NAMES` tuple into the template and the
+  all-names path excludes it; "empty = all" keeps its meaning for real session
+  names. *Evidence:*
+  `TestVariablesTemplate::test_all_variables_excludes_template_scaffolding`
+  (fails pre-fix, stash-verified) plus
+  `::test_scaffold_names_are_still_bound_by_the_template`, which fails if the
+  template ever binds another module-level name — so the list cannot rot silently.
+  The live test this broke was itself pinning the defect
+  (`test_variables_sees_kernel_injected_global` asserted `"json" in variables` and
+  json's datatype); it is now
+  `tests/marimo_inspect/live/test_variables.py::test_all_variables_excludes_template_scaffolding`,
+  which asserts no scaffolding name leaks **and** that kernel-injected names stay
+  visible ("all" is not "nothing"). `tools/variables.py` documents the contract.
+
+- **H9** ✅ *a preview read blessed a full-source baseline for every cell* —
+  **resolved 2026-09-11** (`f6fa732`). `tools/cells.py` had `get_cell_map` commit
+  every cell's fingerprint to the change tracker, but that single snapshot also
+  served as the `edit_cell` read baseline — so a 3-line preview of the notebook
+  blessed every cell, and an edit could overwrite a co-worker's newer source with
+  `status: ok`. Decision (2026-09-11, user): the read baseline becomes
+  **explicit-only**.
+  *Fix:* `ChangeTracker` keeps two dimensions — `_snapshots` (what `get_cell_map`
+  observed, feeding `changes_since_last`) and `_baselines` (what a full-source
+  read observed, which the guard compares against). `commit` writes only the
+  snapshot; `record_cells` writes both; `get_cell_fingerprint` reads the baseline;
+  `forget_cells`/`clear_session` cover both. Every message and doc line that named
+  `get_cell_map` as a read or recovery path now names `get_cell_data` only
+  (`live-safety.md` §"Read before edit", `co-work-loop.md` §2/§3, `server.py`'s
+  `edit_cell` note, the three guard messages, the `edit_cell`/`get_cell_map`
+  docstrings, `README.md`, `docs/agent-onboarding-demo-mcp.md`).
+  *Evidence:*
+  `tests/marimo_inspect/live/test_mutation.py::test_preview_read_does_not_bless_a_read_baseline`
+  (`needs_read` after a map-only read, `ok` after `get_cell_data`) — shown
+  **FAILING against pre-fix code** in an isolated copy
+  (`assert 'ok' == 'needs_read'`, the preview having blessed the cell), plus
+  hermetic cases in `tests/marimo_inspect/test_change_tracking.py` and
+  `::test_cell_map_still_reports_changes_since_last`, which pins the dimension
+  that must keep working. Blast radius probed: no live co-work test or documented
+  flow depended on the old blessing (the demo's create → run → edit still works,
+  because `create_cell` records the new cell's baseline), but the first edit of a
+  cell in a session now owes one `get_cell_data`.
+
+- **H10** ✅ *the H7 fix's premise was cited from a throwaway probe, not pinned* —
+  **resolved 2026-09-11** (`f6fa732`). Narrowing the tracker write is safe only
+  because inserting (or deleting) a cell leaves every pre-existing cell's
+  `code_hash` unchanged on marimo 0.24.x — measured once with a `/tmp` probe and
+  cited in H7's entry, with nothing to fail if a marimo bump invalidated it and
+  the guard started returning false `conflict`s.
+  *Fix:* `tests/marimo_inspect/live/test_mutation.py::test_insert_keeps_pre_existing_code_hashes_unchanged`
+  and `::test_delete_keeps_pre_existing_code_hashes_unchanged`.
+  *Closure (inverse — there is no pre-fix code to stash):* with the assertion
+  perturbed (`== hash` → `!= hash`) the test fails on an isolated copy; the shared
+  tree was never perturbed, and the observation is recorded in the tests. Written
+  **after** H9 by design, so it pins the final baseline semantics.
+
+- **H11** ✅ *argument-less calls did not work on a session-per-request client* —
+  **resolved 2026-09-11** (`f6fa732`); this is the capability gap H1's claim fix
+  left behind. On the pinned fastmcp 4.0.3, fastmcp's own `Client` starts a fresh
+  MCP session per request (stdio *and* HTTP), so state keyed by `ctx.session_id`
+  was written and read under different keys and every argument-less call refused
+  — the client shape of the codex / dsh / DeepSeek harnesses, all of which launch
+  `marimo-inspect --transport stdio`.
+  *Fix:* a binding is written to the MCP-session state **and** to a
+  process-global fallback consulted only when that state has nothing bound, scoped
+  by transport. stdio is single-client by construction, so the fallback there is
+  connection-global — never scoped, and its rotating per-request session ids are
+  deliberately not counted; HTTP/SSE records distinct client sessions and
+  withholds the fallback as soon as a second appears, refusing with
+  `SessionBindingError(reason="binding_ambiguous")` rather than letting a client
+  that never bound inherit another's notebook. An unknown transport is treated as
+  multi-client (conservative). The isolation argument lives in `tools/session.py`'s
+  module docstring.
+  *Evidence:* `tests/marimo_inspect/test_session_binding.py::test_fastmcp_client_starts_a_new_mcp_session_per_request`
+  now pins the **fix** (it used to pin the failure) and
+  `::test_two_http_clients_do_not_share_the_fallback_binding` spawns a real HTTP
+  server plus two independent HTTP client sessions, asserting the positive control
+  **and** `_PROBE_URL not in refused_text` — so an unscoped fallback fails it too;
+  plus `::test_fallback_scope_serves_stdio_and_withholds_on_a_second_client`
+  (hermetic, driving the shipped predicate) and
+  `::test_bind_active_session_stores_the_process_global_fallback`. Pre-fix: 5 tests
+  fail on an isolated copy built from read-only `HEAD` sources with `PYTHONPATH`
+  pinned. Resources carry the same truth (`co-work-loop.md` §1,
+  `fallbacks-and-limits.md`, `server.py` instructions, `set_active_session`'s
+  `binding_scope`/message, `list_active_notebooks`' `next_steps`).
+  *Known bound:* over HTTP a session-per-request client must still pass the
+  arguments explicitly (its rotation trips the single-client scope) — documented
+  and fail-closed, not silent.
 
 ---
 
