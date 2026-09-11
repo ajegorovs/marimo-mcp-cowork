@@ -29,12 +29,16 @@ async def get_cell_data():
             cell_ids = list(ctx.cells.keys())
 
         results = []
+        missing = []
         for cid in cell_ids:
             try:
                 c = ctx.cells[cid]
                 code = c.code or ""
                 status = getattr(c, "status", None)
-            except (KeyError, Exception):
+            except Exception:
+                # A deleted or mistyped id is NOT the same as "nothing matched":
+                # report it instead of silently returning an empty payload.
+                missing.append(str(cid))
                 continue
 
             results.append({{
@@ -44,7 +48,7 @@ async def get_cell_data():
                 "variables": None,
             }})
 
-        return json.dumps({{"data": results}})
+        return json.dumps({{"data": results, "missing_cell_ids": missing}})
 
 print(await get_cell_data())
 """

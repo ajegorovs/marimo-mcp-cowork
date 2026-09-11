@@ -600,43 +600,85 @@ class TestGetDependencyGraph:
             assert "multiply_defined" in result
             assert "cycles" in result
 
-    async def test_cell_id_parameter(self):
-        """Passes cell_id to center graph."""
-        from marimo_inspection.tools.dependency import (
-            get_dependency_graph,
-        )
+    async def test_cell_id_is_refused_not_ignored(self):
+        """cell_id is refused loudly, and nothing is read from the notebook.
+
+        The old behaviour accepted cell_id and returned the full graph anyway —
+        the argument was documented and dead at the same time.
+        """
+        from marimo_inspection.tools.dependency import get_dependency_graph
 
         with patch(
             "marimo_inspection.tools.dependency.MarimoClient"
         ) as mock_client_cls:
-            mock_instance = MagicMock()
-            mock_session = MagicMock(
-                session_id="abc123",
-                file="/test.py",
-                basename="test.py",
-            )
-            mock_instance.resolve_session = AsyncMock(return_value=mock_session)
-
-            mock_execute_result = MagicMock()
-            mock_execute_result.status = "ok"
-            mock_execute_result.stdout = [
-                '{"cells": [], "variable_owners": {}, "multiply_defined": [], "cycles": []}'
-            ]
-            mock_instance.execute = AsyncMock(return_value=mock_execute_result)
-            mock_client_cls.return_value = mock_instance
-
             result = await get_dependency_graph(
                 session_id="abc123",
                 cell_id="5",
                 server_url="http://127.0.0.1:8090",
             )
-            assert "cells" in result
 
-    async def test_depth_parameter(self):
-        """Passes depth parameter."""
-        from marimo_inspection.tools.dependency import (
-            get_dependency_graph,
+        assert result["status"] == "error"
+        assert result["reason"] == "unsupported_argument"
+        assert result["unsupported_arguments"] == ["cell_id"]
+        assert "cells" not in result
+        mock_client_cls.assert_not_called()
+
+    async def test_depth_is_refused_not_ignored(self):
+        """A non-zero depth is refused; depth=0 (the default) stays valid."""
+        from marimo_inspection.tools.dependency import get_dependency_graph
+
+        with patch(
+            "marimo_inspection.tools.dependency.MarimoClient"
+        ) as mock_client_cls:
+            refused = await get_dependency_graph(
+                session_id="abc123",
+                depth=2,
+                server_url="http://127.0.0.1:8090",
+            )
+
+            assert refused["reason"] == "unsupported_argument"
+            assert refused["unsupported_arguments"] == ["depth"]
+            mock_client_cls.assert_not_called()
+
+            mock_instance = MagicMock()
+            mock_session = MagicMock(
+                session_id="abc123",
+                file="/test.py",
+                basename="test.py",
+            )
+            mock_instance.resolve_session = AsyncMock(return_value=mock_session)
+            mock_execute_result = MagicMock()
+            mock_execute_result.status = "ok"
+            mock_execute_result.stdout = [
+                '{"cells": [], "variable_owners": {}, "multiply_defined": [], "cycles": []}'
+            ]
+            mock_instance.execute = AsyncMock(return_value=mock_execute_result)
+            mock_client_cls.return_value = mock_instance
+
+            ok = await get_dependency_graph(
+                session_id="abc123",
+                depth=0,
+                server_url="http://127.0.0.1:8090",
+            )
+
+        assert "cells" in ok
+
+    async def test_both_arguments_reported_together(self):
+        """Both ignored arguments are named in one refusal."""
+        from marimo_inspection.tools.dependency import get_dependency_graph
+
+        result = await get_dependency_graph(
+            session_id="abc123",
+            cell_id="5",
+            depth=1,
+            server_url="http://127.0.0.1:8090",
         )
+
+        assert result["unsupported_arguments"] == ["cell_id", "depth"]
+
+    async def test_cell_names_pass_through(self):
+        """cell_name from the template is carried into the payload (H3)."""
+        from marimo_inspection.tools.dependency import get_dependency_graph
 
         with patch(
             "marimo_inspection.tools.dependency.MarimoClient"
@@ -648,21 +690,23 @@ class TestGetDependencyGraph:
                 basename="test.py",
             )
             mock_instance.resolve_session = AsyncMock(return_value=mock_session)
-
             mock_execute_result = MagicMock()
             mock_execute_result.status = "ok"
             mock_execute_result.stdout = [
-                '{"cells": [], "variable_owners": {}, "multiply_defined": [], "cycles": []}'
+                (
+                    '{"cells": [{"cell_id": "0", "cell_name": "load_data", "defs": [],'
+                    ' "refs": [], "parent_cell_ids": [], "child_cell_ids": []}],'
+                    ' "variable_owners": {}, "multiply_defined": [], "cycles": []}'
+                )
             ]
             mock_instance.execute = AsyncMock(return_value=mock_execute_result)
             mock_client_cls.return_value = mock_instance
 
             result = await get_dependency_graph(
-                session_id="abc123",
-                depth=2,
-                server_url="http://127.0.0.1:8090",
+                session_id="abc123", server_url="http://127.0.0.1:8090"
             )
-            assert "cells" in result
+
+        assert result["cells"][0]["cell_name"] == "load_data"
 
     async def test_multiply_defined_next_steps(self):
         """Includes next_steps for multiply-defined variables."""

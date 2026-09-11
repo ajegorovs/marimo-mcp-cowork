@@ -24,35 +24,57 @@ async def get_dependency_graph(
 
     Reveals which variables each cell defines and references, parent/child
     relationships between cells, variable ownership, and dependency issues
-    like multiply-defined variables or cycles.
+    like multiply-defined variables or cycles. The graph is always the FULL
+    notebook graph.
 
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        cell_id: Optional cell ID to center the graph on.
-        depth: Hops from center cell (1 = direct, 2 = two hops). 0 = full.
+        cell_id: NOT IMPLEMENTED — supplying it is refused (``reason:
+            unsupported_argument``) instead of silently ignored.
+        depth: NOT IMPLEMENTED — supplying a non-zero value is refused for the
+            same reason.
         server_url: Optional server URL override. Optional if an active
             server_url is bound.
 
     Returns:
-        Dictionary with dependency graph information.
+        Dictionary with dependency graph information (``cells`` carry
+        ``cell_name``, matching get_cell_map's names), or a structured refusal
+        when ``cell_id``/``depth`` are supplied. Nothing is read from the
+        notebook in that case.
     """
+    unsupported = []
+    if cell_id:
+        unsupported.append("cell_id")
+    if depth:
+        unsupported.append("depth")
+    if unsupported:
+        return {
+            "status": "error",
+            "reason": "unsupported_argument",
+            "error": (
+                "get_dependency_graph does not implement "
+                + " or ".join(unsupported)
+                + ": it always returns the full notebook graph. Nothing was read."
+            ),
+            "unsupported_arguments": unsupported,
+            "next_steps": [
+                "Call get_dependency_graph without cell_id/depth",
+                "Walk cells[].parent_cell_ids / cells[].child_cell_ids for a neighbourhood",
+                "Use get_cell_data(cell_ids=[...]) to read one cell's source",
+            ],
+        }
+
     sid = await resolve_session_id(session_id, ctx)
     if ctx:
-        if cell_id:
-            await ctx.info(f"Getting dependency graph centered on {cell_id}...")
-        else:
-            await ctx.info("Getting full dependency graph...")
+        await ctx.info("Getting full dependency graph...")
 
     client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
 
     from marimo_inspection.templates.dependency import build_dependency_graph_template
 
-    center_cell = cell_id if cell_id else None
-    target_depth = depth if depth > 0 else None
-
-    code = build_dependency_graph_template(cell_id=center_cell, depth=target_depth)
+    code = build_dependency_graph_template()
     result = await client.execute(session.session_id, code)
 
     if result.status == "error":
@@ -78,12 +100,10 @@ async def get_dependency_graph(
             next_steps.append(
                 f"Resolve {len(cycles)} dependency cycle(s) for correct execution order"
             )
-        if cell_id:
-            next_steps.append("Use get_cell_data to inspect related cells' code")
-        else:
-            next_steps.append(
-                "Use cell_id parameter to focus on a specific cell's dependencies"
-            )
+        next_steps.append(
+            "Walk cells[].parent_cell_ids / cells[].child_cell_ids for a "
+            "neighbourhood (cell_id/depth are not implemented)"
+        )
 
         return {
             "session_id": session.session_id,

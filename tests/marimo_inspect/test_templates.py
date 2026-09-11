@@ -138,6 +138,25 @@ class _FakePlainStderrEvent:
     data = "some warning text without exception markers"
 
 
+class _FakeErrorLabelEvent:
+    """stderr that *labels* an error without naming an exception type.
+
+    The exact shape the hunt found: a healthy cell printing a message like this
+    was reported as a console exception because the scan matched the bare
+    ``Error:`` marker.
+    """
+
+    channel = "stderr"
+    data = "Error: 3 rows skipped (not an exception)"
+
+
+class _FakeExceptionLineEvent:
+    """stderr carrying an exception line but no traceback header."""
+
+    channel = "stderr"
+    data = "ValueError: could not convert string to float"
+
+
 class _FakeEnumChannelEvent:
     """Console event carrying marimo's REAL str-mixin ``CellChannel`` enum.
 
@@ -381,6 +400,42 @@ class TestCellDataTemplate:
         assert isinstance(TEMPLATE_CELL_DATA, str)
         assert len(TEMPLATE_CELL_DATA) > 0
 
+    async def test_missing_ids_are_reported(self, monkeypatch):
+        """A requested id that resolves to nothing is reported (H4).
+
+        Pre-fix it was dropped silently, so a deleted or mistyped id looked
+        like "nothing matched" while the write tools refuse the same id.
+        """
+        from marimo_inspection.templates.cell_data import (
+            build_cell_data_template,
+        )
+
+        data = await _exec_template(
+            build_cell_data_template(["0", "gone"]),
+            SimpleNamespace(cells={"0": _FakeCell("0")}),
+            monkeypatch,
+            "get_cell_data",
+        )
+
+        assert [row["cell_id"] for row in data["data"]] == ["0"]
+        assert data["missing_cell_ids"] == ["gone"]
+
+    async def test_all_cells_reports_nothing_missing(self, monkeypatch):
+        """The all-cells path (empty ids) has no requested-but-missing id."""
+        from marimo_inspection.templates.cell_data import (
+            build_cell_data_template,
+        )
+
+        data = await _exec_template(
+            build_cell_data_template([]),
+            SimpleNamespace(cells={"0": _FakeCell("0")}),
+            monkeypatch,
+            "get_cell_data",
+        )
+
+        assert data["missing_cell_ids"] == []
+        assert [row["cell_id"] for row in data["data"]] == ["0"]
+
 
 class TestCellOutputsTemplate:
     """Test build_cell_outputs_template()."""
@@ -456,6 +511,26 @@ class TestCellOutputsTemplate:
             "stderr",
         ]
 
+    async def test_missing_ids_are_reported(self, monkeypatch):
+        """An id that resolves to nothing is reported, not dropped (H4).
+
+        Without this, a cell that does not exist and a cell with no output
+        produce the same payload.
+        """
+        from marimo_inspection.templates.cell_outputs import (
+            build_cell_outputs_template,
+        )
+
+        data = await _exec_template(
+            build_cell_outputs_template(["7", "gone"]),
+            SimpleNamespace(cells={"7": _FakeCell("7")}),
+            monkeypatch,
+            "get_cell_outputs",
+        )
+
+        assert [cell["cell_id"] for cell in data["cells"]] == ["7"]
+        assert data["missing_cell_ids"] == ["gone"]
+
 
 class TestVariablesTemplate:
     """Test build_variables_template()."""
@@ -512,23 +587,29 @@ class TestDependencyGraphTemplate:
         assert isinstance(code, str)
         assert len(code) > 0
 
-    def test_center_cell_injected(self):
-        """Center cell_id is injected."""
+    def test_takes_no_centring_arguments(self):
+        """cell_id/depth are refused by the tool, so the template has no args.
+
+        The old template accepted (and embedded) both while ignoring them.
+        """
+        import inspect
+
         from marimo_inspection.templates.dependency import (
             build_dependency_graph_template,
         )
 
-        code = build_dependency_graph_template(cell_id="5")
-        assert '"5"' in code or "5" in code
+        params = inspect.signature(build_dependency_graph_template).parameters
+        assert list(params) == []
 
-    def test_depth_injected(self):
-        """Depth parameter is injected."""
+    def test_names_cells_from_the_notebook_cells(self):
+        """cell_name is read from ctx.cells — the same source get_cell_map uses."""
         from marimo_inspection.templates.dependency import (
             build_dependency_graph_template,
         )
 
-        code = build_dependency_graph_template(depth=2)
-        assert "2" in code
+        code = build_dependency_graph_template()
+        assert "name_by_id" in code
+        assert 'getattr(cell, "name", "")' in code
 
     def test_accesses_graph(self):
         """Template accesses ctx.graph."""
@@ -705,9 +786,66 @@ class TestErrorsTemplate:
         assert cell["cell_id"] == "9"
         assert cell["structured_errors"] == []
         assert cell["has_console_exception"] is True
+        assert cell["console_exception_evidence"] == "traceback"
         # Only stderr-channel events are serialized into console_stderr.
         assert [e["channel"] for e in cell["console_stderr"]] == ["stderr"]
         assert "Traceback" in cell["console_stderr"][0]["data"]
+
+    async def test_error_label_without_a_type_is_not_an_exception(self, monkeypatch):
+        """`Error: 3 rows skipped` is a message, not an exception (H6).
+
+        The pre-fix scan matched the bare ``Error:`` marker, so a cell that
+        only logged this line came back with ``has_console_exception: true``,
+        counted into ``total_console_exception_cells``, and carried a
+        next_step asserting a traceback/UI-handler cause.
+        """
+        from marimo_inspection.templates.errors import (
+            build_errors_template,
+        )
+
+        data = await _exec_template(
+            build_errors_template(),
+            SimpleNamespace(
+                cells=[
+                    _FakeCell(
+                        "3",
+                        console_outputs=[_FakeErrorLabelEvent()],
+                    )
+                ]
+            ),
+            monkeypatch,
+            "get_errors",
+        )
+
+        assert data["has_console_exception"] is False
+        assert data["total_console_exception_cells"] == 0
+        assert data["cells"] == []
+
+    async def test_exception_line_is_evidence_without_a_header(self, monkeypatch):
+        """An unindented `ValueError: ...` line is real evidence (H6)."""
+        from marimo_inspection.templates.errors import (
+            build_errors_template,
+        )
+
+        data = await _exec_template(
+            build_errors_template(),
+            SimpleNamespace(
+                cells=[
+                    _FakeCell(
+                        "4",
+                        console_outputs=[_FakeExceptionLineEvent()],
+                    )
+                ]
+            ),
+            monkeypatch,
+            "get_errors",
+        )
+
+        assert data["has_console_exception"] is True
+        assert data["total_console_exception_cells"] == 1
+        cell = data["cells"][0]
+        assert cell["has_console_exception"] is True
+        assert cell["console_exception_evidence"] == "exception_line"
 
     async def test_enum_channel_stderr_is_not_filtered_out(self, monkeypatch):
         """A real CellChannel enum must match the stderr channel filter.

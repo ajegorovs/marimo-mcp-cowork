@@ -39,6 +39,10 @@ promise (`binding_scope`) is scoped to the MCP session that made it.
 `get_cell_data` — full source and runtime data for chosen cells.
 `get_cell_outputs` and `get_variables` cover execution state.
 
+A requested `cell_id` that resolves to nothing (deleted or mistyped) is reported
+in `missing_cell_ids` — an id that matched no cell must never look like "nothing
+matched" while the write tools refuse the same id.
+
 **Read before edit.** `edit_cell` refuses to overwrite a cell you have not
 just read (see `workflow://marimo-inspect/live-safety`). Reading with
 `get_cell_data` or `get_cell_map` records the baseline.
@@ -71,7 +75,10 @@ A shape the element cannot accept is refused **before** anything is applied: the
 error carries `reason: value_shape_mismatch`, the declaration it read in
 `accepted_shape` (e.g. `list[str]`), and the corrected payload in
 `did_you_mean` — a scalar sent to a dropdown returns `did_you_mean: ["beta"]`.
-Send that corrected form; do not repeat the rejected shape.
+The correction is derived from the element's **own option keys**, so it is a key
+the element actually accepts: a multiselect keyed by `"4"` is corrected to
+`["4"]`, never `[4]`. Send that corrected form; do not repeat the rejected
+shape.
 
 `status: ok` guarantees the read-back succeeded (`verified: true`): either the
 element's own value **moved** (`applied: true`, with `value_before` /
@@ -103,6 +110,13 @@ the write call — so verify their effects, don't assume them. `get_errors`
 reports `structured_errors` and `console_stderr` separately;
 `has_errors`/`total_errors` count structured errors only.
 
+A cell is flagged on the console channel only on **real exception evidence**: a
+traceback header, or an exception-typed line (`ValueError: ...`). Ordinary log
+text such as `Error: 3 rows skipped` is a message, not an exception, and flags
+nothing. Each flagged cell names the evidence it found in
+`console_exception_evidence` (`"traceback"` / `"exception_line"`) — read that
+instead of assuming a UI-handler traceback.
+
 **A failed `run_cell` reports through its own payload, and `get_errors`'
 structured channel can be silent about it.** `run_cell` returns `{"error":
 "Execution failed", "stderr": <traceback>}` while `get_errors` reads marimo's
@@ -123,3 +137,8 @@ post-run check — read the run payload first, and use `get_errors` (structured
 
 For structural changes, call `get_dependency_graph` before `delete_cell` or
 before merging cells. Then repeat steps 2–7 as the notebook evolves.
+
+`get_dependency_graph` always returns the **full** graph: `cell_id` and `depth`
+are refused (`reason: unsupported_argument`), never accepted-and-ignored. Walk
+`cells[].parent_cell_ids` / `cells[].child_cell_ids` for a neighbourhood, and
+`cells[].cell_name` matches the name `get_cell_map` reports.

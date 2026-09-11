@@ -24,11 +24,17 @@ def build_errors_template() -> str:
       on the console channel.
 
     ``has_console_exception`` is a CONSERVATIVE marker scan over the stderr
-    text (``Traceback (most recent call last)`` / ``Error:`` / ``Exception:``
-    lines): only clear exception evidence flags a cell. A cell appears in the
-    response when it has structured errors OR console-exception evidence —
-    so a console-only UI-handler exception is visible even with ``c.errors``
-    empty.
+    text: a cell qualifies only on REAL exception evidence — a traceback header
+    (``Traceback (most recent call last)``), or an unindented
+    ``SomeError: ...``/``SomeException: ...`` line naming an exception class
+    (the last line of a traceback). A bare ``Error:``/``Exception:`` label is a
+    message, not a type name, so ordinary log text such as
+    ``Error: 3 rows skipped`` does NOT flag a cell. Each flagged cell also
+    carries ``console_exception_evidence`` (``"traceback"`` /
+    ``"exception_line"`` / ``None``) so the caller can say what was actually
+    seen instead of asserting a cause. A cell appears in the response when it
+    has structured errors OR console-exception evidence — so a console-only
+    UI-handler exception is visible even with ``c.errors`` empty.
 
     Top-level totals:
     - ``has_errors`` / ``total_errors`` / ``total_cells_with_errors`` are the
@@ -44,23 +50,41 @@ def build_errors_template() -> str:
 
 _TEMPLATE = """
 import json
+import re
 import marimo._code_mode as cm
 
 __CELL_OUTPUT_TO_DICT__
 
 def _console_exception_evidence(console_outputs):
-    # Conservative: only clear exception/traceback markers flag a cell;
-    # an unreadable console value is never treated as evidence.
+    # Conservative: only REAL exception evidence flags a cell; an unreadable
+    # console value is never treated as evidence. Two levels, strongest first:
+    #   "traceback"      - the traceback header is present
+    #   "exception_line" - an unindented ``SomeError: ...`` line (what a
+    #                      traceback ends with), where the type name is an
+    #                      exception class name rather than the bare word
+    #                      "Error"/"Exception"
+    # Ordinary log text such as ``Error: 3 rows skipped`` is NOT evidence: it
+    # carries a message, not an exception type, and treating it as one made a
+    # healthy cell report ``has_console_exception``.
     try:
-        text = "\\n".join(
-            str(getattr(o, "data", ""))
-            for o in console_outputs
-            if _channel_name(o) == "stderr"
-        )
+        lines = []
+        for o in console_outputs:
+            if _channel_name(o) == "stderr":
+                lines.extend(str(getattr(o, "data", "")).splitlines())
     except Exception:
-        return False
-    markers = ("Traceback (most recent call last)", "Error:", "Exception:")
-    return any(m in text for m in markers)
+        return ""
+    if any("Traceback (most recent call last)" in ln for ln in lines):
+        return "traceback"
+    pattern = re.compile(r"^([A-Za-z_][\\w.]*(?:Error|Exception)):\\s")
+    for ln in lines:
+        match = pattern.match(ln)
+        if not match:
+            continue
+        # A bare "Error:"/"Exception:" is a message label, not a type name.
+        if match.group(1).split(".")[-1] in ("Error", "Exception"):
+            continue
+        return "exception_line"
+    return ""
 
 async def get_errors():
     async with cm.get_context() as ctx:
@@ -95,14 +119,15 @@ async def get_errors():
                     if _channel_name(o) == "stderr"
                 ]
 
-            has_exc = _console_exception_evidence(console or [])
+            evidence = _console_exception_evidence(console or [])
 
-            if structured or has_exc:
+            if structured or evidence:
                 cells_with_errors.append({
                     "cell_id": cell_id,
                     "structured_errors": structured,
                     "console_stderr": console_stderr,
-                    "has_console_exception": has_exc,
+                    "has_console_exception": bool(evidence),
+                    "console_exception_evidence": evidence or None,
                 })
 
         total_structured = sum(

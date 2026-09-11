@@ -197,6 +197,57 @@ def _same(a, b):
             return False
 
 
+def _option_keys(element):
+    '''Option keys the element accepts (dropdown/radio/multiselect), or None.
+
+    marimo exposes options as a ``{key: label}`` dict or a list of
+    ``(key, label)`` pairs; the KEYS are what a value must carry. Returns None
+    for elements with no options at all (slider, text, range_slider, ...).'''
+    for attr in ("_options", "options"):
+        try:
+            options = getattr(element, attr, None)
+        except Exception:
+            continue
+        if options is None:
+            continue
+        try:
+            if isinstance(options, dict):
+                return list(options.keys())
+            if isinstance(options, (list, tuple)):
+                keys = []
+                for item in options:
+                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                        keys.append(item[0])
+                    else:
+                        keys.append(item)
+                return keys
+        except Exception:
+            continue
+    return None
+
+
+def _match_option_key(element, value):
+    '''The element's OWN option key for ``value``, matched by string form.
+
+    Wrapping the submitted scalar in a list can suggest a key the element does
+    not have (a multiselect whose keys are ``"4"`` does not accept ``[4]``), so
+    the correction is derived from the element's option keys, not from the
+    submitted value's type. None when the element has no options or none
+    matches.'''
+    keys = _option_keys(element)
+    if not keys:
+        return None
+    for key in keys:
+        try:
+            # Exact match first, then string form: a widget keyed by "4" is the
+            # right correction for the integer 4 (and for the string "4").
+            if _same(key, value) or str(key) == str(value):
+                return key
+        except Exception:
+            continue
+    return None
+
+
 async def _run():
     name = __UI_VARIABLE_NAME_JSON__
     value = json.loads(__UI_VALUE_JSON_LITERAL__)
@@ -232,6 +283,18 @@ async def _run():
         # marimo drops a rejected update silently (stderr only), so guessing
         # here would only reproduce the silent-no-op failure this guards.
         if _is_list_shape(shape) and not submitted_is_list:
+            # Suggest the element's OWN key when one matches the submitted
+            # scalar: wrapping blindly can suggest a key the element lacks.
+            key = _match_option_key(element, value)
+            if key is not None:
+                suggestion = [key]
+                suggestion_note = (
+                    " (matched the element's own option key "
+                    + _text(key) + ")"
+                )
+            else:
+                suggestion = [value]
+                suggestion_note = ""
             return json.dumps({
                 "status": "error",
                 "reason": "value_shape_mismatch",
@@ -239,12 +302,13 @@ async def _run():
                 "element_type": element_type,
                 "accepted_shape": shape_text,
                 "submitted_value": _jsonable(value),
-                "did_you_mean": [value],
+                "did_you_mean": suggestion,
                 "message": "The " + element_type + " element " + json.dumps(name)
                            + " takes a list-shaped value (" + str(shape_text)
                            + "); received the scalar " + _text(value)
                            + ". Re-send it as a one-element list, e.g. "
-                           + _text([value]) + " - a dropdown or multiselect takes its "
+                           + _text(suggestion) + suggestion_note
+                           + " - a dropdown or multiselect takes its "
                            "option key(s) inside a list. Nothing was changed.",
             })
         if _is_scalar_shape(shape) and submitted_is_list:

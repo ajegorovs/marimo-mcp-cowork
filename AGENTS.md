@@ -93,7 +93,7 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-11): `-m "not live"` → **307 passed**, `-m
+Verified on this tree (2026-09-11): `-m "not live"` → **316 passed**, `-m
 live` → **33 passed** (incl. the 4 mutation regressions — 2 hermetic flow cases
 plus the 2 hunt-H7 guard cases, 7 widget regressions and 2 console-channel
 regressions). The not-live tier also carries the two session-binding subprocess

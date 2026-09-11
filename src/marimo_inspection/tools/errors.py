@@ -71,9 +71,20 @@ async def get_errors(
             next_steps.append("Use get_cell_data to inspect impacted cells")
             next_steps.append("Re-run the notebook after addressing errors")
         elif has_console_exception:
+            evidence = {
+                c.get("console_exception_evidence")
+                for c in data.get("cells", [])
+                if c.get("console_exception_evidence")
+            }
+            seen = (
+                " and ".join(kind.replace("_", " ") for kind in sorted(evidence))
+                or "exception evidence"
+            )
             next_steps.append(
-                "Console stderr shows an exception traceback "
-                "(UI-handler error); inspect the affected cell"
+                f"Console stderr carries {seen} in "
+                f"{data.get('total_console_exception_cells', 0)} cell(s) while the "
+                "structured channel is empty — read those cell's console_stderr "
+                "and inspect the affected cell"
             )
         else:
             next_steps.append("No errors detected")

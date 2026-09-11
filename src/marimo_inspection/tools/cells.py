@@ -114,6 +114,11 @@ async def get_cell_data(
     Includes source code, errors, and variable information.
     If cell_ids is empty, returns data for all cells.
 
+    A requested id that resolves to nothing (deleted or mistyped) is reported
+    in ``missing_cell_ids`` rather than silently omitted — the write tools
+    refuse an absent id, so an unqualified empty payload here would hide the
+    same mistake.
+
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
@@ -123,7 +128,7 @@ async def get_cell_data(
         server_url: Optional server URL override.
 
     Returns:
-        Dictionary with cell runtime data.
+        Dictionary with cell runtime data plus ``missing_cell_ids``.
     """
     cell_ids = normalize_list_arg(cell_ids)
     sid = await resolve_session_id(session_id, ctx)
@@ -179,7 +184,7 @@ async def get_cell_data(
         )
     get_tracker().record_cells(session.session_id, fingerprints)
 
-    return {
+    response = {
         "session_id": session.session_id,
         "data": rows,
         "next_steps": [
@@ -188,6 +193,17 @@ async def get_cell_data(
             "Examine variables to understand cell state",
         ],
     }
+    # Report -- never silently drop -- the ids that matched no cell.
+    missing = data.get("missing_cell_ids") or []
+    if missing:
+        response["missing_cell_ids"] = missing
+        response["next_steps"].insert(
+            0,
+            "These requested cell ids resolved to no cell (deleted or "
+            f"mistyped): {', '.join(str(m) for m in missing)} — re-read "
+            "get_cell_map for the current ids",
+        )
+    return response
 
 
 async def get_cell_outputs(
@@ -197,6 +213,10 @@ async def get_cell_outputs(
     ctx: Context | None = None,
 ) -> dict:
     """Get cell execution outputs including visual display and console streams.
+
+    A requested id that resolves to nothing (deleted or mistyped) is reported
+    in ``missing_cell_ids`` rather than silently omitted — a cell with no
+    output and a cell that does not exist must not look alike.
 
     Args:
         session_id: Session ID from list_active_notebooks.
@@ -232,7 +252,7 @@ async def get_cell_outputs(
     stdout_text = "\n".join(result.stdout)
     try:
         data = json.loads(stdout_text)
-        return {
+        response = {
             "session_id": session.session_id,
             "cells": data.get("cells", []),
             "next_steps": [
@@ -240,6 +260,16 @@ async def get_cell_outputs(
                 "Check stdout/stderr for print statements and warnings",
             ],
         }
+        missing = data.get("missing_cell_ids") or []
+        if missing:
+            response["missing_cell_ids"] = missing
+            response["next_steps"].insert(
+                0,
+                "These requested cell ids resolved to no cell (deleted or "
+                f"mistyped): {', '.join(str(m) for m in missing)} — re-read "
+                "get_cell_map for the current ids",
+            )
+        return response
     except json.JSONDecodeError:
         return {
             "error": "Failed to parse cell outputs result",

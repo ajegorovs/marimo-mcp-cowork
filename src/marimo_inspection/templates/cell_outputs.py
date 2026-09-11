@@ -90,10 +90,14 @@ async def get_cell_outputs():
             cell_ids = list(ctx.cells.keys())
 
         results = []
+        missing = []
         for cid in cell_ids:
             try:
                 c = ctx.cells[cid]
-            except (KeyError, Exception):
+            except Exception:
+                # Keep the requested-but-unresolved ids visible: a deleted or
+                # mistyped id must not look like "this cell has no output".
+                missing.append(str(cid))
                 continue
 
             out = c.output
@@ -114,7 +118,7 @@ async def get_cell_outputs():
                 "console_events": [_cell_output_to_dict(o) for o in console],
             })
 
-        return json.dumps({"cells": results})
+        return json.dumps({"cells": results, "missing_cell_ids": missing})
 
 
 print(await get_cell_outputs())

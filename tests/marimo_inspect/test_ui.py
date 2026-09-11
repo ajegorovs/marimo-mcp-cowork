@@ -300,6 +300,41 @@ class TestSetUiValueTemplate:
         assert calls == []  # never queued
         assert element.value is None  # untouched
 
+    async def test_scalar_refusal_suggests_the_elements_own_key(self, monkeypatch):
+        """H5: the correction carries the option KEY, not the submitted type.
+
+        A multiselect whose keys are the strings "4"/"5" does not accept the
+        suggested ``[4]`` — following the old ``did_you_mean`` verbatim produced
+        a second error, and the working form was never suggested.
+        """
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _list_shaped()()
+        element._options = {"4": "four", "5": "five"}
+        payload, calls = await _run_template_payload(
+            build_set_ui_value_template("ms", 4),
+            {"ms": element},
+            monkeypatch,
+        )
+        assert payload["status"] == "error"
+        assert payload["reason"] == "value_shape_mismatch"
+        assert payload["submitted_value"] == 4
+        assert payload["did_you_mean"] == ["4"]
+        assert '"4"' in payload["message"]
+        assert calls == []
+
+    async def test_scalar_refusal_falls_back_without_options(self, monkeypatch):
+        """No options to match against keeps the plain one-element form."""
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _list_shaped()()
+        payload, _ = await _run_template_payload(
+            build_set_ui_value_template("rs", 7),
+            {"rs": element},
+            monkeypatch,
+        )
+        assert payload["did_you_mean"] == [7]
+
     async def test_list_shaped_element_accepts_one_element_list(self, monkeypatch):
         from marimo_inspection.templates.ui import build_set_ui_value_template
 

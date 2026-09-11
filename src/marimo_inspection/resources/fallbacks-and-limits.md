@@ -43,6 +43,13 @@ deliberate script escape hatch: run `marimo._code_mode` via the scratchpad.
 The MCP surface is intentionally narrow — there is no general execute /
 arbitrary-code tool.
 
+## Dependency graph is whole-notebook
+
+`get_dependency_graph` always returns the **full** graph. `cell_id` and `depth`
+are refused (`reason: unsupported_argument`, nothing is read) rather than
+accepted-and-ignored; walk `cells[].parent_cell_ids` / `child_cell_ids` for a
+neighbourhood yourself.
+
 ## Session binding needs a session-stable client
 
 `session_id`/`server_url` are omittable only where the client keeps **one MCP

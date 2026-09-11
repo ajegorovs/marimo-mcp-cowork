@@ -3,23 +3,20 @@
 from __future__ import annotations
 
 
-def build_dependency_graph_template(
-    cell_id: str | None = None,
-    depth: int | None = None,
-) -> str:
+def build_dependency_graph_template() -> str:
     """Build the scratchpad code template for dependency graph.
 
-    Args:
-        cell_id: Optional cell ID to center the graph on.
-        depth: Optional number of hops from center cell.
+    The template always returns the FULL notebook graph: it takes no centring
+    arguments, because the tool refuses ``cell_id``/``depth`` instead of
+    accepting them and ignoring them.
 
     Returns:
         Python code string that runs in the scratchpad.
     """
-    cell_id_str = f'"{cell_id}"' if cell_id is not None else "None"
-    depth_val = depth if depth is not None else "None"
+    return _TEMPLATE
 
-    return f"""
+
+_TEMPLATE = """
 import json
 import marimo._code_mode as cm
 
@@ -28,32 +25,44 @@ async def get_dependency_graph():
         # Access the graph through the code mode context
         graph = ctx.graph
 
-        center_cell = {cell_id_str}
-        target_depth = {depth_val}
+        # Cell names come from the SAME source get_cell_map reads (the
+        # NotebookCell's ``name``), so both tools agree on what a cell is
+        # called. A graph CellImpl has no usable name of its own.
+        name_by_id = {}
+        try:
+            for cell in ctx.cells:
+                try:
+                    name_by_id[str(cell.id)] = getattr(cell, "name", "") or ""
+                except Exception:
+                    continue
+        except Exception:
+            name_by_id = {}
 
         # Build cell dependency info
         cells = []
         for cid, cell_impl in graph.cells.items():
-            cell_name = ""
+            cell_name = name_by_id.get(str(cid), "")
+            if not cell_name:
+                cell_name = getattr(cell_impl, "name", "") or ""
 
             defs = []
             for var_name in sorted(cell_impl.defs):
-                defs.append({{
+                defs.append({
                     "name": var_name,
                     "kind": "variable",
-                }})
+                })
 
-            cells.append({{
+            cells.append({
                 "cell_id": str(cid),
                 "cell_name": cell_name,
                 "defs": defs,
                 "refs": sorted(cell_impl.refs),
                 "parent_cell_ids": sorted(str(p) for p in graph.parents.get(cid, set())),
                 "child_cell_ids": sorted(str(c) for c in graph.children.get(cid, set())),
-            }})
+            })
 
         # Variable owners (global)
-        variable_owners = {{}}
+        variable_owners = {}
         for var_name, defining_cells in graph.definitions.items():
             variable_owners[var_name] = sorted(str(c) for c in defining_cells)
 
@@ -72,17 +81,17 @@ async def get_dependency_graph():
                 cycle_cell_ids.add(str(parent_id))
                 cycle_cell_ids.add(str(child_id))
                 edges_list.append([str(parent_id), str(child_id)])
-            cycles.append({{
+            cycles.append({
                 "cell_ids": sorted(cycle_cell_ids),
                 "edges": edges_list,
-            }})
+            })
 
-        return json.dumps({{
+        return json.dumps({
             "cells": cells,
             "variable_owners": variable_owners,
             "multiply_defined": multiply_defined,
             "cycles": cycles,
-        }})
+        })
 
 print(await get_dependency_graph())
 """
