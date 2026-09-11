@@ -5,10 +5,12 @@ and `delete_cell`. These wrap marimo's `marimo._code_mode` API (the same layer
 the pairing scripts use) behind single, validated tool contracts.
 
 `edit_cell` carries a **staleness guard**: before mutating, it compares the
-cell's live source hash against the agent's last-read snapshot (tracked by the
-change tracker). If the cell changed since the agent last read it, the edit is
-REFUSED and the agent is told to re-read — impossible silent stomps during
-simultaneous co-work. This mirrors Hermes' file-edit guard (`check_stale`).
+cell's live source hash against the agent's last full-source READ BASELINE
+(recorded by `get_cell_data`, or by the cell's own create/edit). A
+`get_cell_map` preview does NOT record it (H9). If the cell changed since that
+read, the edit is REFUSED and the agent is told to re-read — impossible silent
+stomps during simultaneous co-work. This mirrors Hermes' file-edit guard
+(`check_stale`).
 """
 
 from __future__ import annotations
@@ -76,18 +78,20 @@ async def _refresh_snapshot(
     record: Iterable[str] = (),
     forget: Iterable[str] = (),
 ) -> dict[str, CellFingerprint] | None:
-    """Re-read live hashes; commit ONLY the cells this mutation touched.
+    """Re-read live hashes; refresh ONLY the cells this mutation touched.
 
     After a successful mutation the agent's baseline for the cell it just wrote
     is stale; refreshing that one cell (an implicit read, like Hermes'
-    ``note_write``) keeps change-detection coherent so our own write does not
-    reappear as an external change.
+    ``note_write``) keeps both tracker dimensions coherent — the read baseline
+    the ``edit_cell`` guard compares against, and change detection, so our own
+    write does not reappear as an external change.
 
-    It must NOT commit the whole session. ``ChangeTracker.commit`` replaces the
-    snapshot, which forges a last-read baseline for every OTHER cell — a write
-    to any cell would then disable the ``edit_cell`` guard for all of them
-    (every foreign edit silently stops reporting ``conflict``, and a never-read
-    cell stops reporting ``needs_read``). That is H7 in
+    It must NOT replace the whole session. ``ChangeTracker.commit`` replaces
+    the change-detection snapshot, which (pre-H7, when that snapshot doubled as
+    the read baseline) forged a last-read baseline for every OTHER cell — a
+    write to any cell would then disable the ``edit_cell`` guard for all of
+    them (every foreign edit silently stops reporting ``conflict``, and a
+    never-read cell stops reporting ``needs_read``). That is H7 in
     ``docs/agenda-bug-hunt-1.md``.
 
     Returns the fresh fingerprint map (the caller reports the post-write hash
@@ -199,8 +203,10 @@ async def edit_cell(
     """Edit an existing cell's source code.
 
     Includes a staleness guard: unless ``check_fresh=False``, refuses to edit
-    a cell whose source changed since the agent last read it (as recorded by
-    the change tracker). This prevents silently overwriting a concurrent edit.
+    a cell that has no full-source read baseline (``needs_read``) or whose
+    source changed since that read (``conflict``). ``get_cell_data`` records
+    the baseline; a ``get_cell_map`` preview does not. This prevents silently
+    overwriting a concurrent edit.
 
     Args:
         cell_id: Target cell id.
@@ -241,7 +247,8 @@ async def edit_cell(
             "cell_id": cell_id,
             "message": (
                 f"Cell {cell_id} not found in session {sid}. "
-                "Use get_cell_map to list the current cell ids, then retry."
+                "Use get_cell_map to list the current cell ids, then read "
+                "one with get_cell_data and retry."
             ),
         }
     live_hash = live.get(cell_id)
@@ -260,8 +267,9 @@ async def edit_cell(
                 "cell_id": cell_id,
                 "message": (
                     f"Cell {cell_id} was never read by this agent. "
-                    "get_cell_map/get_cell_data first so you edit against "
-                    "a known baseline, then retry edit_cell."
+                    "Call get_cell_data for it (a get_cell_map preview does "
+                    "not record the read baseline) so you edit against a "
+                    "known source, then retry edit_cell."
                 ),
             }
         if live_hash is not None and live_hash != prev.code_hash:
@@ -270,8 +278,8 @@ async def edit_cell(
                 "cell_id": cell_id,
                 "message": (
                     f"Cell {cell_id} was modified since the agent last read it "
-                    "(source hash changed). Re-read it (get_cell_data/get_cell_map) "
-                    "to avoid overwriting a concurrent edit, then retry edit_cell. "
+                    "(source hash changed). Re-read it with get_cell_data to "
+                    "avoid overwriting a concurrent edit, then retry edit_cell. "
                     "Or pass check_fresh=False to force."
                 ),
             }

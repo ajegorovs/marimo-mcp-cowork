@@ -109,7 +109,7 @@ async def list_active_notebooks(
         },
         "notebooks": all_notebooks,
         "next_steps": [
-            "Use get_cell_map to get the structure of a notebook (omit session_id and server_url only if your client keeps one MCP session across calls — see the tool docstring)",
+            "Use get_cell_map to get the structure of a notebook (session_id and server_url are omittable over stdio; over HTTP/SSE only while this process has served one client session — otherwise pass them explicitly, see set_active_session)",
             "Use get_errors to debug errors",
             "Pass session_id explicitly to target a different notebook",
         ],

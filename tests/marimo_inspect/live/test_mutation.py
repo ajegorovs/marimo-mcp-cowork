@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from marimo_inspection.tools.cells import get_cell_data, get_cell_outputs
+from marimo_inspection.tools.cells import get_cell_data, get_cell_map, get_cell_outputs
 from marimo_inspection.tools.errors import get_errors
 from marimo_inspection.tools.mutation import (
     create_cell,
@@ -284,10 +284,11 @@ async def test_unrelated_write_does_not_bless_a_never_read_cell(mutation_server)
     _manager, server_url, session_id, _notebook_copy = mutation_server
     created: list[str] = []
     try:
-        # Discover a fixture cell id WITHOUT reading its source: get_cell_data
-        # AND get_cell_map both commit fingerprints to the change tracker, so
-        # either one would create the very baseline this test proves is absent.
-        # get_cell_outputs reads executed outputs only and records nothing.
+        # Discover a fixture cell id WITHOUT reading its source. get_cell_data
+        # would record the read baseline this test proves is absent; get_cell_map
+        # no longer does (H9), but it is still avoided here so the assertion
+        # does not depend on that. get_cell_outputs reads executed outputs only
+        # and records nothing.
         outputs = await get_cell_outputs(session_id=session_id, server_url=server_url)
         fixture_cell = outputs["cells"][0]["cell_id"]
 
@@ -303,3 +304,162 @@ async def test_unrelated_write_does_not_bless_a_never_read_cell(mutation_server)
     finally:
         for cid in reversed(created):
             await delete_cell(cid, session_id=session_id, server_url=server_url)
+
+
+@pytest.mark.live
+async def test_preview_read_does_not_bless_a_read_baseline(mutation_server):
+    """H9: a `get_cell_map` PREVIEW must not arm the `edit_cell` guard.
+
+    Pre-fix, `get_cell_map` called `ChangeTracker.commit` for every cell, and
+    that one snapshot doubled as the read baseline — so a 3-line preview forged
+    a full-source read and `edit_cell` overwrote a never-read cell with
+    `status: ok`. Post-fix only a full-source read (`get_cell_data`) records
+    the baseline; `get_cell_map` keeps feeding only `changes_since_last`.
+
+    This fails against the pre-fix code on the `assert refused["status"] ==
+    "needs_read"` line (pre-fix returns `ok`, i.e. the edit is applied).
+    """
+    _manager, server_url, session_id, _copy = mutation_server
+
+    # Discover a fixture cell id WITHOUT reading any source: get_cell_outputs
+    # reads executed outputs only and records nothing.
+    outputs = await get_cell_outputs(session_id=session_id, server_url=server_url)
+    fixture_cell = outputs["cells"][0]["cell_id"]
+
+    # The documented "start here" preview read — pre-fix this blessed every
+    # cell in the notebook.
+    cell_map = await get_cell_map(session_id=session_id, server_url=server_url)
+    assert any(c["cell_id"] == fixture_cell for c in cell_map["cells"]), cell_map
+
+    refused = await edit_cell(
+        fixture_cell, "x = 1", session_id=session_id, server_url=server_url
+    )
+    assert refused["status"] == "needs_read", refused
+
+    # A real full-source read records the baseline; the same cell is then
+    # editable with no further re-read.
+    read = await get_cell_data(
+        cell_ids=[fixture_cell], session_id=session_id, server_url=server_url
+    )
+    original = _rows_by_id(read)[fixture_cell]["code"]
+    applied = await edit_cell(
+        fixture_cell,
+        original + "\n# h9_read_baseline",
+        session_id=session_id,
+        server_url=server_url,
+    )
+    assert applied["status"] == "ok", applied
+
+
+@pytest.mark.live
+async def test_insert_keeps_pre_existing_code_hashes_unchanged(mutation_server):
+    """H10: pins the invariant the H7 guard narrowing rests on.
+
+    `_refresh_snapshot` records ONLY the mutated cell because inserting a cell
+    leaves every pre-existing cell's `code_hash` unchanged on marimo 0.24.x
+    (measured once by a throwaway probe, now pinned here). If a marimo bump
+    broke the property, the guard would start reporting false `conflict`s for
+    cells nobody touched and no test would say so.
+
+    Invariant demonstration (no pre-fix code to fail against — the property is
+    marimo's): with this assertion perturbed to require the *opposite* — a
+    pre-existing cell's hash changed by the insert — the test fails on the
+    first pre-existing cell with the "insert changed cell ..." message; the
+    perturbation was observed and reverted on 2026-09-11.
+    """
+    _manager, server_url, session_id, _copy = mutation_server
+    created: list[str] = []
+    try:
+        before = await get_cell_map(session_id=session_id, server_url=server_url)
+        before_hashes = {c["cell_id"]: c["code_hash"] for c in before["cells"]}
+        assert before_hashes, before
+
+        made = await create_cell(
+            "h10_inserted = 1", session_id=session_id, server_url=server_url
+        )
+        assert made["status"] == "ok", made
+        created.append(made["cell_id"])
+
+        after = await get_cell_map(session_id=session_id, server_url=server_url)
+        after_hashes = {c["cell_id"]: c["code_hash"] for c in after["cells"]}
+        # The insert is visible...
+        assert made["cell_id"] in after_hashes, after
+        # ...and every pre-existing cell's code hash is byte-identical.
+        for cid, h in before_hashes.items():
+            assert after_hashes.get(cid) == h, (
+                f"insert changed cell {cid}'s code_hash: {h!r} -> "
+                f"{after_hashes.get(cid)!r}"
+            )
+    finally:
+        for cid in created:
+            await delete_cell(cid, session_id=session_id, server_url=server_url)
+
+
+@pytest.mark.live
+async def test_delete_keeps_pre_existing_code_hashes_unchanged(mutation_server):
+    """H10: deleting a cell leaves every OTHER cell's code_hash unchanged.
+
+    Same invariant as the insert case, exercised across a delete (the other
+    operation `_refresh_snapshot` narrows to `forget`). See the insert test's
+    docstring for the perturbation demonstration.
+    """
+    _manager, server_url, session_id, _copy = mutation_server
+    made = await create_cell(
+        "h10_deletable = 1", session_id=session_id, server_url=server_url
+    )
+    assert made["status"] == "ok", made
+    victim = made["cell_id"]
+
+    before = await get_cell_map(session_id=session_id, server_url=server_url)
+    before_hashes = {c["cell_id"]: c["code_hash"] for c in before["cells"]}
+    assert victim in before_hashes, before
+
+    deleted = await delete_cell(victim, session_id=session_id, server_url=server_url)
+    assert deleted["status"] == "ok", deleted
+
+    after = await get_cell_map(session_id=session_id, server_url=server_url)
+    after_hashes = {c["cell_id"]: c["code_hash"] for c in after["cells"]}
+    assert victim not in after_hashes, after
+    for cid, h in before_hashes.items():
+        if cid == victim:
+            continue
+        assert after_hashes.get(cid) == h, (
+            f"delete changed cell {cid}'s code_hash: {h!r} -> {after_hashes.get(cid)!r}"
+        )
+
+
+@pytest.mark.live
+async def test_cell_map_still_reports_changes_since_last(mutation_server):
+    """H9: the tracker split must not disarm change detection.
+
+    `get_cell_map` no longer records the `edit_cell` read baseline, but its
+    `commit` must keep feeding `changes_since_last` (the separate
+    change-detection snapshot). An out-of-band edit therefore still shows up as
+    an edited cell — while the cell itself remains un-editable until a
+    `get_cell_data` read.
+    """
+    _manager, server_url, session_id, _copy = mutation_server
+    outputs = await get_cell_outputs(session_id=session_id, server_url=server_url)
+    target = outputs["cells"][0]["cell_id"]
+
+    # First observation = baseline; nothing to diff against yet.
+    first = await get_cell_map(session_id=session_id, server_url=server_url)
+    assert "changes_since_last" not in first, first
+    assert target in {c["cell_id"] for c in first["cells"]}, first
+
+    # A second actor edits the cell out of band.
+    raw = await _execute_raw(
+        server_url, session_id, _raw_external_edit(target, "setup_marker = 1")
+    )
+    assert raw.status == "ok", f"raw external edit failed: stderr={raw.stderr}"
+
+    second = await get_cell_map(session_id=session_id, server_url=server_url)
+    changed = second.get("changes_since_last")
+    assert changed is not None, second
+    assert target in changed["edited_cells"], changed
+
+    # The change is detected, but the preview still did not bless the cell.
+    refused = await edit_cell(
+        target, "x = 1", session_id=session_id, server_url=server_url
+    )
+    assert refused["status"] == "needs_read", refused

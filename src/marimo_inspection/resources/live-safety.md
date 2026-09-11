@@ -12,9 +12,14 @@ These tools act on a **live kernel**. Treat every write as production.
 ## Read before edit
 
 `edit_cell` defaults to `check_fresh=True`: it requires that you read that
-exact cell first. On a first touch it returns status `needs_read`
-unconditionally — even on a session with no snapshot. If the source changed
-since your last read it returns `conflict`.
+exact cell's **full source** first. On a first touch it returns status
+`needs_read` unconditionally — even on a session with no snapshot. If the
+source changed since your last read it returns `conflict`.
+
+`get_cell_data` records the read baseline; a `get_cell_map` preview does
+**not**. The map is for orienting (ids, previews, state) — a 3-line preview is
+not a read of the source, so `get_cell_map` alone does not make a cell
+editable.
 
 A mutation refreshes only the cell it touched: `create_cell`/`edit_cell`/
 `delete_cell` record that one cell's baseline, so an unrelated write by another
@@ -23,8 +28,7 @@ reported until *you* re-read.
 
 Recovery is a real re-read, then retry:
 
-1. `get_cell_data` for that cell (this records the read baseline), or
-   `get_cell_map`.
+1. `get_cell_data` for that cell — this records the read baseline.
 2. Retry `edit_cell`.
 
 `check_fresh=False` is an explicit force escape hatch — never the normal

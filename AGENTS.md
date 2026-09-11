@@ -36,16 +36,21 @@ on stderr only) returns `status: error`, `reason: value_not_applied`.
 
 `list_active_notebooks` auto-binds the first discovered session (`session_id`
 and `server_url`); every other tool accepts an optional `session_id` and falls
-back to the bound session **only when the client keeps one MCP session across
-calls** — an `mcp`-SDK-based client does, fastmcp's own `Client` does not on the
-pinned fastmcp 4.0.3 (fresh MCP session per request, stdio and HTTP alike), so
-there the arguments are not omittable in practice (open defect H11; the wording
-in `tools/session.py`, `server.py` and the resources is deliberately
-conditional). `create_cell` defaults to `hide_code=False`.
+back to the bound session. The binding lives in the MCP session's server-side
+state **and** in a **process-global fallback** consulted only when that state
+has nothing bound — which is what carries it for a client that starts a fresh
+MCP session per request (fastmcp's own `Client`, pinned fastmcp 4.0.3, stdio and
+HTTP alike). Over stdio one server process serves exactly one client, so the
+fallback is connection-global and omitting the arguments always works; over
+`--transport http` it is served only while the process has seen a single client
+session, and a second client session makes argument-less calls refuse with
+`reason: binding_ambiguous` (fail-closed — never guessed, so one client can
+never inherit another's notebook). `create_cell` defaults to `hide_code=False`.
 `edit_cell` carries a staleness guard (`check_fresh=True` by default):
 never-read → `needs_read`, changed-since-read → `conflict`; recover by
-re-reading (`get_cell_data`/`get_cell_map`) and retrying (`check_fresh=False`
-is a force escape hatch, not the recovery path).
+re-reading the cell's full source (`get_cell_data` — a `get_cell_map` preview
+does **not** record the read baseline) and retrying (`check_fresh=False` is a
+force escape hatch, not the recovery path).
 
 Three static, read-only MCP resources accompany the tools
 (`workflow://marimo-inspect/co-work-loop`,
@@ -93,13 +98,14 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-11): `-m "not live"` → **316 passed**, `-m
-live` → **33 passed** (incl. the 4 mutation regressions — 2 hermetic flow cases
-plus the 2 hunt-H7 guard cases, 7 widget regressions and 2 console-channel
-regressions). The not-live tier also carries the two session-binding subprocess
-cases that spawn the console script and pin the client-session split (H1/H11).
-Counts drift as tests are added; treat the split, not the exact numbers, as the
-contract.
+Verified on this tree (2026-09-11): `-m "not live"` → **323 passed**, `-m
+live` → **37 passed** (incl. the 4 mutation regressions — 2 hermetic flow cases
+plus the 2 hunt-H7 guard cases, the H9 preview/read-baseline pair, the 2 H10
+`code_hash` invariants, 7 widget regressions and 2 console-channel
+regressions). The not-live tier also carries the session-binding subprocess
+cases that spawn the console script and pin the binding model (H1/H11 — stdio,
+and the HTTP single-client scope). Counts drift as tests are added; treat the
+split, not the exact numbers, as the contract.
 
 ## Layout
 
@@ -224,12 +230,14 @@ CI-covered: the live suite boots kernels, not frontends.
   break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
   machine. Read before choosing a consumer's topology or touching
   `discovery.py`/`--no-token` assumptions.
-- `docs/agenda-bug-hunt-1.md` — **OPEN** agenda: the 11 hunt #1 findings (10
-  silent-payload items plus one hardening item), each with a source-verified
-  mechanism, a proposed priority, and the "repro must fail pre-fix" closure rule.
-  Resolved and logged: H7 (the `edit_cell` guard disarmed by any unrelated write),
-  H1's binding *claim*, and the payload cluster H2–H6; open are H8, H9 (decided,
-  implementation pending), H10 and H11 (the capability gap H1's fix left behind).
+- `docs/agenda-bug-hunt-1.md` — **CLOSED** (all 11 hunt #1 findings resolved,
+  2026-09-11): each carried a source-verified mechanism, a proposed priority and
+  the "repro must fail pre-fix" closure rule, and every one now has a test that
+  proves it. Read its §Resolved log for the decision trail (H1's binding claim
+  and the H11 fallback that replaced the capability gap, H2–H6's payload
+  truthfulness, H7's guard scope, H9's explicit-only read baseline, H10's pinned
+  hash invariant). Its §Checkpoint still carries the one open cross-agenda item —
+  the `T13` widget residual.
   Read before touching
   `tools/mutation.py` payload/guard code, `tools/session.py` binding claims, or
   the `templates/*` payload shapes it names.

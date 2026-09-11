@@ -35,14 +35,19 @@ def create_server(
         - Create/edit/run/delete cells (unified write surface)
 
         Start with `list_active_notebooks` to discover sessions. The first
-        session found is auto-bound as the active session, so later calls on
-        the same MCP session can omit both `session_id` and `server_url`.
-        The binding is server-side state keyed by the MCP session identity the
-        client negotiates: it reaches the next call only when the client keeps
-        one MCP session for the connection (an `mcp`-SDK-based client does;
-        fastmcp's own `Client` does not, on the pinned fastmcp 4.0.3). Where a
-        client starts a new MCP session per request, pass `session_id` and
-        `server_url` explicitly on every call.
+        session found is auto-bound as the active session. The binding lives
+        in two places: the MCP session's server-side state (visible when the
+        client keeps one MCP session across calls — an `mcp`-SDK-based client
+        does) and a process-global fallback consulted only when that state has
+        nothing bound. Over stdio one process serves exactly one client, so
+        the fallback carries the binding to every later call, including for a
+        client that starts a fresh MCP session per request (fastmcp's own
+        `Client` does, on the pinned fastmcp 4.0.3). Over HTTP/SSE one process
+        serves many clients, so the fallback is served only while the process
+        has seen a single client session; once a second client session
+        appears, argument-less calls are refused with `reason:
+        binding_ambiguous` — pass `session_id` and `server_url` explicitly
+        there.
 
         Use `set_active_session` to switch to a different notebook session,
         or pass `session_id`/`server_url` explicitly to any tool to override
@@ -50,7 +55,9 @@ def create_server(
 
         Writes: use `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
         `edit_cell` refuses to overwrite a cell whose source changed since the
-        agent last read it (read with `get_cell_map`/`get_cell_data` first).
+        agent last read it. Read the cell's full source with `get_cell_data`
+        before editing it — a `get_cell_map` preview does NOT record the read
+        baseline, so the first edit of a cell needs one `get_cell_data`.
 
         Widget interaction: `set_ui_value` sets a live UI element's value by
         its variable name. Value shapes are per widget and are never coerced

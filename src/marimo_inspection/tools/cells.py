@@ -26,6 +26,10 @@ async def get_cell_map(
     Returns cell IDs, names, code previews, and runtime state.
     This is the starting point for navigating a notebook.
 
+    A preview does NOT record the ``edit_cell`` read baseline — it updates only
+    this tool's own change-detection snapshot. Read a cell's full source with
+    ``get_cell_data`` before editing it.
+
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
@@ -73,6 +77,9 @@ async def get_cell_map(
             for c in cells
         }
 
+        # Change detection only (H9): commit feeds `changes_since_last` and
+        # deliberately does NOT write the edit_cell read baseline — a 3-line
+        # preview is not "I read the source" (only get_cell_data records it).
         # First observation for this session = baseline (no diff reported).
         had_baseline = tracker.has_snapshot(session.session_id)
         change = tracker.diff(session.session_id, fingerprints)

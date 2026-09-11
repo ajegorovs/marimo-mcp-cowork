@@ -261,7 +261,7 @@ async def test_edit_cell_missing_cell_returns_error():
     )
 
     tracker = get_tracker()
-    tracker.commit("test-session-1", {"C1": CellFingerprint(code_hash="h")})
+    tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash="h")})
     # Live hashes do not contain C1 at all.
     mock_cls = _mock_client(['{"OTHER": "h"}'])
     try:
@@ -292,7 +292,7 @@ async def test_edit_cell_reread_then_retry_proceeds():
     h3 = hashlib.sha256(b"x = 3").hexdigest()[:12]
 
     tracker = get_tracker()
-    tracker.commit("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
+    tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
 
     calls = {"n": 0}
 
@@ -351,7 +351,7 @@ async def test_edit_cell_conflict_persists_after_reread_and_new_change():
     h3 = hashlib.sha256(b"x = 3").hexdigest()[:12]
 
     tracker = get_tracker()
-    tracker.commit("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
+    tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
 
     calls = {"n": 0}
 
@@ -405,7 +405,7 @@ async def test_edit_cell_refresh_error_preserves_baseline_and_warns():
     h2 = hashlib.sha256(b"x = 2").hexdigest()[:12]
 
     tracker = get_tracker()
-    tracker.commit("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
+    tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
 
     calls = {"n": 0}
 
@@ -518,7 +518,7 @@ async def test_edit_cell_conflict_guard():
     tracker = get_tracker()
     # Simulate: agent previously read cell C1 with hash "oldhash".
     # NOTE: the mocked resolve_session returns session_id "test-session-1".
-    tracker.commit("test-session-1", {"C1": CellFingerprint(code_hash="oldhash")})
+    tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash="oldhash")})
 
     # Live hashes: C1 now has a different hash -> the cell changed.
     mock_cls = _mock_client(['{"C1": "newhash"}'])
@@ -544,7 +544,7 @@ async def test_edit_cell_ok_when_unchanged():
     )
 
     tracker = get_tracker()
-    tracker.commit("s1", {"C1": CellFingerprint(code_hash="samehash")})
+    tracker.record_cells("s1", {"C1": CellFingerprint(code_hash="samehash")})
 
     calls = {"n": 0}
 

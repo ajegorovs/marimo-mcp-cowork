@@ -50,15 +50,24 @@ are refused (`reason: unsupported_argument`, nothing is read) rather than
 accepted-and-ignored; walk `cells[].parent_cell_ids` / `child_cell_ids` for a
 neighbourhood yourself.
 
-## Session binding needs a session-stable client
+## Session binding is process-global, and scoped
 
-`session_id`/`server_url` are omittable only where the client keeps **one MCP
-session across calls** — the binding is server-side state keyed by that
-session's identity. An `mcp`-SDK-based client qualifies. fastmcp's own `Client`
-does not (pinned fastmcp 4.0.3: a fresh MCP session per request, over stdio and
-HTTP alike), so its argument-less calls fail with "no active session bound" even
-though the bind returned success. Pass both arguments explicitly on such
-clients; they always win. See `workflow://marimo-inspect/co-work-loop` §1.
+A bind (`list_active_notebooks`' auto-bind or `set_active_session`) is written
+to the MCP session's server-side state **and** to a process-global fallback,
+consulted only when that state has nothing bound.
+
+- **stdio**: one server process serves exactly one client, so the fallback is
+  connection-global — `session_id`/`server_url` are omittable on every later
+  call, including from fastmcp's own `Client`, which starts a fresh MCP session
+  per request on the pinned fastmcp 4.0.3 (stdio and HTTP alike).
+- **HTTP/SSE**: one process serves many clients, so the fallback is served only
+  while the process has seen **one** client session. Once a second distinct
+  client session appears, argument-less calls are refused with `reason:
+  binding_ambiguous` — the server will not let a client that never bound
+  inherit another client's notebook and mutate the wrong one. Pass both
+  arguments explicitly on such a client; they always win.
+
+See `workflow://marimo-inspect/co-work-loop` §1.
 
 ## Version pin
 

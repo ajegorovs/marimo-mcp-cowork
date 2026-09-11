@@ -56,11 +56,11 @@ Key points:
   binding.
 - **`edit_cell` has a staleness guard** (`check_fresh=True` by default; mirrors
   Hermes' file-edit guard). It compares the cell's live source hash against the
-  change tracker's snapshot from the agent's last read (via
-  `get_cell_map`/`get_cell_data`). A cell this agent has never read returns
-  `status: "needs_read"` unconditionally; a cell whose source changed since the
-  last read returns `status: "conflict"`. Recover by re-reading with
-  `get_cell_data` (which records the read baseline) or `get_cell_map`, then
+  read baseline recorded by the agent's last full-source read — `get_cell_data`
+  (a `get_cell_map` preview does **not** record it). A cell this agent has never
+  read returns `status: "needs_read"` unconditionally; a cell whose source
+  changed since the last read returns `status: "conflict"`. Recover by
+  re-reading with `get_cell_data` (which records the read baseline), then
   retrying. `check_fresh=False` is an explicit force escape hatch, **not** the
   recovery path; a missing cell id errors before anything is mutated. A
   successful edit returns the post-edit `code_hash`.
@@ -476,9 +476,10 @@ Both reads and writes go through MCP tools — no inline Python needed.
   `create_cell`/`edit_cell`/`run_cell`/`delete_cell`; set a live widget value
   with `set_ui_value`. `execute-code.sh` is the bounded fallback for arbitrary
   probes / multi-op `cm` blocks — not the normal loop.
-- **Respect the edit guard.** Before `edit_cell`, ensure you recently read the
-  cell. If it returns `status: "conflict"`/`"needs_read"`, re-read via
-  `get_cell_data`/`get_cell_map`, then retry.
+- **Respect the edit guard.** Before `edit_cell`, read the cell's full source
+  with `get_cell_data` (a `get_cell_map` preview does not record the baseline).
+  If it returns `status: "conflict"`/`"needs_read"`, re-read via
+  `get_cell_data`, then retry.
 - **Verify before proceeding.** After every mutation, call the appropriate MCP
   tool to confirm the change took effect.
 - **Use explicit server_url.** The tools accept `server_url` as a parameter;

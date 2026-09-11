@@ -78,7 +78,8 @@ requires that you read that exact cell first:
 - source changed since your last read → `status: "conflict"`.
 
 Recovery is a real re-read, then retry: call `get_cell_data` (which records the
-read baseline) or `get_cell_map`, then retry `edit_cell`. A successful edit
+read baseline), then retry `edit_cell`. A `get_cell_map` preview does **not**
+record the baseline — a preview is not a source read. A successful edit
 returns the post-edit `code_hash`. `check_fresh=False` is an explicit force
 escape hatch, **not** the recovery path. A missing cell id returns a clear
 error before anything is mutated.

@@ -77,7 +77,7 @@ def test_clear_session_resets_baseline():
 
 
 def test_record_cells_creates_snapshot_when_none_exists():
-    """record_cells on a session without a snapshot establishes one."""
+    """record_cells on a fresh session establishes both tracker stores."""
     t = ChangeTracker()
     t.record_cells("s1", {"A": _fp("a")})
     assert t.has_snapshot("s1")
@@ -89,7 +89,7 @@ def test_record_cells_creates_snapshot_when_none_exists():
 def test_record_cells_merges_and_updates_only_supplied_cells():
     """record_cells is an upsert: supplied cells are updated, others kept."""
     t = ChangeTracker()
-    t.commit("s1", {"A": _fp("a"), "B": _fp("b")})
+    t.record_cells("s1", {"A": _fp("a"), "B": _fp("b")})
     t.record_cells("s1", {"A": _fp("a2", state="stale")})
     assert t.get_cell_fingerprint("s1", "A").code_hash == "a2"
     assert t.get_cell_fingerprint("s1", "A").state == "stale"
@@ -102,7 +102,7 @@ def test_record_cells_merges_and_updates_only_supplied_cells():
 def test_record_cells_never_erases_unlisted_cells():
     """record_cells must not drop fingerprints for cells it wasn't given."""
     t = ChangeTracker()
-    t.commit("s1", {"A": _fp("a"), "B": _fp("b"), "C": _fp("c")})
+    t.record_cells("s1", {"A": _fp("a"), "B": _fp("b"), "C": _fp("c")})
     t.record_cells("s1", {"C": _fp("c2")})
     assert t.get_cell_fingerprint("s1", "A").code_hash == "a"
     assert t.get_cell_fingerprint("s1", "B").code_hash == "b"
@@ -111,7 +111,7 @@ def test_record_cells_never_erases_unlisted_cells():
 
 def test_record_cells_keeps_other_baselines():
     tracker = ChangeTracker()
-    tracker.commit("s1", {"a": CellFingerprint(code_hash="h_a")})
+    tracker.record_cells("s1", {"a": CellFingerprint(code_hash="h_a")})
     tracker.record_cells("s1", {"b": CellFingerprint(code_hash="h_b")})
     assert tracker.get_cell_fingerprint("s1", "a") is not None  # NOT dropped
     assert tracker.get_cell_fingerprint("s1", "b").code_hash == "h_b"
@@ -119,17 +119,45 @@ def test_record_cells_keeps_other_baselines():
 
 def test_record_cells_updates_the_named_cell_only():
     tracker = ChangeTracker()
-    tracker.commit("s1", {"a": CellFingerprint(code_hash="h_a")})
+    tracker.record_cells("s1", {"a": CellFingerprint(code_hash="h_a")})
     tracker.record_cells("s1", {"a": CellFingerprint(code_hash="h_a2")})
     assert tracker.get_cell_fingerprint("s1", "a").code_hash == "h_a2"
 
 
+def test_commit_does_not_record_a_read_baseline():
+    """H9: the get_cell_map commit is change-detection only.
+
+    ``commit`` feeds ``changes_since_last``; it must NOT forge the read
+    baseline the ``edit_cell`` guard checks — a 3-line preview is not "I read
+    the source". Pre-fix, ``commit`` wrote the one shared store, so the
+    fingerprint below came back non-None and a preview blessed every cell.
+    """
+    t = ChangeTracker()
+    t.commit("s1", {"A": _fp("a")})
+    assert t.has_snapshot("s1")  # change detection did see the map
+    assert t.get_cell_fingerprint("s1", "A") is None  # no baseline forged
+
+
+def test_record_cells_writes_the_read_baseline_and_the_snapshot():
+    """A full-source read (get_cell_data) writes both dimensions."""
+    t = ChangeTracker()
+    t.record_cells("s1", {"A": _fp("a")})
+    assert t.get_cell_fingerprint("s1", "A").code_hash == "a"
+    assert t.has_snapshot("s1")
+
+
 def test_forget_cells_drops_only_the_named_cells():
     tracker = ChangeTracker()
-    tracker.commit("s1", {"a": CellFingerprint("h_a"), "b": CellFingerprint("h_b")})
+    tracker.record_cells(
+        "s1", {"a": CellFingerprint("h_a"), "b": CellFingerprint("h_b")}
+    )
     tracker.forget_cells("s1", ["a"])
     assert tracker.get_cell_fingerprint("s1", "a") is None
     assert tracker.get_cell_fingerprint("s1", "b") is not None
+    # The change-detection snapshot dropped it too: a later diff must not
+    # report the forgotten cell as removed from the notebook.
+    change = tracker.diff("s1", {"b": CellFingerprint("h_b")})
+    assert change.removed_cells == []
 
 
 def test_forget_cells_is_a_noop_without_a_snapshot():

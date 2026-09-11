@@ -10,33 +10,43 @@ the exact tool to call.
 `list_active_notebooks` — lists live sessions and auto-binds the first one,
 setting both `session_id` and `server_url`.
 
-The binding is **server-side session state, keyed by the MCP session identity
-your client negotiates**, so it reaches the next call only if the client keeps
-**one MCP session for the connection**:
+The binding is written to **two server-side places**: the MCP session's own
+state, keyed by the MCP session identity your client negotiates, and a
+**process-global fallback** consulted only when that state has nothing bound.
 
-- An `mcp`-SDK-based client does. Verified 2026-09-11: one stdio connection to
-  this server kept a single session id and the bound value was visible on the
-  following call.
-- **fastmcp's own `Client` does not.** On the pinned fastmcp 4.0.3 it starts a
-  fresh MCP session per request — over **stdio and HTTP alike** — so the
-  auto-bind and `set_active_session` return success while the next
-  argument-less call fails with "no active session bound" (measured
-  2026-09-11).
+- **stdio — argument-less calls always work.** One server process serves
+  exactly one client, so the process-global fallback is connection-global and
+  reaches every later call. That includes fastmcp's own `Client`, which starts
+  a fresh MCP session per request on the pinned fastmcp 4.0.3 (measured
+  2026-09-11, over stdio and HTTP alike). Verified: after a bind, an
+  argument-less `get_cell_map` through fastmcp's `Client` reached the bound
+  server URL instead of refusing.
+- **HTTP / SSE — the fallback is scoped to a single-client process.** One
+  process serves many clients there, so the fallback is served only while the
+  process has seen one client session. An `mcp`-SDK-based HTTP client (one MCP
+  session for the connection) is served from its own session state; a
+  session-per-request client is served only until a second client session
+  appears. After that, an argument-less call is refused with `reason:
+  binding_ambiguous` instead of picking up another client's notebook — the
+  binding fails closed rather than being guessed.
 
-So do not assume the binding: when the client is not known to keep one MCP
-session, pass `session_id` and `server_url` explicitly on every call. Explicit
-arguments always win, and they cost one line. This is a limitation of the
-client's session handling, not of the notebook session — the server-side
-promise (`binding_scope`) is scoped to the MCP session that made it.
+So over HTTP/SSE, when the client is not known to keep one MCP session, pass
+`session_id` and `server_url` explicitly on every call. Explicit arguments
+always win, and they cost one line. The refusal tells you which case you hit:
+`binding_ambiguous` means this process could not attribute the fallback to your
+call, so it withheld it. This is a limitation of client-session handling, not
+of the notebook session.
 
 ## 2. Orient
 
 `get_cell_map` — cell ids, previews, line counts, runtime state, and the
-`has_output` / `has_console_output` / `has_errors` flags. Start here.
+`has_output` / `has_console_output` / `has_errors` flags. Start here to pick a
+cell. Previews only: this does **not** record an `edit_cell` read baseline.
 
 ## 3. Read
 
-`get_cell_data` — full source and runtime data for chosen cells.
+`get_cell_data` — full source and runtime data for chosen cells. This is the
+read that records the `edit_cell` baseline.
 `get_cell_outputs` and `get_variables` cover execution state.
 
 A requested `cell_id` that resolves to nothing (deleted or mistyped) is reported
@@ -44,8 +54,8 @@ in `missing_cell_ids` — an id that matched no cell must never look like "nothi
 matched" while the write tools refuse the same id.
 
 **Read before edit.** `edit_cell` refuses to overwrite a cell you have not
-just read (see `workflow://marimo-inspect/live-safety`). Reading with
-`get_cell_data` or `get_cell_map` records the baseline.
+just read (see `workflow://marimo-inspect/live-safety`). Only `get_cell_data`
+records that baseline — a `get_cell_map` preview is not a source read.
 
 ## 4. Write and run
 
