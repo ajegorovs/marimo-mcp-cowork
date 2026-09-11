@@ -59,11 +59,13 @@ tool call is not proof of a correct result.
   It never coerces the value: send the shape the element accepts (a `dropdown`
   option key goes inside a one-element list, e.g. `["beta"]`). A refused shape
   returns `reason: value_shape_mismatch` with the corrected payload in
-  `did_you_mean`; a value the kernel rejected returns `reason:
+  `did_you_mean`; a value the element's conversion rejected returns `reason:
   value_not_applied` with the kernel's own message and the widget unmoved,
-  while a widget whose `on_change` handler raised returns `reason:
-  on_change_failed` with `applied: true` — the value DID move, only the
-  callback failed. Read those — never assume the interaction happened.
+  while a value the element's `on_change` handler raised on returns `reason:
+  on_change_failed` (`handler_ran: true`) — the value WAS accepted, with
+  `applied: true` when it moved and `applied: false` + `no_change: true` when
+  the element already held it, so only the callback failed. Read those — never
+  assume the interaction happened.
   `status: ok` means the value was read back
   (`verified: true`: `applied: true` if it moved, `no_change: true` if it
   already held that value), but dependent cells' reactive re-runs are not

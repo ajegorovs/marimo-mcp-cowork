@@ -98,10 +98,10 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-11): `-m "not live"` → **323 passed**, `-m
-live` → **37 passed** (incl. the 4 mutation regressions — 2 hermetic flow cases
+Verified on this tree (2026-09-11): `-m "not live"` → **330 passed**, `-m
+live` → **38 passed** (incl. the 4 mutation regressions — 2 hermetic flow cases
 plus the 2 hunt-H7 guard cases, the H9 preview/read-baseline pair, the 2 H10
-`code_hash` invariants, 7 widget regressions and 2 console-channel
+`code_hash` invariants, 8 widget regressions and 2 console-channel
 regressions). The not-live tier also carries the session-binding subprocess
 cases that spawn the console script and pin the binding model (H1/H11 — stdio,
 and the HTTP single-client scope). Counts drift as tests are added; treat the
@@ -191,13 +191,17 @@ Separately, `tests/marimo_inspect/live/test_mutation.py` (2 tests) exercises the
 of the fixture: create → read → guarded edit → run → verify → delete, and
 external-conflict → re-read → recover. It boots one isolated server per test
 and asserts the repo fixture stays byte-identical (the hermeticity gate).
-`tests/marimo_inspect/live/test_ui.py` (7 tests) does the same for the widget
+`tests/marimo_inspect/live/test_ui.py` (8 tests) does the same for the widget
 tool — cells *created through the write tools* do execute, so a widget can be
 materialized in-kernel without a browser: shape refusal, verified apply with a
 reactive dependent re-run, verified no-op on a repeat, kernel rejection
 surfacing as an error, an `on_change` handler that raises reported as
 `on_change_failed` with `applied: true` (the value moved; only the callback
-failed), and the cell-private (leading-underscore) name rule — that case also
+failed) and — for a repeat of a value the element already holds, where the
+handler runs anyway and the read-back is unmoved — the same `on_change_failed`
+with `applied: false` + `no_change: true` (the failure *site* read from the
+kernel traceback is what separates it from a rejected conversion), and the
+cell-private (leading-underscore) name rule — that case also
 pins the error-channel split (the structured channel stays silent,
 `has_errors: false`, while the traceback is visible in the run payload and in
 the cell's `console_stderr`; see `co-work-loop.md` §6). Frontend *rendering* was

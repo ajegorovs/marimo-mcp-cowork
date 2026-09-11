@@ -416,3 +416,54 @@ async def test_set_ui_value_reports_an_on_change_failure_as_applied(mutation_ser
                 cell_id, session_id=session_id, server_url=server_url
             )
             assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.live
+async def test_set_ui_value_on_change_failure_on_an_already_held_value(
+    mutation_server,
+):
+    """T13 residual: the handler ran on a value that was already held.
+
+    The widget is created with ``value=1`` (see `_BOOM_SOURCE`), so submitting
+    1 again moves nothing — yet ``_update`` assigns the value with no equality
+    shortcut and *still* calls the raising handler. The read-back is therefore
+    unmoved, which must not be reported as ``value_not_applied``: nothing was
+    rejected, the value was accepted and the callback failed. Only the kernel
+    traceback's call site ("self._on_change(self._value)") separates this from
+    a rejected conversion — marimo writes the same notice for both.
+    """
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        widget_cell_id = await _make_cell(_BOOM_SOURCE, server_url, session_id)
+        created.append(widget_cell_id)
+
+        before = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(before, _BOOM) == "1", before
+
+        result = await set_ui_value(
+            _BOOM, 1, session_id=session_id, server_url=server_url
+        )
+        assert result["status"] == "error", result
+        assert result["reason"] == "on_change_failed", result
+        assert result["applied"] is False, result
+        assert result["no_change"] is True, result
+        assert result["handler_ran"] is True, result
+        assert result["value_before"] == 1 and result["value_after"] == 1, result
+        assert result["kernel_message"] == "ValueError: boom from on_change", result
+        assert "boom from on_change" in result["message"], result
+        # Nothing was rejected, so no next step may tell the caller to re-send
+        # the value in the element's accepted shape.
+        assert "Re-send" not in " ".join(result["next_steps"]), result
+
+        # Confirmed unmoved by an independent read of the live kernel global —
+        # which is exactly why the read-back alone cannot classify this case.
+        after = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after, _BOOM) == "1", after
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted

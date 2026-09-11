@@ -109,7 +109,11 @@ observed to move (`applied: true`) or it already held that value
 (`applied: false` + `no_change: true`). A value marimo rejected — an unknown
 dropdown key, say — is returned as `status: error` with `reason:
 value_not_applied` and the kernel's message instead of a misleading success
-(a refused shape uses `reason: value_shape_mismatch`). The update is flushed and
+(a refused shape uses `reason: value_shape_mismatch`); a value the element's own
+`on_change` handler raised on is `reason: on_change_failed` with
+`handler_ran: true` — the value was accepted, with `applied: true` when it moved
+or `applied: false` + `no_change: true` when the element already held it, so
+only the callback failed. The update is flushed and
 triggers reactive re-execution of dependent cells, but that re-run is not
 awaited.
 

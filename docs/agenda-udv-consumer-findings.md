@@ -217,14 +217,24 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   Documented in the packaged `co-work-loop.md` §5 and in a minimal correction to
   `live-safety.md` (it had said "the widget is unmoved in both cases"), pinned
   live by `test_set_ui_value_reports_an_on_change_failure_as_applied`.
-  *Residual:* a repeat of the value the element already holds whose handler then
-  raises reads back unmoved and so still reports `value_not_applied`; the message
-  is truthful ("did NOT move (5 -> 5)") and `kernel_message` carries the handler
-  traceback, but the traceback frame (`_on_change` vs `_convert_value`) is the
-  available refinement. Unobserved in normal use, unpinned.
-  *Open work:* carried in `docs/agenda-bug-hunt-1.md` §Checkpoint — a prepared,
-  unstarted task exists
-  (`.hermes/plans/2026-09-11_000750-t13-residual-ui-rejection-site.md`).
+  *Residual (resolved 2026-09-11):* a repeat of the value the element already
+  holds whose handler then raises reads back unmoved, so the read-back alone
+  called it `value_not_applied` — wrong, because nothing was rejected. The
+  failure **site** is now read from the kernel traceback's own quoted call site
+  (`tools/ui.py::_rejection_site`: `self._on_change(self._value)` →
+  `on_change`, `self._convert_value(value)` → `convert`; marimo prints the same
+  stderr notice for both, so the notice text could not decide it), and the
+  read-back still decides whether the value moved. `on_change_failed` therefore
+  has two shapes — `applied: true` (moved) and `applied: false` +
+  `no_change: true` + `handler_ran: true` (already held) — and neither tells the
+  caller to re-send the value. A truncated traceback with no readable call site
+  falls back to the read-back rule, never to a wrong success. Pinned by three
+  hermetic cases (`test_on_change_failure_on_an_unchanged_value_is_not_value_not_applied`,
+  `test_unverified_readback_with_a_handler_failure_stays_truthful`,
+  `test_truncated_stderr_falls_back_to_the_readback_rule`, plus the
+  `TestRejectionSite` site tests) and the live
+  `test_set_ui_value_on_change_failure_on_an_already_held_value` — all fail
+  pre-fix; both packaged resources describe the third combination.
 
 - **T14** ✅ *A JSON-encoded list argument was silently misread* — found while
   reviewing T3, fixed 2026-09-10. The normalization introduced with T2 wrapped

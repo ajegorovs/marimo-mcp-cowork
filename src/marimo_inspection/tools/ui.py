@@ -16,6 +16,9 @@ Two correctness rules shape this module:
   update silently does not happen while the execution still reports success.
   The template re-reads the element's value afterwards, and this module also
   scans stderr so a rejected update becomes an error instead of a false ``ok``.
+  The traceback is read for its failure *site* too: a value rejected by the
+  element's conversion and a value its ``on_change`` handler raised on are
+  different failures, and marimo's stderr notice does not separate them.
 """
 
 from __future__ import annotations
@@ -39,6 +42,18 @@ _UI_UPDATE_MARKERS = (
     "An exception was raised by a UIElement's on_change handler",
 )
 _EXCEPTION_LINE = re.compile(r"^\w*(?:Error|Exception): .+$")
+
+# The two failure sites of a UI-element update, as marimo's own traceback quotes
+# them (marimo 0.24.x, `UIElement._update`): a rejected CONVERSION never assigns
+# the value (`self._value = self._convert_value(value)`), while a raising
+# `on_change` handler runs *after* the assignment (`self._on_change(self._value)`).
+# The notice marimo writes is the SAME for both — a plain ValueError escaping
+# `_convert_value` lands in the generic `except Exception` branch of
+# `runtime.py::set_ui_element_value` — so the quoted call site is the only
+# available discriminator, and a traceback that lost its frames falls back to
+# the read-back alone.
+_ON_CHANGE_CALL_SITE = "self._on_change(self._value)"
+_CONVERT_CALL_SITE = "self._convert_value(value)"
 
 
 async def _get_client(
@@ -105,12 +120,32 @@ def _kernel_rejection(stderr_text: str) -> str | None:
     )
 
 
+def _rejection_site(stderr_text: str) -> str | None:
+    """Where marimo raised while applying the value: ``on_change`` / ``convert``.
+
+    ``on_change`` means the element's value was assigned (the conversion
+    succeeded) and its own handler then raised — the element may still end up
+    unchanged, because it already held the submitted value. ``convert`` means
+    the value was never assigned. ``None`` when the stderr carries no
+    recognisable UI-update traceback (an unrelated warning, or a truncated
+    traceback whose frames were lost) — then the read-back alone decides.
+    """
+    if not stderr_text or not any(m in stderr_text for m in _UI_UPDATE_MARKERS):
+        return None
+    if _ON_CHANGE_CALL_SITE in stderr_text:
+        return "on_change"
+    if _CONVERT_CALL_SITE in stderr_text:
+        return "convert"
+    return None
+
+
 def _rejection_payload(
     variable_name: str,
     session_id: str,
     value: Any,
     data: dict,
     kernel_message: str,
+    site: str | None = None,
 ) -> dict:
     """Error payload for a UI update marimo raised on while applying it.
 
@@ -120,17 +155,27 @@ def _rejection_payload(
     * a rejected CONVERSION (an unknown dropdown key) raises inside
       ``_convert_value`` *before* the element's value is assigned, so the
       element is genuinely unchanged;
-    * an element ``on_change`` handler raises *after* the assignment, so the
-      value did move and only the callback failed.
+    * an element ``on_change`` handler raises *after* the assignment
+      (``_update`` has no equality shortcut), so the value moved — or did not
+      need to move, because the element already held it — and only the
+      callback failed.
 
-    The read-back already performed by the template (``data``: ``verified`` /
-    ``applied`` / ``value_before`` / ``value_after``) tells them apart, so each
-    is reported under a truthful reason code — and no message claims the
-    element was unchanged when its value actually moved.
+    Neither source alone can decide it. The read-back (``data``: ``verified`` /
+    ``applied`` / ``value_before`` / ``value_after``) says whether the value
+    moved, which cannot separate "the conversion was rejected" from "it already
+    held the value and the handler then raised"; the kernel traceback says
+    ``site`` — *where* marimo raised — but not what the element ended up
+    holding. Both are used: ``site`` picks the reason code, the read-back fills
+    in ``applied`` / ``no_change``, and with no usable ``site`` the read-back
+    alone decides (today's rule). No message claims the element was unchanged
+    when its value actually moved, and none tells the caller to re-send a value
+    the kernel accepted.
     """
     before = data.get("value_before")
     after = data.get("value_after")
     element_type = data.get("element_type")
+    verified = bool(data.get("verified"))
+    applied = bool(data.get("applied"))
     common = {
         "status": "error",
         "variable_name": variable_name,
@@ -143,11 +188,57 @@ def _rejection_payload(
         "value_after": after,
     }
 
-    if data.get("verified") and data.get("applied"):
+    if site == "on_change":
+        # The value was assigned (the conversion succeeded) and the element's
+        # own handler then raised. `applied` may be False: the element already
+        # held the value, so there was nothing to move.
+        payload: dict[str, Any] = {
+            **common,
+            "reason": "on_change_failed",
+            "applied": applied if verified else None,
+            "handler_ran": True,
+            "next_steps": [
+                (
+                    "The element ACCEPTED the value — nothing was rejected — so "
+                    "re-sending it cannot help: it is the handler's own side "
+                    "effects (and the dependent cells it re-ran) that failed. "
+                    "Fix the handler in the widget's cell, re-run it, then "
+                    "verify the downstream effects with get_variables, "
+                    "get_cell_outputs, and get_errors."
+                ),
+            ],
+        }
+        if not verified:
+            payload["message"] = (
+                f"The kernel reported an error while applying {value!r} to "
+                f"'{variable_name}' ({element_type}) and the read-back could not "
+                f"confirm the element's value; the traceback shows the "
+                f"element's own on_change handler raised after the value was "
+                f"assigned: {kernel_message}"
+            )
+        elif applied:
+            payload["message"] = (
+                f"marimo applied {value!r} to '{variable_name}' "
+                f"({element_type}) — the read-back confirms {before!r} -> "
+                f"{after!r} — but the element's own on_change handler raised: "
+                f"{kernel_message}"
+            )
+        else:
+            payload["no_change"] = True
+            payload["message"] = (
+                f"'{variable_name}' ({element_type}) already held {value!r}, so "
+                f"the value did not move ({before!r} -> {after!r}) — nothing "
+                f"was rejected — but the element's own on_change handler raised "
+                f"while handling it: {kernel_message}"
+            )
+        return payload
+
+    if data.get("verified") and applied:
         return {
             **common,
             "reason": "on_change_failed",
             "applied": True,
+            "handler_ran": True,
             "message": (
                 f"marimo applied {value!r} to '{variable_name}' "
                 f"({element_type}) — the read-back confirms {before!r} -> "
@@ -166,7 +257,7 @@ def _rejection_payload(
             ],
         }
 
-    if data.get("verified"):
+    if verified:
         message = (
             f"The kernel reported an error while applying {value!r} to "
             f"'{variable_name}' ({element_type}), and the read-back shows the "
@@ -182,7 +273,7 @@ def _rejection_payload(
     return {
         **common,
         "reason": "value_not_applied",
-        "applied": bool(data.get("applied")),
+        "applied": applied,
         "message": message,
         "next_steps": [
             (
@@ -237,13 +328,16 @@ async def set_ui_value(
         Dict with ``status``. On a missing/non-UI variable or a shape mismatch
         the kernel template returns a structured error explaining exactly what
         went wrong. A value the kernel raised on while applying it is an error
-        too, under a reason code drawn from the read-back: ``value_not_applied``
-        when the element's value did not move (a rejected conversion), or
-        ``on_change_failed`` with ``applied: true`` when the value moved and
-        the element's own ``on_change`` handler raised. On success the payload
-        carries ``applied``, ``verified``, and the element's value before and
-        after; downstream re-runs are NOT awaited, so confirm their effects
-        with the read tools.
+        too, under a reason code that names the failure *site* (read from the
+        kernel traceback) with the read-back filling in whether the value
+        moved: ``value_not_applied`` when the element's conversion rejected the
+        value before assigning it; ``on_change_failed`` when the value was
+        assigned and the element's own ``on_change`` handler raised — with
+        ``applied: true`` when the value moved, or ``applied: false`` +
+        ``no_change: true`` when the element already held it and only the
+        handler ran and failed. On success the payload carries ``applied``,
+        ``verified``, and the element's value before and after; downstream
+        re-runs are NOT awaited, so confirm their effects with the read tools.
     """
     if not variable_name:
         return {
@@ -274,12 +368,16 @@ async def set_ui_value(
     # marimo writes a traceback to the kernel's stderr for BOTH failure points
     # of a UI update: a rejected CONVERSION (unknown dropdown key) raises
     # BEFORE the element's value is assigned, an `on_change` handler raises
-    # AFTER it. The template's read-back tells them apart; reporting either as
-    # a plain `ok` is the silent-no-op bug, and reporting the handler failure
-    # as "not applied" contradicts the payload's own before/after values.
+    # AFTER it (with no equality shortcut, so even a value the element already
+    # holds runs the handler). The traceback's own call site says which one it
+    # was; the template's read-back says whether the value moved. Reporting
+    # either as a plain `ok` is the silent-no-op bug, and reporting a handler
+    # failure as "not applied" contradicts what actually happened.
     rejection = _kernel_rejection(stderr_text)
     if rejection is not None:
-        return _rejection_payload(variable_name, sid, value, data, rejection)
+        return _rejection_payload(
+            variable_name, sid, value, data, rejection, _rejection_site(stderr_text)
+        )
 
     verified = bool(data.get("verified"))
     applied = bool(data.get("applied"))

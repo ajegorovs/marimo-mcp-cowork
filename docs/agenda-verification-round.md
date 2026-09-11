@@ -1,8 +1,9 @@
 # Agenda (open): post-hunt verification round
 
-> **Status:** **Open — 1 task (`T-V1`) plus 1 carried item (`T13`).** Opened
-> 2026-09-11, right after `docs/agenda-bug-hunt-1.md` closed with all 11 findings
-> resolved.
+> **Status:** **Open — 1 task (`T-V1`).** Opened 2026-09-11, right after
+> `docs/agenda-bug-hunt-1.md` closed with all 11 findings resolved.
+> Its one carried item, the `T13` widget residual, was fixed on 2026-09-11
+> (see §T13 below) — the check round is now the only open work here.
 > **Trigger:** a session restart, so the checks run in a **fresh, zero-context
 > agent** — the standing regression gate for doc/tool work here: the closed items
 > are re-verified through the surface a consumer actually uses, not by re-running
@@ -65,7 +66,10 @@ messages:
       says which marker matched.
 - [ ] §5: a scalar sent to a list-shaped element returns `did_you_mean` in the
       element's own key type (`["4"]`, not `[4]`), and applying the correction
-      succeeds.
+      succeeds; a repeat of a value the element already holds whose `on_change`
+      handler raises is `on_change_failed` + `applied: false` + `no_change: true`
+      — never `value_not_applied`, and no `next_steps` entry tells you to
+      re-send it.
 - [ ] `get_variables` with no names returns notebook names only — no `json`,
       `cm`, `get_variables`, `_is_ui`, `_serialize`.
 - [ ] Doc-vs-surface sweep: nothing in the three resources or `README.md`
@@ -76,14 +80,18 @@ messages:
 sentence that misled (or the code that lies). A doc-only mismatch is still a
 finding for this round.
 
-## T13 — carried: the one item still unfixed anywhere
+## T13 — carried no longer: the residual is fixed
 
 From `docs/agenda-udv-consumer-findings.md` §T13 (closed agenda, id stable): a
 repeat of a value the element already holds whose `on_change` handler then raises
-is reported `value_not_applied` instead of `on_change_failed` (unpinned, unobserved
-in normal use). Plan file prepared and **not started**:
-`.hermes/plans/2026-09-11_000750-t13-residual-ui-rejection-site.md`. Fold it into
-this round if the §5 check ends up touching widget rejection anyway.
+was reported `value_not_applied` instead of `on_change_failed`. **Fixed
+2026-09-11** (plan `.hermes/plans/2026-09-11_000750-t13-residual-ui-rejection-site.md`,
+now executed): the failure *site* is read from the kernel traceback's own call
+site (`tools/ui.py::_rejection_site`) and combined with the read-back, so
+`on_change_failed` + `applied: false` + `no_change: true` + `handler_ran: true` is
+the third combination. Real stderr for all three cases is preserved at
+`.hermes/probes/t13_transcripts.json`; the resolution + evidence pointers are in
+the T13 entry. The `T-V1` §5 check below now covers the third combination too.
 
 ## Not in scope
 

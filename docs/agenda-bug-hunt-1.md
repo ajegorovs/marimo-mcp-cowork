@@ -2,8 +2,9 @@
 
 > **Status:** **CLOSED — all 11 findings resolved (2026-09-11).** Every item is
 > in §Resolved log with the repro that fails pre-fix (or, for H10, the inverse
-> perturbation demonstration). One further open defect lives in another agenda —
-> the `T13` residual, id unchanged (§Checkpoint).
+> perturbation demonstration). The one further defect this doc pointed at — the
+> `T13` widget residual, kept in `docs/agenda-udv-consumer-findings.md` with its
+> id unchanged — was also fixed on 2026-09-11 (§Checkpoint).
 > **Found:** 2026-09-11, one hunt per `docs/bug-hunt-protocol.md` (real task in a
 > live instantiated consumer notebook, driven through the MCP tool surface by a
 > zero-context subagent).
@@ -35,21 +36,22 @@ cluster, `4cbfb37` the H2–H6 close-out and the H9 decision, `a15cc85` H8,
 
 **Nothing in this agenda is pending.** The plan files under `.hermes/plans/`
 (gitignored, ephemeral) are executed or superseded —
-`2026-09-11_002706-h7-edit-cell-guard-scope.md` (H7) and
-`2026-09-11_140500-h1-binding-claim-conditional.md` (H1's claim, H11 split out) —
-except `2026-09-11_000750-t13-residual-ui-rejection-site.md`, which is **not
-started**: the T13 residual below is the one item still open anywhere. The probes
+`2026-09-11_002706-h7-edit-cell-guard-scope.md` (H7),
+`2026-09-11_140500-h1-binding-claim-conditional.md` (H1's claim, H11 split out)
+and `2026-09-11_000750-t13-residual-ui-rejection-site.md` (the T13 residual, now
+executed — see §Checkpoint's cross-reference). The probes
 behind H1/H11's evidence are kept for reuse under `.hermes/probes/`
 (`h1_binding_probe.py`, `state_prefix_driver.py`, `state_prefix_sdk_client.py`,
-`state_prefix_http_driver.py`).
+`state_prefix_http_driver.py`, plus `t13_transcripts.json` — the real kernel
+stderr for the three UI-update outcomes the T13 fix classifies).
 
-**Cross-reference — open work recorded in another agenda.** The T13 residual in
-`docs/agenda-udv-consumer-findings.md` §T13 is still unfixed: a repeat of a value
-the element already holds whose `on_change` handler then raises is reported
-`value_not_applied` instead of `on_change_failed` (unpinned, unobserved in normal
-use). That agenda is closed, so it is listed here to keep the open defects in one
-place; its item id stays `T13`. It is now carried, together with the open
-post-hunt check round (`T-V1`), by `docs/agenda-verification-round.md`.
+**Cross-reference — the other agenda's open widget residual is now closed.** The
+T13 residual in `docs/agenda-udv-consumer-findings.md` §T13 (a repeat of a value
+the element already holds whose `on_change` handler then raises was reported
+`value_not_applied` instead of `on_change_failed`) was **fixed 2026-09-11** — see
+that entry for the resolution and the four evidence pointers. Item id stays
+`T13`, pinned by the hermetic and live cases named there. Nothing else from that
+agenda is open.
 
 **Hunt lab — gone.** The disposable lab hunt #1 used (a `/tmp` copy of a consumer
 notebook served on `127.0.0.1:29417`) is dead: nothing listens on that port and

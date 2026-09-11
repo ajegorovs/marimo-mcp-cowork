@@ -97,19 +97,33 @@ element's own value **moved** (`applied: true`, with `value_before` /
 a `warning` saying the value is unconfirmed.
 
 A value the kernel raised on while applying it is `status: error` with the
-kernel's own message in `kernel_message`; the `reason` says *which* failure it
-was, straight from the read-back:
+kernel's own message in `kernel_message`. The `reason` names the failure
+**site**, read from the kernel traceback's own call site — marimo writes the
+*same* notice for both failure points, so the notice text cannot decide it —
+with the read-back filling in whether the value moved:
 
-- `value_not_applied` — the element's value did **not** move (`applied:
-  false`; `value_before` = `value_after`). marimo rejected the conversion before
-  assigning it, e.g. an unknown dropdown key. Re-send the corrected value; never
-  treat that call as done.
-- `on_change_failed` — the value **did** move (`applied: true`, with
-  `value_before`/`value_after` proving it) and the element's own `on_change`
-  handler raised *after* the assignment. The widget holds its new value; only
-  the handler's side effects and the dependent cells it re-ran failed. Fix the
-  handler in the widget's cell and re-run it — do not re-send the value, and do
-  not report the interaction as "the widget did not change".
+- `value_not_applied` — the element's conversion rejected the value *before*
+  assigning it, so the element is genuinely unchanged (`applied: false`;
+  `value_before` = `value_after`), e.g. an unknown dropdown key. Re-send the
+  corrected value; never treat that call as done.
+- `on_change_failed` — the value was **accepted** and the element's own
+  `on_change` handler raised *after* the assignment. `handler_ran: true` says
+  the handler ran; `applied` says whether the value moved:
+  - `applied: true`, with `value_before`/`value_after` proving the move — the
+    widget holds its new value; only the handler's side effects and the
+    dependent cells it re-ran failed.
+  - `applied: false` + `no_change: true` — the element already held the
+    submitted value, so nothing moved, and the handler still ran and raised
+    (marimo's value update has no equality shortcut). Nothing was rejected:
+    re-sending the value cannot help.
+
+  In both shapes, fix the handler in the widget's cell and re-run it — do not
+  re-send the value, and do not report the interaction as "the widget did not
+  change".
+
+If the traceback is truncated and its call site is unreadable, the read-back
+alone decides (unmoved → `value_not_applied`, moved → `on_change_failed`); a
+rejected update is never reported as a success.
 
 ## 6. Verify
 

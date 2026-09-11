@@ -507,7 +507,9 @@ class TestSetUiValueTemplate:
 # The real kernel stderr for an invalid dropdown key: marimo catches the
 # exception while applying the value and writes the traceback to stderr, so
 # the execution still reports success. Only the "option name 'nope'" line is
-# useful to the caller.
+# useful to the caller. The `_update` frame quotes the CONVERSION call site
+# (`self._value = self._convert_value(value)`, ui_element.py:468 in 0.24.x) —
+# that is what identifies this failure point (see `_HANDLER_STDERR_NO_MOVE`).
 _REJECTION_STDERR = """Traceback (most recent call last):
   File ".../marimo/_runtime/runtime.py", line 2030, in set_ui_element_value
     component._update(value)
@@ -520,6 +522,48 @@ _REJECTION_STDERR = """Traceback (most recent call last):
 ValueError: The option name 'nope' is not a valid option. Please use one of the following options: ['alpha', 'beta']
 
 An exception was raised by a UIElement's on_change handler:"""
+
+# Real kernel stderr for the T13 residual, captured from a marimo 0.24.0 kernel
+# (a slider created with `value=1`, submitted 1 again — `_update` assigns the
+# same value with no equality shortcut and still calls the handler, which
+# raises). The notice text is IDENTICAL to the conversion rejection above: a
+# plain ValueError from `_convert_value` lands in runtime.py's generic
+# `except Exception` branch. Only the quoted call site separates them — here
+# `self._on_change(self._value)` (ui_element.py:473).
+_HANDLER_STDERR_NO_MOVE = """Traceback (most recent call last):
+  File ".../marimo/_runtime/runtime.py", line 2030, in set_ui_element_value
+    component._update(value)
+  File ".../marimo/_plugins/ui/_core/ui_element.py", line 473, in _update
+    self._on_change(self._value)
+  File ".../test_notebook.py", line 3, in _boom
+    raise ValueError('boom from on_change')
+ValueError: boom from on_change
+
+An exception was raised by a UIElement's on_change handler:"""
+
+
+class TestRejectionSite:
+    """Which call site marimo raised at, read from its own traceback frames."""
+
+    def test_handler_site_is_recognised(self):
+        from marimo_inspection.tools.ui import _rejection_site
+
+        assert _rejection_site(_HANDLER_STDERR_NO_MOVE) == "on_change"
+
+    def test_conversion_site_is_recognised(self):
+        from marimo_inspection.tools.ui import _rejection_site
+
+        assert _rejection_site(_REJECTION_STDERR) == "convert"
+
+    def test_unrelated_stderr_has_no_site(self):
+        from marimo_inspection.tools.ui import _rejection_site
+
+        assert _rejection_site("some warning: deprecation") is None
+
+    def test_empty_stderr_has_no_site(self):
+        from marimo_inspection.tools.ui import _rejection_site
+
+        assert _rejection_site("") is None
 
 
 class TestSetUiValueTool:
@@ -650,6 +694,112 @@ class TestSetUiValueTool:
         assert "['alpha', 'beta']" in result["kernel_message"]
         assert result["value_after"] == "alpha"  # unchanged, stated plainly
         assert result["next_steps"]
+
+    async def test_on_change_failure_on_an_unchanged_value_is_not_value_not_applied(
+        self,
+    ):
+        """T13 residual: the handler ran on a value the element already held.
+
+        Nothing was rejected — the element accepted the value (it already held
+        it) and then its own ``on_change`` handler raised. Reporting
+        ``value_not_applied`` tells the caller to re-send the value, which
+        cannot help; the handler is what failed.
+        """
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._ok_payload(
+                variable_name="slider",
+                element_type="slider",
+                accepted_shape="int | float",
+                applied=False,
+                value_before=1,
+                value_after=1,
+            ),
+            stderr=_HANDLER_STDERR_NO_MOVE.splitlines(),
+        ):
+            result = await set_ui_value(
+                "slider", value=1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "error"
+        assert result["reason"] == "on_change_failed"
+        assert result["applied"] is False
+        assert result["no_change"] is True
+        assert result["handler_ran"] is True
+        assert result["kernel_message"] == "ValueError: boom from on_change"
+        assert result["value_before"] == 1 and result["value_after"] == 1
+        # The message must carry the handler's own failure, and no next step
+        # may tell the caller to re-send the value.
+        assert "boom from on_change" in result["message"]
+        assert "Re-send" not in " ".join(result["next_steps"])
+
+    async def test_unverified_readback_with_a_handler_failure_stays_truthful(self):
+        """No read-back: say so, and still name the handler as the failure site."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._ok_payload(
+                verified=False,
+                applied=None,
+                value_after=None,
+                readback_error="RuntimeError: kernel read-back unavailable",
+            ),
+            stderr=_HANDLER_STDERR_NO_MOVE.splitlines(),
+        ):
+            result = await set_ui_value(
+                "slider", value=1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "error"
+        assert result["reason"] == "on_change_failed"
+        assert result["applied"] is None  # unknown, not False
+        assert result["handler_ran"] is True
+        # The message must not claim a read-back confirmation that never happened.
+        assert "could not confirm" in result["message"]
+        assert "read-back confirms" not in result["message"]
+
+    async def test_truncated_stderr_falls_back_to_the_readback_rule(self):
+        """A traceback whose frames were lost cannot classify the failure site.
+
+        With no quoted call site the read-back alone decides — today's rule: a
+        moved value plus a rejection is still a handler failure, an unmoved one
+        stays ``value_not_applied``. Whatever happens, the fallback must never
+        report a wrong success.
+        """
+        from marimo_inspection.tools.ui import set_ui_value
+
+        truncated = (
+            "component._update(value)\n"
+            "ValueError: boom from on_change\n\n"
+            "An exception was raised by a UIElement's on_change handler:"
+        ).splitlines()
+
+        with self._patch_client(
+            self._ok_payload(
+                applied=True,
+                value_before=1,
+                value_after=5,
+            ),
+            stderr=truncated,
+        ):
+            moved = await set_ui_value(
+                "slider", value=5, session_id=self.SID, server_url=self.URL
+            )
+        assert moved["reason"] == "on_change_failed"
+        assert moved["applied"] is True
+
+        with self._patch_client(
+            self._ok_payload(
+                applied=False,
+                value_before=1,
+                value_after=1,
+            ),
+            stderr=truncated,
+        ):
+            unmoved = await set_ui_value(
+                "slider", value=1, session_id=self.SID, server_url=self.URL
+            )
+        assert unmoved["reason"] == "value_not_applied"
+        assert unmoved["applied"] is False
 
     async def test_unrelated_stderr_is_not_a_rejection(self):
         from marimo_inspection.tools.ui import set_ui_value

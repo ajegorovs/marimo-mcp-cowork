@@ -1,7 +1,7 @@
 # How we run live kernel tests
 
-> Updated: 2026-09-10 — verified against the current working tree (live suite
-> green, incl. the hermetic mutation regressions; see [Current status](#current-status)).
+> Updated: 2026-09-11 — verified against the current working tree (live suite
+> green, incl. the hermetic mutation and widget regressions; see [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
 > is, the commands, the boot mechanics, and its *actual* status today.
 > The redesign that made this suite green is documented in
@@ -122,7 +122,7 @@ and note the instantiate-gated limitation. `cell_map` and `cell_data` read cell
 documented structure, but the *executed* content stays empty until a
 browser-instantiated session exists (the same two tiers AGENTS.md describes).
 
-## What's tested (28 tests, 8 files)
+## What's tested (32 tests, 8 files)
 
 | File | Tests | Asserts |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ browser-instantiated session exists (the same two tiers AGENTS.md describes).
 | `test_dependency.py` | 2 | template executes against a live kernel; returns documented structure/types (graph content is instantiate-gated — see note above) |
 | `test_errors.py` | 5 | template returns consistent, typed error summary; stable across repeated runs — plus **console-channel regressions**: a UI-handler traceback marimo never records structurally is flagged through `console_stderr` (`has_console_exception: true`), and a `print()` lands in `get_cell_outputs.stdout` |
 | `test_mutation.py` | 2 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, and external-conflict→re-read→recover — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
-| `test_ui.py` | 7 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
+| `test_ui.py` | 8 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
 do **not** need a kernel, so they live in the fast path (`tests/marimo_inspect/`).
@@ -201,7 +201,8 @@ materialized in-kernel with no browser at all. The reactivity test:
    `value_before`/`value_after` = 3/7, the widget is `7`, **and the dependent
    cell re-ran** to `107`, with both cells `idle`.
 
-The remaining five tests cover the dropdown contract, the rejection paths and the cell-private name rule —
+The remaining seven tests cover the dropdown contract, the rejection paths, the
+`on_change` failure classes and the cell-private name rule —
 they exist because a flush is not proof of application (`set_ui_value` in
 `tools/ui.py`):
 
@@ -211,6 +212,13 @@ they exist because a flush is not proof of application (`set_ui_value` in
 | `["beta"]` → `dropdown` | `status: ok` with `verified`/`applied` true, `value_before`/`value_after` = alpha/beta, dependent cell re-ran, and an immediate repeat is `applied: false` + `no_change: true` |
 | `["nope"]` → `dropdown` | `status: error`, `reason: value_not_applied`, `kernel_message` is the kernel's own `ValueError` naming the valid options, widget unmoved — marimo's rejection is converted into a real error instead of a false `ok` |
 | missing / non-UI name | refused with `reason` (`unknown_variable` / `not_a_ui_element`), `datatype` reported, no traceback dump |
+| `on_change` raises, value moved | `status: error`, `reason: on_change_failed`, `applied: true`, 1 → 5 confirmed by an independent read — only the callback failed |
+| `on_change` raises, value already held | `status: error`, `reason: on_change_failed` with `applied: false` + `no_change: true` + `handler_ran: true` — the read-back is unmoved, and only the traceback's call site (`self._on_change(self._value)` vs `self._convert_value(value)`) separates this from a rejected conversion, because marimo writes the **same** notice for both |
+
+`set_ui_value`'s failure *site* therefore comes from the kernel traceback and its
+`applied`/`no_change` from the read-back; a truncated traceback with no readable
+call site falls back to the read-back rule (hermetic cases in
+`tests/marimo_inspect/test_ui.py`, which also pin the real stderr transcripts).
 
 Use a **bare** widget name: marimo treats a leading underscore as
 cell-private, so `_slider` is a poor `set_ui_value` target.
@@ -225,27 +233,27 @@ version — see [marimo-version-support.md](marimo-version-support.md). That doc
 upgrade procedure (step 3) runs `uv run pytest -m live` before widening the
 `<0.25` bound.
 
-## Current status (verified 2026-09-10)
+## Current status (verified 2026-09-11)
 
 **The live suite is green.** On this tree:
 
 ```text
-uv run pytest tests/marimo_inspect/live/ -m live -q
-=> 31 passed in ~30s
+uv run pytest -m live -q
+=> 38 passed in ~43s
 ```
 
-The two mutation regressions alone (they boot one extra isolated server each):
+The widget regressions alone (they boot one isolated server per test):
+
+```text
+uv run pytest tests/marimo_inspect/live/test_ui.py -m live -q
+=> 8 passed in ~18s
+```
+
+The two mutation regressions alone:
 
 ```text
 uv run pytest tests/marimo_inspect/live/test_mutation.py -m live -v
 => 2 passed in ~8.7s
-```
-
-The seven widget regressions alone:
-
-```text
-uv run pytest tests/marimo_inspect/live/test_ui.py -m live -q
-=> 7 passed in ~17s
 ```
 
 The console-channel regressions alone:
@@ -259,7 +267,7 @@ Fast path (unit tests; live tests collected but deselected):
 
 ```text
 uv run pytest -m "not live" -q
-=> 281 passed, 31 deselected in ~1.9s
+=> 330 passed, 38 deselected in ~5s
 ```
 
 What fixed the red suite (see [live-test-redesign-plan.md](live-test-redesign-plan.md) §0 for the verified marimo internals):
