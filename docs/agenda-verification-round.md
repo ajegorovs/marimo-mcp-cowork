@@ -97,4 +97,6 @@ the T13 entry. The `T-V1` §5 check below now covers the third combination too.
 
 - Re-litigating the closed hunt #1 items' mechanisms — each already has a repro
   that fails pre-fix; this round checks the surface and the docs, not internals.
-- `assets/presentation/*.png` (untracked) and the ten un-pushed commits.
+- `assets/presentation/*.png` (untracked). The commits this round was opened
+  alongside are no longer pending: `main` was pushed with the T13 fix and the
+  release, tagged `v0.3.3` (2026-09-11).

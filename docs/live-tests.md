@@ -223,9 +223,16 @@ call site falls back to the read-back rule (hermetic cases in
 Use a **bare** widget name: marimo treats a leading underscore as
 cell-private, so `_slider` is a poor `set_ui_value` target.
 
-Still browser-dependent (no automated test claims it): whether a widget
-actually *renders* in a frontend, and console-only UI-handler exceptions raised
-in the browser context. Tracked as agenda T9-b.
+Frontend *rendering* has no automated test here — the suite boots kernels, not
+frontends — but it is **not** an unverified claim: the T9-b browser pass settled
+it (the `<marimo-dropdown …>` tag present in the DOM after `run_cell`, and the
+page re-rendering the dependent cell when the widget's value moved; recipe in
+`docs/agenda-udv-consumer-findings.md` §T9-b). Re-check by hand when widget
+output markup changes. There is no separate "browser-context exception" class to
+test for: a rejected UI update and a raising `on_change` both surface as
+**kernel stderr** — the frontend merely displays it in the widget cell's console
+area, raising no JS exception — so the failure is already covered by the cases
+above.
 
 Version contract: the live env couples the **in-process** lint (installed
 marimo) and the **in-kernel** templates (server's marimo) to the same installed
