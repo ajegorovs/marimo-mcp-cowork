@@ -1,9 +1,12 @@
 # Agenda (open): post-hunt verification round
 
-> **Status:** **Open — 1 task (`T-V1`).** Opened 2026-09-11, right after
+> **Status:** **Open — 2 tasks (`T-V1` check round, `T-V2` doc precision).**
+> Opened 2026-09-11, right after
 > `docs/agenda-bug-hunt-1.md` closed with all 11 findings resolved.
 > Its one carried item, the `T13` widget residual, was fixed on 2026-09-11
-> (see §T13 below) — the check round is now the only open work here.
+> (see §T13 below). A **consumer-side run of the whole check list on
+> 2026-09-11** (see §Consumer run below) passed every check and surfaced
+> `T-V2`; the zero-context round `T-V1` itself still owes its boxes.
 > **Trigger:** a session restart, so the checks run in a **fresh, zero-context
 > agent** — the standing regression gate for doc/tool work here: the closed items
 > are re-verified through the surface a consumer actually uses, not by re-running
@@ -100,3 +103,84 @@ the T13 entry. The `T-V1` §5 check below now covers the third combination too.
 - `assets/presentation/*.png` (untracked). The commits this round was opened
   alongside are no longer pending: `main` was pushed with the T13 fix and the
   release, tagged `v0.3.3` (2026-09-11).
+
+## Consumer run 2026-09-11 — all checks PASS (not the zero-context round)
+
+Run from the **consumer repo** (`udv-echo-process`), which is the first real
+user of this surface, against **v0.3.3**. Target: headless marimo 0.24.0 edit
+server on a `/tmp` copy of the consumer's live notebook, kernel session
+materialized with the `/sse?session_id=…&file=…` handshake (isolated
+`XDG_STATE_HOME`); the surface was driven both by the harness's own MCP client
+and by `fastmcp` / `mcp`-SDK clients over stdio plus a second
+`--transport http` instance.
+
+**Verdict: PASS on every check** — stdio binding including the
+session-per-request client shape; the HTTP `binding_ambiguous` refusal (fails
+closed, never hands over another client's notebook) and the session-holding
+client served from its own state; `needs_read` after a preview-only read and
+success after `get_cell_data`; `missing_cell_ids` on both read tools;
+`get_dependency_graph` argument refusals with `cell_name` agreeing with
+`get_cell_map`; the `set_ui_value` shape/apply/verify and T13-repeat
+classifications; the `get_errors` console split; `get_variables` scaffolding
+exclusion. The doc-vs-surface sweep found **no contradiction**: every
+`get_cell_map` mention across the three resources and `README.md` frames the map
+as orientation only and states the preview does not record the edit baseline.
+
+Two harness-side lessons for anyone re-running it: a crashed pass leaves created
+cells in the notebook copy (repeated names then make `create_cell` fail with
+`Multiply-defined names`), and `create_cell` legitimately records its own cell's
+read baseline, so the faithful preview-vs-read test needs an **untouched** cell.
+Full evidence: `udv-echo-process/docs/marimo-integration-log.md`, entry
+2026-09-11 (O35–O38).
+
+**This does not tick `T-V1`.** That round exists to be run by a fresh,
+zero-context agent — this run had read this very document first, which is
+exactly the contamination the method excludes. The boxes below stay open.
+
+## T-V2 — `get_errors` evidence/stderr are per-cell only; the surfaces don't say so
+
+```
+id: F1
+tool: get_errors
+exact_args: {}   (session bound; a UI on_change handler had raised)
+observed:
+  top level: {"has_errors": false, "total_errors": 0, "total_structured_errors": 0,
+              "total_cells_with_errors": 0, "has_console_exception": true,
+              "total_console_exception_cells": 2, "next_steps": ["Console stderr
+              carries traceback in 2 cell(s) while the structured channel is
+              empty — read those cell's console_stderr and inspect the affected cell"]}
+  no top-level "console_exception_evidence" or "console_stderr" key exists;
+  cells[].console_exception_evidence == "traceback" (1 per flagged cell) and
+  cells[].console_stderr carries the traceback + marimo's "An exception was
+  raised by a UIElement's on_change handler:" line
+expected: a consumer's reading of the check line in §T-V1 ("a real traceback is
+  [reported], and `console_exception_evidence` says which marker matched") and
+  of this tool's own description — which names `console_stderr` as one of the
+  two reported channels without saying it is per cell — is that the evidence is
+  findable from the payload the summary describes
+why_wrong: nothing is misreported — the payload is correct and `next_steps`
+  does point at `cells[].console_stderr`. But a consumer that reads the
+  top-level summary (counts, the flag) and then looks for the evidence at the
+  same level reads an exception with no evidence, and a consumer-side check had
+  to be re-run to discover the field is per cell. The tool description names
+  `console_stderr` without scoping it to `cells[]`, and the §T-V1 line does not
+  either
+repro: boot a headless marimo server, materialize a session via
+  `GET /sse?session_id=<uuid>&file=<abs path>` (wait for `kernel-ready`), then
+  with a fastmcp client: `create_cell` a cell defining
+  `mo.ui.dropdown(options=['a','b'], value='a', on_change=<handler that raises>)`,
+  `run_cell` it, `set_ui_value` the dropdown to `["b"]`, then `get_errors` —
+  observe the payload above. Working end-to-end recipe (exact commands, plus
+  the fresh-copy pitfall) is in the consumer log entry cited above
+severity: cosmetic
+status: confirmed (observed live 2026-09-11 against v0.3.3, twice)
+doc_claim_ref: src/marimo_inspection/tools/errors.py (tool description);
+  docs/agenda-verification-round.md §T-V1 §6 check line
+```
+
+**Fix shape (one line beat):** scope the wording — the tool description and the
+`T-V1` check line should say the evidence marker and the stderr events live on
+`cells[]`, while the top level carries the counts/flag. Optionally add
+`next_steps`-style symmetry, but no payload change is required. Per the closure
+rule the claim is part of the fix: a fixed tool with an unchanged doc leaves this
+half-closed.

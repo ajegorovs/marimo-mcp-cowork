@@ -36,6 +36,22 @@ action — there is no MCP tool for it, and no kernel-restart tool. A live
 kernel also caches imported modules, so a package source change needs a
 server/kernel restart to take effect.
 
+## A session is not a run
+
+Materializing a session starts a kernel; it does not execute the notebook until
+a client asks for it. Until the cells have run there are no kernel globals and
+no committed widget values, so `get_variables`, `get_cell_outputs`,
+`get_errors` and `get_dependency_graph` report an empty execution state —
+accurately, not as a bug. An in-process lint (`lint_notebook`, `marimo check`)
+executes nothing either.
+
+A **browser** client instantiates the session by opening the notebook, which is
+what runs the cells, and its controls only hold values from then on. A session
+created with the `/sse` handshake is not instantiated: `/api/kernel/instantiate`
+is token-gated and not exposed under `--no-token`. Without a browser, the write
+tools are the route — cells created or run by `create_cell` / `run_cell` do
+execute, together with their dependents.
+
 ## Script escape hatch
 
 Arbitrary kernel probes and complex multi-operation CodeMode blocks remain a

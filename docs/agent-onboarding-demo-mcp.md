@@ -113,6 +113,18 @@ Key points:
     (or straight to the read tools). `list_active_notebooks` takes only
     `server_url` — pass the handshake `session_id` to the read/write tools, or
     call `set_active_session(session_id)` to rebind explicitly.
+- **A materialized session is not necessarily a *run* one.** Creating the
+  session starts a kernel; it does not execute the notebook. Until the cells
+  have run, the notebook has no kernel globals and no committed widget values,
+  so the execution-state tools (`get_variables`, `get_cell_outputs`,
+  `get_errors`, `get_dependency_graph`) legitimately show little or nothing —
+  that is the reported condition, not a broken tool. A **browser** client
+  instantiates by opening the notebook, which is what runs the cells; the
+  `/sse` handshake above does not, because `/api/kernel/instantiate` is
+  token-gated under `--no-token`. To get execution state without a browser,
+  drive the write tools — cells created or run by `create_cell` / `run_cell`
+  do execute, together with their dependents. See `docs/live-tests.md` and
+  `reference://marimo-inspect/fallbacks-and-limits` §A session is not a run.
 
 ## How an agent loads and runs this
 
