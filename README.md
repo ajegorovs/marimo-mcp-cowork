@@ -156,9 +156,11 @@ main output and the serialized console events, so a widget rendered to the user
 may be absent from it; inspect the cell's variables instead.
 `get_cell_map`'s `has_output` / `has_console_output` / `has_errors` flags are
 computed from live fields (`None` when a private field is unreadable, never
-faked). `get_errors` reports `structured_errors` (marimo `cell.errors`) and
-`console_stderr` (console events, including UI-handler tracebacks) as two
-separate channels; `has_errors`/`total_errors` count structured errors only.
+faked). `get_errors` reports `cells[].structured_errors` (marimo `cell.errors`) and
+`cells[].console_stderr` (console events, including UI-handler tracebacks) as
+two separate per-cell channels; flagged entries name the matched marker in
+`cells[].console_exception_evidence`. Top-level error flags and totals summarize
+the two channels; `has_errors`/`total_errors` cover structured errors only.
 
 Arbitrary kernel probes, complex multi-operation CodeMode blocks, screenshots,
 and notebook-server lifecycle stay outside the MCP surface — see

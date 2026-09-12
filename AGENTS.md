@@ -246,10 +246,12 @@ CI-covered: the live suite boots kernels, not frontends.
   the `templates/*` payload shapes it names.
 - `docs/agenda-verification-round.md` — **OPEN** agenda: the post-hunt check round
   (`T-V1`) that re-verifies the eleven closed findings through the tool surface
-  and the packaged resources from a fresh zero-context agent, plus `T-V2` (a
-  consumer-run doc-precision item: the `get_errors` marker/stderr live on
-  `cells[]`, which the surfaces don't say). The carried `T13` widget residual is
-  closed and retained there for its decision trail.
+  and the packaged resources from a fresh zero-context agent. `T-V2` is resolved:
+  the runtime payload was unchanged, while the high-visibility `get_errors`
+  wording now explicitly scopes marker/stderr evidence to `cells[]`; the packaged
+  co-work resource already established per-cell scope in its later prose, and its
+  exact path notation was tightened for scanability. The carried `T13` widget
+  residual is closed and retained there for its decision trail.
   Read it before re-running tests "to check" — that round
   exists because a green suite cannot see whether the docs still teach the old
   behaviour.

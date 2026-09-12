@@ -20,17 +20,21 @@ async def get_errors(
 ) -> dict:
     """Get all errors in the notebook session, organized by cell.
 
-    Two channels are reported and never conflated:
+    Per-cell channels are reported under ``cells[]`` (one entry per cell) and
+    are never conflated:
 
-    - ``structured_errors``: marimo's structured CellError records (kind
-      graph|runtime, msg, exception).
-    - ``console_stderr``: serialized stderr console events (same shape as
-      get_cell_outputs), so UI-handler exception tracebacks are visible even
+    - ``cells[].structured_errors``: marimo's structured CellError records
+      (kind graph|runtime, msg, exception).
+    - ``cells[].console_stderr``: serialized stderr console events (same shape
+      as get_cell_outputs), so UI-handler exception tracebacks are visible even
       when the structured channel is empty.
+    - ``cells[].console_exception_evidence``: present on each console-flagged
+      cell, naming the marker that matched.
 
-    ``has_errors`` / ``total_errors`` / ``total_cells_with_errors`` are the
-    STRUCTURED-only counts (backward-compatible); ``has_console_exception`` /
-    ``total_console_exception_cells`` cover the console channel.
+    Top-level error flags and totals are summaries: ``has_errors`` /
+    ``total_errors`` / ``total_cells_with_errors`` cover the structured channel
+    (backward-compatible), while ``has_console_exception`` /
+    ``total_console_exception_cells`` summarize the per-cell console channel.
 
     Args:
         session_id: Session ID from list_active_notebooks.

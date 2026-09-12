@@ -1,6 +1,6 @@
 # Agenda (open): post-hunt verification round
 
-> **Status:** **Open — 2 tasks (`T-V1` check round, `T-V2` doc precision).**
+> **Status:** **Open — 1 task (`T-V1` check round); `T-V2` is resolved.**
 > Opened 2026-09-11, right after
 > `docs/agenda-bug-hunt-1.md` closed with all 11 findings resolved.
 > Its one carried item, the `T13` widget residual, was fixed on 2026-09-11
@@ -65,8 +65,10 @@ messages:
       refuses (`reason: unsupported_argument`, nothing read); `cell_name` is
       populated and agrees with `get_cell_map`'s name.
 - [ ] §6: a cell that merely prints `Error: 3 rows skipped` is **not** reported as
-      a console exception; a real traceback is, and `console_exception_evidence`
-      says which marker matched.
+      a console exception; a real traceback is reported, the flagged `cells[]`
+      entry carries `console_exception_evidence` naming the matched marker and
+      `console_stderr` carrying the matching events, and top-level console fields
+      are summary-only.
 - [ ] §5: a scalar sent to a list-shaped element returns `did_you_mean` in the
       element's own key type (`["4"]`, not `[4]`), and applying the correction
       succeeds; a repeat of a value the element already holds whose `on_change`
@@ -137,7 +139,7 @@ Full evidence: `udv-echo-process/docs/marimo-integration-log.md`, entry
 zero-context agent — this run had read this very document first, which is
 exactly the contamination the method excludes. The boxes below stay open.
 
-## T-V2 — `get_errors` evidence/stderr are per-cell only; the surfaces don't say so
+## T-V2 — resolved: some `get_errors` wording did not scope per-cell evidence
 
 ```
 id: F1
@@ -178,9 +180,16 @@ doc_claim_ref: src/marimo_inspection/tools/errors.py (tool description);
   docs/agenda-verification-round.md §T-V1 §6 check line
 ```
 
-**Fix shape (one line beat):** scope the wording — the tool description and the
-`T-V1` check line should say the evidence marker and the stderr events live on
-`cells[]`, while the top level carries the counts/flag. Optionally add
-`next_steps`-style symmetry, but no payload change is required. Per the closure
-rule the claim is part of the fix: a fixed tool with an unchanged doc leaves this
-half-closed.
+**Resolved 2026-09-12 — documentation/test fix; runtime payload unchanged.**
+The FastMCP-exposed `get_errors` description now names
+`cells[].structured_errors`, `cells[].console_stderr`, and
+`cells[].console_exception_evidence`, and identifies the top-level console
+fields as summaries. The compact README summary, packaged co-work resource, and
+the T-V1 check line now use the same explicit paths. The exposed-description
+regression is
+`TestToolRegistration::test_get_errors_description_scopes_per_cell_fields`;
+it failed before the docstring change and passes afterwards. Source review also
+confirmed that the packaged co-work resource was not wrong: its later prose
+already said “Each flagged cell” and “that cell's `console_stderr` entry”; exact
+path notation was tightened for scanability. The preserved consumer run remains
+historical corroboration and does not complete or tick T-V1.

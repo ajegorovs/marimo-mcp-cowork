@@ -153,6 +153,28 @@ class TestToolRegistration:
             errors_tool = next(t for t in tools if t.name == "get_errors")
             assert errors_tool.name == "get_errors"
 
+    async def test_get_errors_description_scopes_per_cell_fields(self, mcp_server):
+        """The exposed get_errors description names the per-cell field paths.
+
+        The consumer-visible MCP description must say that the error channels
+        live on each entry of ``cells[]`` and that the top-level fields are
+        summary-only; otherwise a caller can misread the payload hierarchy.
+        """
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            errors_tool = next(t for t in tools if t.name == "get_errors")
+            description = errors_tool.description or ""
+
+            # Per-cell channels must carry their explicit path.
+            assert "cells[].structured_errors" in description
+            assert "cells[].console_stderr" in description
+            assert "cells[].console_exception_evidence" in description
+
+            # The top-level summary fields must be named and marked as such.
+            assert "top-level" in description.lower()
+            assert "has_console_exception" in description
+            assert "total_console_exception_cells" in description
+
     async def test_lint_notebook_signature(self, mcp_server):
         """lint_notebook signature (session_id optional)."""
         async with Client(transport=mcp_server) as client:

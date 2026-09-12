@@ -131,15 +131,15 @@ After every write, confirm with `get_variables`, `get_cell_outputs`, and
 `get_errors`. Widget updates and cell runs are queued and flushed on code-mode
 context exit, and the reactive re-runs of *dependent* cells are not awaited by
 the write call — so verify their effects, don't assume them. `get_errors`
-reports `structured_errors` and `console_stderr` separately;
-`has_errors`/`total_errors` count structured errors only.
+reports `cells[].structured_errors` and `cells[].console_stderr` separately;
+top-level `has_errors`/`total_errors` count structured errors only.
 
 A cell is flagged on the console channel only on **real exception evidence**: a
 traceback header, or an exception-typed line (`ValueError: ...`). Ordinary log
 text such as `Error: 3 rows skipped` is a message, not an exception, and flags
-nothing. Each flagged cell names the evidence it found in
+nothing. Each flagged `cells[]` entry names the evidence it found in
 `console_exception_evidence` (`"traceback"` / `"exception_line"`) — read that
-instead of assuming a UI-handler traceback.
+entry's `console_stderr` events instead of assuming a UI-handler traceback.
 
 **A failed `run_cell` reports through its own payload, and `get_errors`'
 structured channel can be silent about it.** `run_cell` returns `{"error":
