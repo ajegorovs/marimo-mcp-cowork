@@ -39,11 +39,25 @@ server/kernel restart to take effect.
 ## A session is not a run
 
 Materializing a session starts a kernel; it does not execute the notebook until
-a client asks for it. Until the cells have run there are no kernel globals and
-no committed widget values, so `get_variables`, `get_cell_outputs`,
-`get_errors` and `get_dependency_graph` report an empty execution state —
-accurately, not as a bug. An in-process lint (`lint_notebook`, `marimo check`)
-executes nothing either.
+a client asks for it. Until the cells have run there are no committed widget
+values, so `get_cell_outputs` and `get_errors` report an empty execution state —
+accurately, not as a bug.
+
+`get_variables` reports **nothing** until a notebook cell has defined and
+executed a name, and even then an unfiltered call lists only that notebook's
+executed **public** names: kernel-injected globals (e.g. `input`), the
+inspection template's own scaffolding, private leading-underscore names, and
+definitions from cells that have not run are all excluded.
+
+Cell *structure* is independent of execution: `get_cell_map` and `get_cell_data`
+read source, and `get_dependency_graph` still inventories every live notebook
+cell, so its `cells[]` ids match `get_cell_map` before any cell has run. Only
+its **graph-derived** `defs`/`refs`/`parent_cell_ids`/`child_cell_ids` are
+empty for a cell the kernel dependency graph has not registered — registration
+is the sole condition, not execution status — no edge is invented, and no cell
+is dropped.
+
+An in-process lint (`lint_notebook`, `marimo check`) executes nothing either.
 
 A **browser** client instantiates the session by opening the notebook, which is
 what runs the cells, and its controls only hold values from then on. A session
@@ -61,10 +75,17 @@ arbitrary-code tool.
 
 ## Dependency graph is whole-notebook
 
-`get_dependency_graph` always returns the **full** graph. `cell_id` and `depth`
-are refused (`reason: unsupported_argument`, nothing is read) rather than
-accepted-and-ignored; walk `cells[].parent_cell_ids` / `child_cell_ids` for a
-neighbourhood yourself.
+`get_dependency_graph` always returns the **full** notebook: one entry per live
+cell, so the `cells[]` id set matches `get_cell_map` even for a session whose
+cells have not run. Graph metadata exists only where the kernel graph does:
+registration is the sole condition, so a cell the graph has not registered is
+reported with empty `defs`/`refs` and no parent/child ids rather than
+disappearing or gaining invented edges. Do not infer registration from
+execution status — `create_cell`/`edit_cell` register a cell and its edges
+before `run_cell`, so an unexecuted cell may still carry metadata.
+`cell_id` and `depth` are refused (`reason:
+unsupported_argument`, nothing is read) instead of accepted-and-ignored; walk
+`cells[].parent_cell_ids` / `child_cell_ids` for a neighbourhood yourself.
 
 ## Session binding is process-global, and scoped
 

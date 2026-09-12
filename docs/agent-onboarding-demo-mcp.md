@@ -22,8 +22,11 @@ after `list_active_notebooks()` discovers and auto-binds a session, subsequent
 calls (e.g. `get_cell_map`, `get_variables`, `get_errors`) work with
 `session_id` **and** `server_url` omitted — `list_active_notebooks` binds both,
 and every other tool falls back to that binding. (The binding lives in the MCP
-server process/connection: a harness that spawns or reconnects the server per
-call/turn wipes it, so pass `server_url`/`session_id` explicitly in that case.)
+session's server-side state plus a process-global fallback consulted only when
+that state has nothing bound. A harness that restarts or spawns a fresh server
+process per call/turn loses it; over HTTP the fallback is served only while the
+process has seen one client session, so pass `server_url`/`session_id`
+explicitly when in doubt.)
 On this Linux machine, the discovery
 registry lives at `~/.local/state/marimo/servers/` (Windows used
 `~/.marimo/servers`); `list_active_notebooks()` with no args finds servers
@@ -52,8 +55,10 @@ Key points:
   Both are optional once a session is bound: `list_active_notebooks` binds
   `session_id` **and** `server_url`, and every other tool falls back to that
   binding. Pass them explicitly (or call `set_active_session`) when the harness
-  spawns or reconnects the MCP server per call, since that wipes the in-process
-  binding.
+  restarts or spawns a fresh server process per call; over one persistent stdio
+  process a fresh MCP session still reaches the fallback, while over HTTP it is
+  served only until a second client session appears (then argument-less calls
+  fail closed with `reason: binding_ambiguous`).
 - **`edit_cell` has a staleness guard** (`check_fresh=True` by default; mirrors
   Hermes' file-edit guard). It compares the cell's live source hash against the
   read baseline recorded by the agent's last full-source read — `get_cell_data`
@@ -115,10 +120,17 @@ Key points:
     call `set_active_session(session_id)` to rebind explicitly.
 - **A materialized session is not necessarily a *run* one.** Creating the
   session starts a kernel; it does not execute the notebook. Until the cells
-  have run, the notebook has no kernel globals and no committed widget values,
-  so the execution-state tools (`get_variables`, `get_cell_outputs`,
-  `get_errors`, `get_dependency_graph`) legitimately show little or nothing —
-  that is the reported condition, not a broken tool. A **browser** client
+  have run there are no committed widget values, so the execution-state reads
+  (`get_variables`, `get_cell_outputs`, `get_errors`) legitimately show little
+  or nothing — that is the reported condition, not a broken tool. Unfiltered
+  `get_variables` lists only the notebook's executed **public** names (kernel
+  globals such as `input` are excluded), so an empty result on a fresh session
+  is the documented contract. `get_dependency_graph` is the exception to the
+  empty-before-run rule in the other direction: it inventories every live
+  notebook cell from the notebook structure, so `cells[]` is complete before any
+  cell runs — only its graph-derived `defs`/`refs`/`parent_cell_ids`/
+  `child_cell_ids` are empty for cells the kernel graph has not registered
+  (typically unexecuted ones). A **browser** client
   instantiates by opening the notebook, which is what runs the cells; the
   `/sse` handshake above does not, because `/api/kernel/instantiate` is
   token-gated under `--no-token`. To get execution state without a browser,
@@ -184,10 +196,12 @@ Key points:
    get `MCPError: Invalid request parameters`.
 
 5. **When the demo is done, tear down cleanly** (delete demo cells, reconcile
-   the notebook) so the session is reusable. **Note:** the auto-bind is
-   per-connection. If you open a fresh MCP connection (e.g. for teardown), call
-   `list_active_notebooks()` again on that connection before `delete_cell` —
-   otherwise cells refuse without a bound `session_id`.
+   the notebook) so the session is reusable. **Note:** the auto-bind is written
+   to the MCP session's state plus a process-global fallback, so a fresh MCP
+   connection on the same stdio process still reaches it; if the server process
+   itself restarted, call `list_active_notebooks()` again before `delete_cell`,
+   or pass `session_id`/`server_url` explicitly — otherwise cells refuse without
+   a bound `session_id`.
 
 ---
 

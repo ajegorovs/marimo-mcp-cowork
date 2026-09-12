@@ -98,14 +98,10 @@ contract therefore lives in `README.md` and the per-harness docs:
 | Check notebooks | `uv run marimo check notebooks` |
 | Run the MCP server | `uv run marimo-inspect --transport http` (or `stdio`) |
 
-Verified on this tree (2026-09-11): `-m "not live"` → **330 passed**, `-m
-live` → **38 passed** (incl. the 4 mutation regressions — 2 hermetic flow cases
-plus the 2 hunt-H7 guard cases, the H9 preview/read-baseline pair, the 2 H10
-`code_hash` invariants, 8 widget regressions and 2 console-channel
-regressions). The not-live tier also carries the session-binding subprocess
-cases that spawn the console script and pin the binding model (H1/H11 — stdio,
-and the HTTP single-client scope). Counts drift as tests are added; treat the
-split, not the exact numbers, as the contract.
+The split is the contract: the default `-m "not live"` tier must stay
+kernel-free and fast, and `-m live` boots real kernels. Verified counts and
+current status live in `docs/live-tests.md` — do not restate numbers here, they
+drift as tests are added.
 
 ## Layout
 
@@ -116,11 +112,14 @@ split, not the exact numbers, as the contract.
   handlers, change-tracking, mutation with staleness guard, widget
   interaction in `tools/ui.py`, in-process lint in `tools/lint.py`, session
   binding in `tools/session.py`, list-argument normalization in
-  `tools/args.py`), `types.py`.
+  `tools/args.py`), `widgets/` (packaged anywidget components — see
+  `docs/custom-widgets.md`), `types.py`.
 - `tests/marimo_inspect/` — unit tests (no kernel needed).
 - `tests/marimo_inspect/live/` — integration tests that boot a real headless
   marimo server (see "Live tests" below).
 - `notebooks/` — marimo fixtures used by live tests and the MCP demo.
+- `examples/` — consumer-facing example notebooks (see
+  `docs/agenda-example-notebooks.md`).
 - `docs/` — design/rationale docs (see "Docs map" below).
 
 ## Conventions
@@ -168,45 +167,34 @@ fast path is `uv run pytest -m "not live"`. They couple the in-kernel and
 in-process version contracts to the same installed marimo, so a version bump
 must be validated by running them (see `docs/marimo-version-support.md`).
 
-**Known coverage gap — instantiation is token-gated.** The `/sse`-created
-session is never *instantiated*: notebook cells do not run, because
-`/api/kernel/instantiate` requires a skew-protection token that isn't exposed
-under `--no-token`. This splits the live suite into two tiers:
+Commands, boot mechanics, verified counts and current status live in
+`docs/live-tests.md` — read it before changing the suite, and keep those
+numbers there rather than here. Two standing facts about the suite's shape:
 
-- **Fully exercised** (read cell *source/structure*, independent of execution):
-  `cell_map`, `cell_data`.
-- **Structure/consistency only** (read *executed* state, which is empty for a
-  fresh non-instantiated session): `dependency` (graph), `errors` (error
-  records), `cell_outputs` (outputs), `variables` (kernel globals — sees
-  the scratchpad's own imports but **not** notebook-defined names, which only
-  exist after cells run).
+- **Instantiation is token-gated.** The `/sse`-created shared session is never
+  *instantiated* (its notebook cells do not run), because
+  `/api/kernel/instantiate` requires a skew-protection token that isn't exposed
+  under `--no-token`. The shared fixture can therefore only ever show
+  fresh/empty executed state for outputs, errors and variables. The write-tool
+  tests below get real execution by creating and running their own cells.
+  Executing the fixture's original cells as a frontend would remains the main
+  open bite of live coverage.
+- **Write-tool tests are hermetic.** `tests/marimo_inspect/live/test_mutation.py`
+  drives the **real MCP handler functions** against a real 0.24 kernel, and
+  `test_ui.py` does the same for the widget tool; each boots one isolated
+  server per test on a `tmp_path` copy of the fixture and asserts the repo
+  fixture stays byte-identical — keep that gate when adding cases. Cells they
+  create through the write tools *do* execute, so the widget tool is exercised
+  in-kernel with no browser: shape refusal, verified apply (with a reactive
+  dependent re-run), verified no-op, kernel rejection as an error, the
+  `on_change_failed` callback-failure path (distinguished from a rejected
+  conversion by the failure *site*), the cell-private (leading-underscore) name
+  rule, and the error-channel split — structured channel silent
+  (`has_errors: false`) while the traceback shows in the run payload and the
+  cell's `console_stderr`; see `co-work-loop.md` §6.
 
-So a future marimo bump is made visible by the behavioral assertions for
-`cell_map`/`cell_data`, but **not yet** for the execution-state templates.
-Getting instantiation working (isolate the skew token) is the main remaining
-bite of live-test coverage.
-
-Separately, `tests/marimo_inspect/live/test_mutation.py` (2 tests) exercises the
-**real MCP handler functions** against a real 0.24 kernel on a `tmp_path` copy
-of the fixture: create → read → guarded edit → run → verify → delete, and
-external-conflict → re-read → recover. It boots one isolated server per test
-and asserts the repo fixture stays byte-identical (the hermeticity gate).
-`tests/marimo_inspect/live/test_ui.py` (8 tests) does the same for the widget
-tool — cells *created through the write tools* do execute, so a widget can be
-materialized in-kernel without a browser: shape refusal, verified apply with a
-reactive dependent re-run, verified no-op on a repeat, kernel rejection
-surfacing as an error, an `on_change` handler that raises reported as
-`on_change_failed` with `applied: true` (the value moved; only the callback
-failed) and — for a repeat of a value the element already holds, where the
-handler runs anyway and the read-back is unmoved — the same `on_change_failed`
-with `applied: false` + `no_change: true` (the failure *site* read from the
-kernel traceback is what separates it from a rejected conversion), and the
-cell-private (leading-underscore) name rule — that case also
-pins the error-channel split (the structured channel stays silent,
-`has_errors: false`, while the traceback is visible in the run payload and in
-the cell's `console_stderr`; see `co-work-loop.md` §6). Frontend *rendering* was
-verified once by hand against a real browser (agenda T9-b) and is still not
-CI-covered: the live suite boots kernels, not frontends.
+Frontend *rendering* is **not** CI-covered: the live suite boots kernels, not
+frontends.
 
 ## Docs map
 
@@ -228,45 +216,34 @@ CI-covered: the live suite boots kernels, not frontends.
   revisit): a `NotebookBackend` seam. Do not implement pre-emptively.
 - `docs/live-test-redesign-plan.md` — the executed redesign plan (verified
   marimo internals, session-creation handshake, DoD). Read for mechanics.
-- `docs/agenda-live-test-redesign.md` — resolved agenda (rationale + design
-  space).
+- `docs/agenda-live-test-redesign.md` — resolved agenda for that redesign
+  (rationale + design space); closed, no open work.
 - `docs/agenda-remote-marimo-mcp.md` — **OPEN** agenda: what we'd gain (and
   break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
   machine. Read before choosing a consumer's topology or touching
   `discovery.py`/`--no-token` assumptions.
-- `docs/agenda-bug-hunt-1.md` — **CLOSED** (all 11 hunt #1 findings resolved,
-  2026-09-11): each carried a source-verified mechanism, a proposed priority and
-  the "repro must fail pre-fix" closure rule, and every one now has a test that
-  proves it. Read its §Resolved log for the decision trail (H1's binding claim
-  and the H11 fallback that replaced the capability gap, H2–H6's payload
-  truthfulness, H7's guard scope, H9's explicit-only read baseline, H10's pinned
-  hash invariant). Its §Checkpoint still carries the one open cross-agenda item —
-  the `T13` widget residual. Read its §Resolved log before touching
+- `docs/agenda-bug-hunt-1.md` — **CLOSED** agenda: the 11 hunt-#1 findings,
+  each with the source-verified mechanism, its fix, and the test that fails
+  pre-fix. Read its §Resolved log for the decision trail before touching
   `tools/mutation.py` payload/guard code, `tools/session.py` binding claims, or
   the `templates/*` payload shapes it names.
-- `docs/agenda-verification-round.md` — **OPEN** agenda: the post-hunt check round
-  (`T-V1`) that re-verifies the eleven closed findings through the tool surface
-  and the packaged resources from a fresh zero-context agent. `T-V2` is resolved:
-  the runtime payload was unchanged, while the high-visibility `get_errors`
-  wording now explicitly scopes marker/stderr evidence to `cells[]`; the packaged
-  co-work resource already established per-cell scope in its later prose, and its
-  exact path notation was tightened for scanability. The carried `T13` widget
-  residual is closed and retained there for its decision trail.
-  Read it before re-running tests "to check" — that round
-  exists because a green suite cannot see whether the docs still teach the old
-  behaviour.
-- `docs/agenda-udv-consumer-findings.md` — **Round 1 closed, Round 2 OPEN**
-  (2026-09-12): T15–T22 in its §Round 2 cover what the second and third consumer
-  passes found — no run-all execution, session-identity churn, app-mode
-  invisibility, the recipe gotcha that decides which session a browser lands on,
-  and three *reporting* gaps (a button click the surface cannot confirm, a
-  cache-restored output with no staleness marker, a session whose owner is not
-  named). T16's original "sidebar content unreadable" claim no longer reproduces
-  and is marked revised. Read §Round 2 before re-running a browser verification
-  pass. Its §Resolved log holds the round-1 decision trail
-  (T1 session-vs-server, T2 auto-bind, T3 harness list args, T4 cross-Python
-  evidence, T9/T12/T13 write surface and error channels, T14 list-argument
-  normalization), not open work.
+- `docs/agenda-verification-round.md` — **CLOSED** agenda: the post-hunt
+  end-to-end re-verification of the documented co-work flow through a fresh
+  zero-context agent. Read its final-gate section and evidence pointers before
+  re-running the round — a green suite alone cannot show whether the docs still
+  teach the old behaviour.
+- `docs/agenda-udv-consumer-findings.md` — **Round 1 closed, Round 2 OPEN**:
+  consumer-pass findings. §Round 2 is the open work (no run-all execution,
+  session-identity churn, app-mode invisibility, the recipe gotcha that decides
+  which session a browser lands on, and three *reporting* gaps) — read it
+  before re-running a browser verification pass. §Resolved log holds the closed
+  round-1 decision trail, not open work.
+- `docs/agenda-example-notebooks.md` — **OPEN** agenda: what `examples/` is
+  (its contract against `notebooks/`) and where it gets wired so it cannot rot.
+  Read before adding or moving an example notebook.
+- `docs/custom-widgets.md` — the anywidget components shipped in
+  `src/marimo_inspection/widgets/`. Read before adding or consuming a packaged
+  widget.
 
 **Bootstrap / harness integration:**
 
@@ -300,16 +277,17 @@ CI-covered: the live suite boots kernels, not frontends.
 - `docs/fastmcp-v4-scout-report.md` — initial architecture scout.
 - `docs/marimo-inspection-tools-comparison.md` — source-inspection
   comparison vs marimo-pair.
-- `docs/marimo-inspect-progress-report.md` — 2026-08-25 snapshot
-  (pre-dates the write tools and the 14-tool surface; numbers are stale).
-- `docs/mcp-tools-test-findings.md` — 2025-01 bug findings (shows old buggy
+- `docs/marimo-inspect-progress-report.md` — early snapshot (pre-dates the
+  write tools and the 14-tool surface; numbers are stale).
+- `docs/mcp-tools-test-findings.md` — early bug findings (shows old buggy
   code; historical).
 - `docs/mcp-upgrade-roadmap.md` — upgrade roadmap (partially executed).
+- `docs/session-report-*.md` — per-session integration reports (historical).
 
 ## Privacy — do not overexpose
 
-Everything committed here must be publishable; treat the whole tree as public
-(and remember it flips public once Settings → danger zone is done).
+Everything committed here must be publishable: treat the whole tree as public,
+whether or not the remote currently is.
 
 **Allowed:** the author name/contact email (`pyproject.toml`, `LICENSE`) and
 the GitHub username in the remote/install URL. That is the only personal data.

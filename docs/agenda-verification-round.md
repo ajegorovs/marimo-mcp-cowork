@@ -1,15 +1,14 @@
-# Agenda (open): post-hunt verification round
+# Agenda (closed): post-hunt verification round
 
-> **Status:** **Open — `T-V1` ran zero-context and is blocked by three
-> confirmed findings (`T-V3`–`T-V5`) plus one uncovered widget-key check;
-> `T-V2` is resolved.**
+> **Status:** **Closed — `T-V1` passed the final fresh zero-context gate;
+> `T-V2`–`T-V5` are resolved.**
 > Opened 2026-09-11, right after
 > `docs/agenda-bug-hunt-1.md` closed with all 11 findings resolved.
 > Its one carried item, the `T13` widget residual, was fixed on 2026-09-11
 > (see §T13 below). A **consumer-side run of the whole check list on
 > 2026-09-11** (see §Consumer run below) passed every check and surfaced
-> `T-V2`; the zero-context round `T-V1` itself still owes its boxes.
-> **Trigger:** a session restart, so the checks run in a **fresh, zero-context
+> `T-V2`; the final fresh zero-context round below closes `T-V1`.
+> **Trigger used:** a session restart, so the checks ran in a **fresh, zero-context
 > agent** — the standing regression gate for doc/tool work here: the closed items
 > are re-verified through the surface a consumer actually uses, not by re-running
 > the tests that already pass.
@@ -71,21 +70,45 @@ messages:
       entry carries `console_exception_evidence` naming the matched marker and
       `console_stderr` carrying the matching events, and top-level console fields
       are summary-only.
-- [ ] §5: a scalar sent to a list-shaped element returns `did_you_mean` in the
+- [x] §5: a scalar sent to a list-shaped element returns `did_you_mean` in the
       element's own key type (`["4"]`, not `[4]`), and applying the correction
       succeeds; a repeat of a value the element already holds whose `on_change`
       handler raises is `on_change_failed` + `applied: false` + `no_change: true`
       — never `value_not_applied`, and no `next_steps` entry tells you to
       re-send it.
-- [ ] `get_variables` with no names returns notebook names only — no `json`,
+- [x] `get_variables` with no names returns notebook names only — no `json`,
       `cm`, `get_variables`, `_is_ui`, `_serialize`.
-- [ ] Doc-vs-surface sweep: nothing in the three resources or `README.md`
+- [x] Doc-vs-surface sweep: nothing in the three resources or `README.md`
       contradicts an observed payload. Report contradictions as findings; fix
       them in a separate change, not mid-check.
 
 **Output:** one line per FAIL — item, observed payload, expected, and the doc
 sentence that misled (or the code that lies). A doc-only mismatch is still a
 finding for this round.
+
+### Final zero-context gate 2026-09-12 — closed: 50 PASS, 0 FAIL, 1 accepted UNCOVERED
+
+A third fresh validator read only `README.md`, all 14 descriptions captured from
+a freshly launched MCP server, and the three packaged resources captured over
+MCP. It exercised all 14 tools through 133 MCP calls. Raw evidence is under
+`.hermes/probes/tv1-zero-context-20260912-185840/`: `calls.jsonl` contains 135
+valid, uniquely sequenced records; `report.md` and `verdicts.json` carry the
+validator's analysis; `parent_rederive.py` independently asserts the decisive
+payloads and writes `parent-verdict.json`.
+
+The parent re-derivation passes all nine families, including exact numeric
+widget key `did_you_mean == ["4"]`, full dependency-map cell-id agreement with
+a real edge, notebook-only unfiltered variables, stdio fallback across fresh MCP
+sessions, HTTP `binding_ambiguous` isolation, and a contradiction-free public
+surface. One additional guard sub-clause is honestly UNCOVERED rather than
+inferred: a literal `conflict` requires an out-of-band write, because every
+MCP mutation of the same cell refreshes that cell's process-wide baseline. This
+is not one of the original open T-V1 boxes and does not contradict the packaged
+safety resource.
+
+The gate cleaned up every process and port it created, preserved the two
+pre-existing stdio MCP processes, and verified byte-identical repository status
+before and after its run. T-V1 is therefore closed.
 
 ### Zero-context run 2026-09-12 — incomplete: 6 PASS, 2 FAIL, 1 UNCOVERED
 
@@ -116,7 +139,14 @@ none was fixed during this pass.
 
 ## T-V3 — dependency graph omits a notebook cell while claiming the full graph
 
-**Status: confirmed; open.** Calls 6/7 on the pristine notebook report 2 cells
+**Status: resolved 2026-09-12.** The dependency template now inventories every
+live cell from `ctx.cells` and merges graph metadata where registered; live and
+unit regressions pin identical map/graph id sets, `cell_name` agreement, a real
+parent/child edge, and empty graph-derived fields only for graph-unregistered
+cells. Preserved pre-fix failure evidence is under
+`.hermes/probes/tv1-fix-prefix-evidence-20260912/`.
+
+The original finding was: calls 6/7 on the pristine notebook reported 2 cells
 from `get_cell_map` but only 1 from `get_dependency_graph`; calls 64/65 repeat
 the mismatch at 8 versus 7 cells. In both cases the omitted id is `MJUe`
 (`import numpy as np`), which is also present in `get_cell_outputs` call 66.
@@ -135,7 +165,15 @@ existing unsupported-argument refusal and cell-name agreement tests.
 
 ## T-V4 — unfiltered variables include non-notebook shared globals
 
-**Status: confirmed; open.** Call 9, before any notebook cell ran or probe cell
+**Status: resolved 2026-09-12.** Unfiltered lookup now intersects live notebook
+graph definitions with `globals()` and excludes private names; if graph
+definitions cannot be obtained it fails closed rather than reverting to a shared-
+global denylist. Live and unit regressions pin executed public names, filtered
+lookup, private-name exclusion, and absence of `input`/`spec_from_loader` from
+unfiltered results. Preserved pre-fix failure evidence is under
+`.hermes/probes/tv1-fix-prefix-evidence-20260912/`.
+
+The original finding was: call 9, before any notebook cell ran or probe cell
 was created, returns exactly `input` and `spec_from_loader`. Neither is defined
 by the two notebook cells. Call 61 returns those same names mixed with the
 probe's notebook-defined values.
@@ -152,7 +190,13 @@ filtered lookup behavior and cell-private-name exclusion remain unchanged.
 
 ## T-V5 — README omits the scoped process-global binding fallback
 
-**Status: confirmed documentation precision gap; open.** Calls 13–16 show four
+**Status: resolved 2026-09-12.** README and the exposed
+`list_active_notebooks` description now state the same two-channel model as the
+packaged resources: session state plus a process-global fallback, retained across
+fresh MCP sessions on one stdio process and withheld after a second HTTP client
+session (`binding_ambiguous`). Exposed-description regressions lock the wording.
+
+The original finding was: calls 13–16 showed four
 fresh MCP sessions making argument-less calls successfully against one
 persistent stdio server process. The packaged resources explain the
 process-global fallback and HTTP ambiguity boundary; README says a harness that

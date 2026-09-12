@@ -222,6 +222,31 @@ class TestResourceContent:
         assert "console events" in text
         assert "frontend" in text
 
+    async def test_fallbacks_scopes_empty_graph_metadata_to_registration(
+        self, mcp_server
+    ):
+        """Empty graph metadata is tied to graph non-registration, not execution.
+
+        ``create_cell``/``edit_cell`` register a cell and its edges before
+        ``run_cell``, so an unexecuted cell can still carry graph metadata.
+        The doc must make registration the sole condition and not imply that
+        unexecuted means empty; pin that, and keep the whole-notebook
+        cell-inventory / no-invented-edge guarantees intact.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().split())
+
+        # Registration is the condition that grants graph metadata.
+        assert "has not registered" in text
+        assert "registration is the sole condition" in text
+        # The complete inventory / no-invented-edge guarantees are preserved.
+        assert "no edge is invented" in text
+        assert "no cell is dropped" in text
+        # The old execution-status shortcut must not creep back in.
+        assert "unexecuted (or otherwise graph-unregistered)" not in text
+        assert "typically one that has not executed" not in text
+
 
 # ---------------------------------------------------------------------------
 # Privacy

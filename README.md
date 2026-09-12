@@ -63,10 +63,15 @@ Widget interaction: `set_ui_value`.
 
 `list_active_notebooks` discovers sessions and auto-binds the first one
 (`session_id` **and** `server_url`); every other tool falls back to that
-binding. The binding lives in the MCP server process/connection — a harness
-that spawns or reconnects the server per call/turn loses it, so pass
-`session_id`/`server_url` explicitly (or call `set_active_session`) in that
-case. A gateway restart requires re-running `list_active_notebooks`.
+binding. The binding lives in the MCP session's server-side state plus a
+process-global fallback consulted only when that state has nothing bound.
+Restarting or spawning a fresh server process loses it (re-run
+`list_active_notebooks`); over one persistent stdio process, fresh MCP
+sessions still reach it through the fallback. Over HTTP the fallback is served
+only while the process has seen a single client session — once a second client
+session appears, argument-less calls fail closed with `reason:
+binding_ambiguous`. When in doubt, pass `session_id`/`server_url` explicitly
+(or call `set_active_session`).
 
 ### Read before you edit
 

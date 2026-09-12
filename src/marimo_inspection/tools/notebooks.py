@@ -24,12 +24,15 @@ async def list_active_notebooks(
     session, so later calls that share this MCP session can omit both
     `session_id` and `server_url`.
 
-    The binding is server-side state keyed by the MCP session identity the
-    client negotiates, so it reaches the *next* call only when the client keeps
-    one MCP session for the connection — an `mcp`-SDK-based client does,
-    fastmcp's own `Client` does not on the pinned fastmcp 4.0.3 (it starts a
-    new session per request). Where that is the case, pass `session_id` and
-    `server_url` explicitly on every call.
+    The binding lives in two places: this MCP session's server-side state, and
+    a **process-global fallback** consulted only when that state has nothing
+    bound. Over stdio one process serves exactly one client, so the fallback
+    carries the binding to every later call — argument-less calls keep working
+    across later or fresh MCP sessions. Over HTTP/SSE one process serves many
+    clients, so the fallback is served only while the process has seen a single
+    client session; once a second client session appears, argument-less calls
+    are refused with `reason: binding_ambiguous` (fail-closed — never guessed).
+    An explicit `session_id`/`server_url` always wins over the binding.
 
     Args:
         server_url: Optional explicit server URL.

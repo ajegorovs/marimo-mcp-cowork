@@ -28,37 +28,65 @@ async def get_dependency_graph():
         # Cell names come from the SAME source get_cell_map reads (the
         # NotebookCell's ``name``), so both tools agree on what a cell is
         # called. A graph CellImpl has no usable name of its own.
+        #
+        # ctx.cells is the COMPLETE, notebook-ordered cell inventory. The
+        # kernel graph is not: it can omit a cell that still exists in the
+        # notebook (a cell that has never run is a valid cell with no defs,
+        # refs or edges). Inventory the notebook first and merge graph
+        # metadata in per cell, so a graph-less cell gets an entry with
+        # empty graph-derived lists instead of silently disappearing.
+        #
+        # Deliberately NO blanket except around this loop: catching an
+        # iteration-level error here would erase every cell already
+        # inventoried and report a truncated notebook as if it were complete.
+        # A private-API failure is loud instead of silently lossy.
+        ordered_ids = []
         name_by_id = {}
-        try:
-            for cell in ctx.cells:
-                try:
-                    name_by_id[str(cell.id)] = getattr(cell, "name", "") or ""
-                except Exception:
-                    continue
-        except Exception:
-            name_by_id = {}
+        for cell in ctx.cells:
+            cid = str(cell.id)
+            if cid not in name_by_id:
+                ordered_ids.append(cid)
+            name_by_id[cid] = getattr(cell, "name", "") or ""
+
+        # Graph metadata by cell id. A graph entry missing from ctx.cells
+        # (should not happen) is still reported, after the notebook cells --
+        # graph entries are never discarded, and its name stays empty rather
+        # than being invented.
+        impl_by_id = {str(cid): impl for cid, impl in graph.cells.items()}
+        for cid in impl_by_id:
+            if cid not in name_by_id:
+                name_by_id[cid] = ""
+                ordered_ids.append(cid)
 
         # Build cell dependency info
         cells = []
-        for cid, cell_impl in graph.cells.items():
-            cell_name = name_by_id.get(str(cid), "")
-            if not cell_name:
+        for cid in ordered_ids:
+            cell_impl = impl_by_id.get(cid)
+            cell_name = name_by_id.get(cid, "")
+            if not cell_name and cell_impl is not None:
                 cell_name = getattr(cell_impl, "name", "") or ""
 
             defs = []
-            for var_name in sorted(cell_impl.defs):
-                defs.append({
-                    "name": var_name,
-                    "kind": "variable",
-                })
+            refs = []
+            parent_cell_ids = []
+            child_cell_ids = []
+            if cell_impl is not None:
+                for var_name in sorted(cell_impl.defs):
+                    defs.append({
+                        "name": var_name,
+                        "kind": "variable",
+                    })
+                refs = sorted(cell_impl.refs)
+                parent_cell_ids = sorted(str(p) for p in graph.parents.get(cid, set()))
+                child_cell_ids = sorted(str(c) for c in graph.children.get(cid, set()))
 
             cells.append({
-                "cell_id": str(cid),
+                "cell_id": cid,
                 "cell_name": cell_name,
                 "defs": defs,
-                "refs": sorted(cell_impl.refs),
-                "parent_cell_ids": sorted(str(p) for p in graph.parents.get(cid, set())),
-                "child_cell_ids": sorted(str(c) for c in graph.children.get(cid, set())),
+                "refs": refs,
+                "parent_cell_ids": parent_cell_ids,
+                "child_cell_ids": child_cell_ids,
             })
 
         # Variable owners (global)

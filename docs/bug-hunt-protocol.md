@@ -26,7 +26,8 @@ The automated suite **cannot** find them, by construction:
 - it mocks the state layer (so a broken binding passes) and always passes
   `session_id`/`server_url` explicitly (so the argument-less path is never
   exercised);
-- its live tier is structure-only for the execution-state templates, and boots
+- its live tier reaches executed-cell state only through cells created by the
+  write tools (the shared `/sse` fixture is never instantiated), and it boots
   its own kernel rather than a real consumer notebook.
 
 So discovery has to be agentic: a real task, in a real notebook, through the
@@ -58,11 +59,15 @@ What hunt #1 used, and why it worked:
   so the hunt may create/edit/delete cells freely and never dirties a repo;
 - a kernel launched from the **consumer project's own venv**, so the notebook's
   real imports and `data/` work;
-- an **instantiated** session (cells have outputs). This is not optional: the
-  execution-state templates (`get_errors`, `get_variables`, `get_cell_outputs`,
-  `get_dependency_graph`) show nothing useful on a fresh non-instantiated
-  session — the known token-gated gap. The lab can be materialized in a browser,
-  or the session may already be running from an earlier run.
+- an **instantiated** session (cells have outputs). This is not optional for the
+  execution-state reads (`get_errors`, `get_cell_outputs`, and unfiltered
+  `get_variables`, which reports executed notebook-defined public names only):
+  they show nothing useful on a fresh non-instantiated session — the known
+  token-gated gap. `get_dependency_graph` is the exception: it inventories every
+  live cell from the notebook structure even without execution and only its
+  graph-derived `defs`/`refs`/edges are empty for the unexecuted ones. The lab
+  can be materialized in a browser, or the session may already be running from
+  an earlier run.
 
 **Lab pitfall — session binding does not survive every client.** With a
 harness-shaped FastMCP `Client` over stdio, `list_active_notebooks` and
@@ -151,7 +156,8 @@ yesterday's defects.
 3. **Cell identity**: stale, deleted, absent and never-read cell ids across all
    read and write tools; `edit_cell` against a never-read cell.
 4. **Execution-state tools** against an instantiated notebook — the tier the
-   suite has never exercised.
+   shared fixture cannot exercise (the suite reaches executed cells only through
+   write-tool-created cells).
 5. **Claim cross-check**: every sentence in `resources/*.md` and every tool
    description, against observed payloads.
 6. **`lint_notebook`** on a cell that trips a rule, then on the repaired state.
@@ -181,10 +187,12 @@ yesterday's defects.
 
 - **One lab, one hunt.** The lab is a single live session and the hunt writes to
   it; concurrent hunts would interleave writes and invent findings.
-- **Instantiation is the coverage boundary.** Without an executed session, §4 of
-  the checklist degrades to structure-only. Closing the token-gated
-  instantiation gap is what would convert most of this from a manual hunt into
-  suite coverage.
+- **Instantiation is the coverage boundary.** Without an executed session,
+  checklist item 4 degrades to structure-only: the suite now covers executed
+  `dependency`/`variables`/widget state only for cells created through the write
+  tools, while a browser-instantiated consumer notebook still has to be hunted by
+  hand. Closing the token-gated instantiation gap is what would convert most of
+  this from a manual hunt into suite coverage.
 - **Some claims need purpose-built lab features** (multi-output cells, a
   restartable kernel). Mark them unexercised rather than inferring a verdict.
 - **Unconfirmed findings need a second, targeted pass** with a lab built for the

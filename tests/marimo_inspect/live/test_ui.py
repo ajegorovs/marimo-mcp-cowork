@@ -7,7 +7,7 @@ skew token — see AGENTS.md). That assumption is too conservative: a cell
 *created through the MCP write tools* runs fine, so a widget can be
 materialized in-kernel and driven end to end here.
 
-Two behaviours are locked in against a real marimo 0.24 kernel:
+Three behaviours are locked in against a real marimo 0.24 kernel:
 
 * **Reactivity** — `set_ui_value("gate_slider", 7)` moves the element 3 -> 7 AND
   reactively re-runs its dependent cell (derived global 103 -> 107), both cells
@@ -18,6 +18,10 @@ Two behaviours are locked in against a real marimo 0.24 kernel:
   sent to a dropdown trips exactly that path (``assert len(value) == 1`` inside
   ``dropdown._convert_value``), an unknown option key trips option validation,
   and both must now surface as errors with the widget unmoved.
+* **The transport key is the string form** — a dropdown built from numeric
+  options (`options=[1, 2, 3, 4]`) is keyed by the strings `"1"`..`"4"` and
+  stores the number. The scalar `4` is therefore refused with `did_you_mean
+  == ["4"]` (never `[4]`), and that exact correction applies the numeric 4.
 """
 
 from __future__ import annotations
@@ -65,6 +69,21 @@ _BOOM_SOURCE = (
     f"{_BOOM} = mo.ui.slider(0, 10, value=1, on_change=_boom, label='boom')\n"
     f"{_BOOM}"
 )
+
+# A dropdown whose options are NUMBERS: marimo keys a dropdown by the string
+# form of each option, so `options=[1, 2, 3, 4]` accepts the transport key
+# "4" and stores the number 4. Initial selection is the numeric 1.
+_NUMERIC_DROPDOWN = "gate_number_dropdown"
+_NUMERIC_DROPDOWN_SOURCE = (
+    "import marimo as mo\n"
+    f"{_NUMERIC_DROPDOWN} = mo.ui.dropdown(options=[1, 2, 3, 4], value=1, "
+    "label='number')\n"
+    f"{_NUMERIC_DROPDOWN}"
+)
+
+# Reading .value back in a dependent cell proves the stored value is the
+# NUMBER 4: int 4 * 2 == 8, whereas the string "4" * 2 would be "44".
+_NUMERIC_READER_SOURCE = f"gate_number_readback = {_NUMERIC_DROPDOWN}.value * 2"
 
 
 def _inner_value(payload: dict, name: str):
@@ -461,6 +480,84 @@ async def test_set_ui_value_on_change_failure_on_an_already_held_value(
         # which is exactly why the read-back alone cannot classify this case.
         after = await get_variables(session_id=session_id, server_url=server_url)
         assert _inner_value(after, _BOOM) == "1", after
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.live
+async def test_set_ui_value_numeric_dropdown_correction_uses_the_string_key(
+    mutation_server,
+):
+    """T-V1: a numeric dropdown option is addressed by its STRING transport key.
+
+    marimo keys a dropdown by the string form of each option, so
+    ``options=[1, 2, 3, 4]`` accepts the key ``"4"`` and stores the number 4.
+    The scalar ``4`` must be refused with ``did_you_mean == ["4"]`` (never
+    ``[4]`` — following that verbatim would be refused again by the kernel), and
+    applying the exact correction must move the element to the numeric 4.
+    """
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        dropdown_cell_id = await _make_cell(
+            _NUMERIC_DROPDOWN_SOURCE, server_url, session_id
+        )
+        created.append(dropdown_cell_id)
+        reader_cell_id = await _make_cell(
+            _NUMERIC_READER_SOURCE, server_url, session_id
+        )
+        created.append(reader_cell_id)
+
+        before = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(before, _NUMERIC_DROPDOWN) == "1", before
+        assert _inner_value(before, "gate_number_readback") == "2", before
+
+        mismatch = await set_ui_value(
+            _NUMERIC_DROPDOWN, 4, session_id=session_id, server_url=server_url
+        )
+        assert mismatch["status"] == "error", mismatch
+        assert mismatch["reason"] == "value_shape_mismatch", mismatch
+        assert mismatch["element_type"] == "dropdown", mismatch
+        assert mismatch["accepted_shape"] == "list[str]", mismatch
+        assert mismatch["submitted_value"] == 4, mismatch
+        # The correction is the element's own STRING key, not the int sent.
+        assert mismatch["did_you_mean"] == ["4"], mismatch
+
+        # The refusal happened before anything was queued: nothing moved.
+        untouched = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(untouched, _NUMERIC_DROPDOWN) == "1", untouched
+
+        # The negative half: the int key the caller sent is NOT the option key,
+        # so a naive `[4]` correction is refused by the kernel and the element
+        # stays put. Only the string "4" addresses this option.
+        int_key = await set_ui_value(
+            _NUMERIC_DROPDOWN, [4], session_id=session_id, server_url=server_url
+        )
+        assert int_key["status"] == "error", int_key
+        assert int_key["reason"] == "value_not_applied", int_key
+        assert int_key["value_before"] == 1, int_key
+        assert int_key["value_after"] == 1, int_key
+
+        # Applying that exact correction succeeds and is verified by read-back.
+        result = await set_ui_value(
+            _NUMERIC_DROPDOWN, ["4"], session_id=session_id, server_url=server_url
+        )
+        assert result["status"] == "ok", result
+        assert result["verified"] is True, result
+        assert result["applied"] is True, result
+        assert result["value_before"] == 1, result
+        assert result["value_after"] == 4, result
+
+        # Independent read-back: the stored value is the NUMBER 4 (int 4 * 2 ==
+        # 8; the string "4" * 2 would be "44").
+        after = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after, _NUMERIC_DROPDOWN) == "4", after
+        assert _inner_value(after, "gate_number_readback") == "8", after
     finally:
         for cell_id in reversed(created):
             deleted = await delete_cell(

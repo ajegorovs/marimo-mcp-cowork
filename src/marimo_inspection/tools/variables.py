@@ -23,9 +23,17 @@ async def get_variables(
     """Get tables and variables information in the session.
 
     Returns information about kernel variables and DataFrames.
-    If variable_names is empty, returns all variables — meaning the notebook's
-    own session names, with the inspection template's scaffolding (its imports
-    and helpers) excluded, since the scratchpad shares the kernel namespace.
+
+    If variable_names is empty, returns all variables — meaning the executed
+    public names defined by notebook cells. Kernel-injected globals, the
+    inspection template's scaffolding, private (leading-underscore) names, and
+    definitions from cells that have not executed are excluded, because the
+    scratchpad shares the kernel namespace. Pass variable_names to inspect
+    specific names that are visible in that kernel namespace, including an
+    explicitly named kernel-injected global such as ``input``. A filtered
+    lookup does not apply the unfiltered exclusions, but it still cannot surface
+    a name the kernel does not expose: a leading-underscore private name reports
+    an empty result.
 
     Args:
         session_id: Session ID from list_active_notebooks.

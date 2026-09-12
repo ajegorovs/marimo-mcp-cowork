@@ -14,6 +14,8 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import pytest
+
 # Private, but pinned to the same marimo 0.24.x range as the templates under
 # test; the fake needs the REAL enum (a plain "stderr" string hides the bug).
 from marimo._messaging.cell_output import CellChannel
@@ -117,6 +119,47 @@ class _UnreadableCell:
     @property
     def errors(self):
         raise RuntimeError("private API drift")
+
+
+class _FakeGraphCell:
+    """Minimal stand-in for a graph CellImpl (defs/refs/name)."""
+
+    def __init__(self, defs=(), refs=(), name: str = ""):
+        self.defs = set(defs)
+        self.refs = set(refs)
+        self.name = name
+
+
+class _FakeGraph:
+    """Minimal stand-in for marimo._runtime.dataflow.DirectedGraph.
+
+    ``cells`` maps cell id -> graph CellImpl and is deliberately allowed to be
+    a strict subset of ``ctx.cells`` (a never-run cell is absent from the
+    kernel graph while still being a real notebook cell).
+    """
+
+    def __init__(
+        self,
+        cells=None,
+        parents=None,
+        children=None,
+        definitions=None,
+        multiply_defined=(),
+        cycles=(),
+    ):
+        self.cells = dict(cells or {})
+        self.parents = {
+            cid: set(ps) for cid, ps in (parents or {}).items()
+        }
+        self.children = {
+            cid: set(cs) for cid, cs in (children or {}).items()
+        }
+        self.definitions = dict(definitions or {})
+        self._multiply_defined = set(multiply_defined)
+        self.cycles = list(cycles)
+
+    def get_multiply_defined(self):
+        return self._multiply_defined
 
 
 class _FakeCellError:
@@ -579,11 +622,73 @@ class TestVariablesTemplate:
         assert len(TEMPLATE_VARIABLES) > 0
 
     async def test_all_variables_excludes_template_scaffolding(self, monkeypatch):
-        """H8: "all" reports the notebook's names, not the tool's own imports.
+        """H8/T-V4: "all" reports the notebook's names, not shared kernel state.
 
-        The scratchpad shares its namespace with the template, so the bare
+        The scratchpad shares its namespace with the kernel, so the bare
         ``globals()`` enumeration returned ``json``, ``cm`` and
-        ``get_variables`` for every call — names no cell defines.
+        ``get_variables`` — the tool's own scaffolding — for every call. The
+        allowlist now comes from the notebook graph's cell definitions, so a
+        seeded non-notebook global is excluded too; a context WITHOUT a graph
+        must not fall back to that enumeration (see the fail-closed test).
+        """
+        from marimo_inspection.templates.variables import (
+            build_variables_template,
+        )
+
+        data = await _exec_template(
+            build_variables_template([]),
+            SimpleNamespace(
+                graph=SimpleNamespace(definitions={"my_var": {"0"}})
+            ),
+            monkeypatch,
+            "get_variables",
+            namespace_extra={"my_var": 7, "input": object()},
+        )
+
+        assert set(data["variables"]) == {"my_var"}
+        assert data["variables"]["my_var"] == {"value": "7", "datatype": "int"}
+        # Kernel-injected globals and the template's own scaffolding: absent.
+        for leaked in ("input", "json", "cm", "get_variables", "_is_ui", "_serialize"):
+            assert leaked not in data["variables"]
+
+    async def test_all_variables_intersects_allowlist_with_globals(self, monkeypatch):
+        """H8/T-V4: a definition that has not executed is not reported.
+
+        The allowlist is the notebook graph's definitions intersected with
+        ``globals()``: a cell-defined name with no live binding (never run)
+        must not be invented, and a live binding no cell defines must not leak.
+        """
+        from marimo_inspection.templates.variables import (
+            build_variables_template,
+        )
+
+        data = await _exec_template(
+            build_variables_template([]),
+            SimpleNamespace(
+                graph=SimpleNamespace(
+                    definitions={"executed_name": {"0"}, "never_ran": {"1"}}
+                )
+            ),
+            monkeypatch,
+            "get_variables",
+            namespace_extra={"executed_name": "ok", "kernel_injected": 1},
+        )
+
+        assert set(data["variables"]) == {"executed_name"}
+        assert data["variables"]["executed_name"] == {
+            "value": "ok",
+            "datatype": "str",
+        }
+        assert "never_ran" not in data["variables"]
+        assert "kernel_injected" not in data["variables"]
+
+    async def test_all_variables_fails_closed_without_a_graph(self, monkeypatch):
+        """T-V4: no notebook graph must yield nothing, never a globals() dump.
+
+        Pre-fix, a context that exposed no graph fell back to enumerating
+        ``globals()`` minus the scaffold names — so kernel-injected globals and
+        every notebook name leaked as if they were the notebook's variables.
+        Failing closed is the honest answer; an empty payload cannot mislead.
         """
         from marimo_inspection.templates.variables import (
             build_variables_template,
@@ -594,13 +699,11 @@ class TestVariablesTemplate:
             SimpleNamespace(),
             monkeypatch,
             "get_variables",
-            namespace_extra={"my_var": 7},
+            namespace_extra={"my_var": 7, "input": object()},
         )
 
-        assert set(data["variables"]) == {"my_var"}
-        assert "json" not in data["variables"]
-        assert "cm" not in data["variables"]
-        assert "get_variables" not in data["variables"]
+        assert data["variables"] == {}
+        assert data["tables"] == {}
 
     def test_scaffold_names_are_still_bound_by_the_template(self):
         """The exclusion list must track the template body it describes.
@@ -670,6 +773,125 @@ class TestDependencyGraphTemplate:
 
         code = build_dependency_graph_template()
         assert "ctx.graph" in code
+
+    async def test_reconciles_notebook_cells_with_graph_edges(self, monkeypatch):
+        """T-V3: every ctx.cells cell is reported; real edges survive the merge.
+
+        The kernel graph is a subset of ``ctx.cells`` (a never-run cell has no
+        graph entry on marimo 0.24.x), so iterating ``graph.cells`` alone
+        dropped valid cells. Reconciliation must keep the notebook inventory,
+        merge graph metadata where it exists, and never invent an edge.
+        """
+        from marimo_inspection.templates.dependency import (
+            build_dependency_graph_template,
+        )
+
+        data = await _exec_template(
+            build_dependency_graph_template(),
+            SimpleNamespace(
+                cells=[
+                    _FakeCell("A", name="importer"),
+                    _FakeCell("B", name="reader"),
+                    _FakeCell("C", name="never-run"),
+                ],
+                graph=_FakeGraph(
+                    cells={
+                        "A": _FakeGraphCell(defs={"np"}),
+                        "B": _FakeGraphCell(defs={"arr"}, refs={"np"}),
+                    },
+                    parents={"B": {"A"}},
+                    children={"A": {"B"}},
+                    definitions={"np": {"A"}, "arr": {"B"}},
+                ),
+            ),
+            monkeypatch,
+            "get_dependency_graph",
+        )
+
+        assert [c["cell_id"] for c in data["cells"]] == ["A", "B", "C"]
+        by_id = {c["cell_id"]: c for c in data["cells"]}
+        # The real edge is reported from both sides.
+        assert by_id["A"]["child_cell_ids"] == ["B"]
+        assert by_id["B"]["parent_cell_ids"] == ["A"]
+        assert by_id["A"]["parent_cell_ids"] == []
+        assert by_id["B"]["child_cell_ids"] == []
+        assert by_id["A"]["defs"] == [{"name": "np", "kind": "variable"}]
+        assert by_id["A"]["refs"] == []
+        assert by_id["B"]["refs"] == ["np"]
+        # The graph-less cell keeps the complete shape, empty and un-invented.
+        assert by_id["C"] == {
+            "cell_id": "C",
+            "cell_name": "never-run",
+            "defs": [],
+            "refs": [],
+            "parent_cell_ids": [],
+            "child_cell_ids": [],
+        }
+        assert data["variable_owners"] == {"np": ["A"], "arr": ["B"]}
+
+    async def test_graph_entry_absent_from_ctx_cells_is_not_discarded(
+        self, monkeypatch
+    ):
+        """A graph entry with no ctx.cells match is still reported.
+
+        Graph entries are never silently dropped; its cell name stays empty
+        rather than being invented, and its edges are kept.
+        """
+        from marimo_inspection.templates.dependency import (
+            build_dependency_graph_template,
+        )
+
+        data = await _exec_template(
+            build_dependency_graph_template(),
+            SimpleNamespace(
+                cells=[_FakeCell("A", name="known")],
+                graph=_FakeGraph(
+                    cells={
+                        "A": _FakeGraphCell(defs={"x"}),
+                        "GHOST": _FakeGraphCell(defs={"y"}, refs={"x"}),
+                    },
+                    parents={"GHOST": {"A"}},
+                    children={"A": {"GHOST"}},
+                    definitions={"x": {"A"}, "y": {"GHOST"}},
+                ),
+            ),
+            monkeypatch,
+            "get_dependency_graph",
+        )
+
+        assert [c["cell_id"] for c in data["cells"]] == ["A", "GHOST"]
+        by_id = {c["cell_id"]: c for c in data["cells"]}
+        assert by_id["GHOST"]["cell_name"] == ""
+        assert by_id["GHOST"]["parent_cell_ids"] == ["A"]
+        assert by_id["A"]["child_cell_ids"] == ["GHOST"]
+
+    async def test_iteration_error_is_not_silently_swallowed(self, monkeypatch):
+        """A mid-iteration failure must not truncate the payload silently.
+
+        The removed blanket ``except`` reset the whole inventory when the
+        iteration raised, so a partial read came back as a complete-looking
+        notebook with cells erased. The failure is now loud.
+        """
+
+        class _ExplodingCells:
+            def __iter__(self):
+                yield _FakeCell("A", name="kept")
+                raise RuntimeError("private API drift")
+
+        from marimo_inspection.templates.dependency import (
+            build_dependency_graph_template,
+        )
+
+        with pytest.raises(RuntimeError, match="private API drift"):
+            await _exec_template(
+                build_dependency_graph_template(),
+                SimpleNamespace(
+                    cells=_ExplodingCells(),
+                    graph=_FakeGraph(cells={"A": _FakeGraphCell(defs={"x"})}),
+                ),
+                monkeypatch,
+                "get_dependency_graph",
+            )
 
     def test_prebuilt_template(self):
         """Pre-built TEMPLATE_DEPENDENCY_GRAPH exists."""

@@ -175,6 +175,86 @@ class TestToolRegistration:
             assert "has_console_exception" in description
             assert "total_console_exception_cells" in description
 
+    async def test_get_variables_description_scopes_unfiltered_names(self, mcp_server):
+        """The exposed get_variables description defines both lookup modes.
+
+        The consumer-visible MCP description must say that an unfiltered call
+        returns executed public names defined by notebook cells, and that
+        kernel-injected globals, template scaffolding, private names and
+        unexecuted definitions are excluded; otherwise a caller reads the
+        payload as "every kernel global". It must also describe the filtered
+        mode truthfully: ``variable_names`` inspects specific names visible in
+        the kernel namespace (including an explicitly named kernel-injected
+        global such as ``input``), and it must never promise that private
+        (leading-underscore) names are reachable — a filtered lookup of one
+        reports an empty result.
+        """
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            variables_tool = next(t for t in tools if t.name == "get_variables")
+            # Normalize wrapping: the description is prose, not a line layout.
+            description = " ".join((variables_tool.description or "").lower().split())
+
+            # Unfiltered set: executed notebook-defined public names only.
+            assert "executed public names defined by notebook cells" in description
+            assert "kernel-injected" in description
+            assert "scaffolding" in description
+            assert "private" in description
+            assert "not executed" in description
+
+            # Filtered set: specific kernel-visible names, including an
+            # explicitly named kernel-injected global.
+            assert "input" in description
+            # ...and no false promise that private names can be reached.
+            assert "including private" not in description
+
+    async def test_list_active_notebooks_description_two_channel_binding(
+        self, mcp_server
+    ):
+        """The exposed list_active_notebooks description teaches both channels.
+
+        The consumer-visible MCP description must describe the binding as
+        MCP-session state plus a process-global fallback, scope that fallback
+        correctly (connection-global over stdio, single-client over HTTP/SSE
+        with a ``binding_ambiguous`` refusal on a second session), and must not
+        repeat the stale single-channel instruction to pass both arguments on
+        every call.
+        """
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            list_tool = next(t for t in tools if t.name == "list_active_notebooks")
+            # Normalize wrapping and backticks: the description is prose.
+            description = " ".join(
+                (list_tool.description or "").lower().replace("`", "").split()
+            )
+
+            # The two-channel model: session state plus a process-global
+            # fallback consulted only when that state has nothing bound.
+            assert "process-global fallback" in description
+
+            # stdio: one process serves one client, so argument-less calls
+            # still work across later or fresh MCP sessions.
+            assert "stdio" in description
+            assert "fresh" in description
+
+            # HTTP/SSE: the fallback is scoped to a single client session; a
+            # second session makes argument-less calls fail closed.
+            assert "http/sse" in description
+            assert "binding_ambiguous" in description
+
+            # An explicit session_id/server_url always overrides the binding.
+            assert "explicit" in description
+            assert "always wins" in description
+
+            # The stale single-channel instruction must be gone, together with
+            # the client-internals claims it carried.
+            assert (
+                "pass session_id and server_url explicitly on every call"
+                not in description
+            )
+            assert "fastmcp" not in description
+            assert "per request" not in description
+
     async def test_lint_notebook_signature(self, mcp_server):
         """lint_notebook signature (session_id optional)."""
         async with Client(transport=mcp_server) as client:
