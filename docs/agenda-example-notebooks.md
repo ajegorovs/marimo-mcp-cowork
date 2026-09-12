@@ -5,7 +5,7 @@
 > against `notebooks/`) and where it gets wired so it cannot rot are undecided.
 > **Created:** 2026-09-12
 > **Related:** [`examples/README.md`](../examples/README.md),
-> `AGENTS.md` (§Layout, §Common commands, §Docs map), `notebooks/`,
+> [`project-status.md`](project-status.md), `notebooks/`,
 > `docs/agent-onboarding-demo-mcp.md`, `docs/marimo-version-support.md`.
 
 ## The question
@@ -44,9 +44,9 @@ structural rather than "should we have examples at all":
 
 | id | item | state |
 | --- | --- | --- |
-| T-E1 | Decide the `examples/` vs `notebooks/` contract and write it into `AGENTS.md` §Layout (examples = no consumer deps, not imported by tests, not fixtures). | open |
-| T-E2 | Extend the check command to `uv run marimo check notebooks examples` in `AGENTS.md` §Common commands and the README Development section; decide whether CI runs it. | open |
-| T-E3 | Point the docs map at `examples/` (or explicitly declare it out of the docs map) so it is discoverable from `AGENTS.md`. | open |
+| T-E1 | Decide the `examples/` vs `notebooks/` contract and write it in `examples/README.md` and the consumer-facing README (examples = no consumer deps, not imported by tests, not fixtures). | open |
+| T-E2 | Extend the check command to `uv run marimo check notebooks examples` in the README Development section and canonical test documentation; decide whether CI runs it. | open |
+| T-E3 | Keep `examples/` discoverable from `docs/project-status.md` and the README without adding mutable status to `AGENTS.md`. | open |
 | T-E4 | Review `patterns/cascading_sidebar_controls.py` for placement and naming: is `examples/patterns/` the right shape, and does the pattern name read as a pattern? | open |
 | T-E5 | Decide whether examples are *executed* anywhere (a smoke run that proves the cells run) or lint-only (`marimo check`), given the kernel-vs-frontend split above. | open |
 | T-E6 | Decide the fate of the per-parent memory variant (a `mo.state`-seeded child control) — currently only described in the notes of T-E4's example, not shipped as its own example. | open |

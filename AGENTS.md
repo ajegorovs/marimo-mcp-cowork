@@ -2,6 +2,16 @@
 
 Guidance for human and AI contributors working in this repository.
 
+## Scope of this file
+
+`AGENTS.md` is stable contributor guidance, not a work log or scratchpad. Do
+not add progress notes, dates, test counts, finding states, release state, or
+resolved-item chronology here. Record mutable project state in
+[`docs/project-status.md`](docs/project-status.md), with implementation detail
+in the agenda or roadmap it links. Keep references from this file static: say
+what a document is and when to read it, not whether its current items are open
+or closed.
+
 ## Project purpose
 
 This repo is the **marimo inspection / co-work toolkit**: a standalone,
@@ -18,21 +28,11 @@ Two surfaces over the same kernel:
 2. **FastMCP server** (`create_server`, the `marimo-inspect` console
    script) — exposes the same tooling to AI agents over MCP.
 
-### The MCP tool surface (14 tools)
+### The MCP tool surface
 
-Reads / state: `list_active_notebooks`, `set_active_session`,
-`get_cell_map`, `get_cell_data`, `get_cell_outputs`, `get_variables`,
-`get_dependency_graph`, `get_errors`, `lint_notebook`.
-Writes: `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
-Widget interaction: `set_ui_value` (sets a live UI element's value by
-kernel-global name; accepts no source code). Value shapes are per widget and
-never coerced — the element's own `UIElement[...]` declaration drives a
-pre-flight shape guard (scalar to a `dropdown`/`multiselect`/`range_slider` is
-refused with `reason: value_shape_mismatch` + `did_you_mean`), and the
-element's value is read back afterwards so `status: ok` + `verified: true` means
-the read-back succeeded — `applied: true` if the value moved, `no_change: true`
-if it already held it. A value marimo swallowed (unknown dropdown key: traceback
-on stderr only) returns `status: error`, `reason: value_not_applied`.
+`src/marimo_inspection/server.py` is the registration authority; `README.md`
+keeps the consumer-facing inventory. The surface groups notebook/session reads,
+cell mutation and execution, widget interaction, linting, and lifecycle tools.
 
 `list_active_notebooks` auto-binds the first discovered session (`session_id`
 and `server_url`); every other tool accepts an optional `session_id` and falls
@@ -198,93 +198,44 @@ frontends.
 
 ## Docs map
 
-**Operational — read before acting:**
+Mutable workstream state is indexed in [`docs/project-status.md`](docs/project-status.md).
+The entries below are stable descriptions and read-before-acting pointers.
 
-- `docs/marimo-version-support.md` — the pinned `0.24.x` range and the
-  upgrade validation procedure. **Read before touching marimo deps.**
-- `docs/live-tests.md` — canonical "how we run live kernel tests" doc
-  (commands, boot mechanics, verified current status). **Read before running
-  the live suite.**
-- `docs/bug-hunt-protocol.md` — how we find the silent-payload bugs the suite
-  cannot see (lab recipe, subagent charter, evidence schema, verification and
-  closure rules, adversarial checklist). **Read before hunting bugs, or before
-  triaging a hunt report.**
+**Operational:**
 
-**Design / decision records (current):**
+- `docs/marimo-version-support.md` — supported marimo range and dependency
+  upgrade validation. Read before changing marimo dependencies.
+- `docs/live-tests.md` — live-kernel test mechanics, commands, and canonical
+  current counts. Read before changing or running the live suite.
+- `docs/bug-hunt-protocol.md` — evidence and closure protocol for MCP surface
+  bug hunts. Read before hunting or triaging a hunt report.
 
-- `docs/notebook-backend-protocol.md` — deferred idea (status + trigger to
-  revisit): a `NotebookBackend` seam. Do not implement pre-emptively.
-- `docs/live-test-redesign-plan.md` — the executed redesign plan (verified
-  marimo internals, session-creation handshake, DoD). Read for mechanics.
-- `docs/agenda-live-test-redesign.md` — resolved agenda for that redesign
-  (rationale + design space); closed, no open work.
-- `docs/agenda-remote-marimo-mcp.md` — **OPEN** agenda: what we'd gain (and
-  break) by hosting the marimo kernel (R1) and/or the MCP server (R2) on a remote
-  machine. Read before choosing a consumer's topology or touching
-  `discovery.py`/`--no-token` assumptions.
-- `docs/agenda-bug-hunt-1.md` — **CLOSED** agenda: the 11 hunt-#1 findings,
-  each with the source-verified mechanism, its fix, and the test that fails
-  pre-fix. Read its §Resolved log for the decision trail before touching
-  `tools/mutation.py` payload/guard code, `tools/session.py` binding claims, or
-  the `templates/*` payload shapes it names.
-- `docs/agenda-verification-round.md` — **CLOSED** agenda: the post-hunt
-  end-to-end re-verification of the documented co-work flow through a fresh
-  zero-context agent. Read its final-gate section and evidence pointers before
-  re-running the round — a green suite alone cannot show whether the docs still
-  teach the old behaviour.
-- `docs/agenda-udv-consumer-findings.md` — **Round 1 closed, Round 2 open
-  (T15/T17/T21 resolved)**: consumer-pass findings. §Round 2's open work is T18
-  (a server with no session is invisible), T19 (the recipe gotcha that decides
-  which session a browser or `/sse` stream lands on), T20 (`set_ui_value`
-  cannot confirm a click on a side-effect-only button) and T22 (session
-  provenance is invisible) — read it before re-running a browser verification
-  pass. The T15 prose is historical (execution modes shipped) and T16/T17/T21
-  are closed too. §Resolved log holds the closed decision trail, not open work.
-- `docs/agenda-example-notebooks.md` — **OPEN** agenda: what `examples/` is
-  (its contract against `notebooks/`) and where it gets wired so it cannot rot.
-  Read before adding or moving an example notebook.
-- `docs/custom-widgets.md` — the anywidget components shipped in
-  `src/marimo_inspection/widgets/`. Read before adding or consuming a packaged
-  widget.
+**Design and decisions:**
 
-**Bootstrap / harness integration:**
+- `docs/notebook-backend-protocol.md` — criteria for revisiting a backend seam.
+- `docs/live-test-redesign-plan.md` and `docs/agenda-live-test-redesign.md` —
+  live-suite mechanics and their design trail.
+- `docs/agenda-remote-marimo-mcp.md` — remote kernel/server topology questions.
+- `docs/agenda-bug-hunt-1.md` — source-verified mutation, binding, and payload
+  decisions from the first bug hunt.
+- `docs/agenda-verification-round.md` — zero-context co-work verification method
+  and evidence expectations.
+- `docs/agenda-udv-consumer-findings.md` — consumer-pass findings and ownership.
+- `docs/agenda-example-notebooks.md` — contract and verification policy for
+  consumer-facing examples.
+- `docs/custom-widgets.md` — packaged anywidget behavior and usage.
+- `docs/mcp-upgrade-roadmap.md` — MCP capability roadmap.
 
-- `README.md` §Install and connect an MCP client — the canonical pre-MCP
-  bootstrap path: pinned consumer install, console-script invocation,
-  session-materialization prerequisite, then MCP resources for runtime work.
-- `docs/harness-integration/README.md` — consumer integration index: supported
-  package routes, marimo 0.24.x pin, runtime prerequisites, per-harness notes,
-  and explicitly labelled known gaps. Treat its supported normal route as
-  authoritative; do not turn its `❓` sections into consumer instructions.
-- `docs/harness-integration/deepseek-harness-web-profile.md` — registering the
-  marimo-inspect FastMCP server with the DeepSeek Harness web profile
-  (`~/.dsh/profiles/web/cordis.patch.yml`); the two setup gotchas (bare vs
-  `insert:` patch form, `uv run` vs venv binary) and hardening.
-- `docs/harness-integration/hermes-agent.md` — registering the same server
-  with the Hermes Agent MCP gateway (`hermes config set
-  mcp_servers.marimo-inspect.*`); the stale pre-extraction consumer-path
-  finding, why the venv binary beats `uv run … fastmcp run`, and why
-  `--reload` is off.
+**Bootstrap and demos:**
 
-**Demo runbook (the only one):**
+- `README.md` and `docs/harness-integration/README.md` — canonical installation
+  path and harness index.
+- `docs/harness-integration/deepseek-harness-web-profile.md` and
+  `docs/harness-integration/hermes-agent.md` — harness-specific configuration.
+- `docs/agent-onboarding-demo-mcp.md` — canonical interactive demo runbook.
 
-- `docs/agent-onboarding-demo-mcp.md` — the canonical demo runbook (uses
-  `notebooks/function_plotting_demo.py` in this repo). Its "Prerequisites" section
-  documents the two things an interactive run needs: `uv sync` for the demo's
-  `numpy`/`matplotlib` deps, and a real session (browser launch or the `/sse`
-  handshake — a bare `--headless` launch discovers nothing).
-
-**One-off reports / analyses (historical — do not treat as current truth):**
-
-- `docs/fastmcp-v4-scout-report.md` — initial architecture scout.
-- `docs/marimo-inspection-tools-comparison.md` — source-inspection
-  comparison vs marimo-pair.
-- `docs/marimo-inspect-progress-report.md` — early snapshot (pre-dates the
-  write tools and the 14-tool surface; numbers are stale).
-- `docs/mcp-tools-test-findings.md` — early bug findings (shows old buggy
-  code; historical).
-- `docs/mcp-upgrade-roadmap.md` — upgrade roadmap (partially executed).
-- `docs/session-report-*.md` — per-session integration reports (historical).
+Historical reports under `docs/session-report-*.md` and the named progress,
+comparison, and scout reports are evidence snapshots, not current guidance.
 
 ## Privacy — do not overexpose
 
@@ -323,10 +274,11 @@ Consumers should reference a **tag**, not a moving branch, so a future bump
 can't silently change what they resolve.
 
 - Cut a release tag at the current package version before asking any consumer
-  to depend on this repo: `git tag v0.3.3 && git push origin --tags`.
+  to depend on this repo: `git tag v<version> && git push origin --tags`.
 - Bump `version` in `pyproject.toml` **and** `__version__` in
   `src/marimo_inspection/__init__.py` together (they are duplicated on
   purpose); cut the matching tag in the same change.
-- Consumer form: `uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.3"`
-  (or a `[tool.uv.sources]` entry with `tag = "v0.3.3"`).
+- Consumer form:
+  `uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v<version>"`
+  (or a `[tool.uv.sources]` entry with the matching `tag`).
 - Never move a tag that a consumer already pinned — cut a new one instead.
