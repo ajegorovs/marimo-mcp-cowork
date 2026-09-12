@@ -38,8 +38,10 @@ test = [
 ]
 
 [tool.ruff]
-# Notebook fixtures, the virtualenv, and third-party files are not linted.
-exclude = ["notebooks/", ".venv/"]
+# Notebook fixtures and examples, the virtualenv, and third-party files are not
+# linted: marimo's generated cell shape (bare trailing expression, closing
+# `return`) is correct for a notebook and trips B018/PLR1711 by design.
+exclude = ["notebooks/", "examples/", ".venv/"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
