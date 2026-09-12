@@ -144,6 +144,37 @@ async def switch_notebook(file_path: str) -> dict:
     """Switch default notebook binding. Returns new session_id."""
 ```
 
+**Evidence added 2026-09-12 (second consumer session) — the KERNEL restart is the
+piece worth building first, and cell edits do not need one at all.**
+
+- **The common trigger was never a restart.** A notebook *cell* change applies
+  live through `edit_cell`/`create_cell` + `run_cell`, and `edit_cell` already
+  serializes the edited cell back to the `.py` — so an agent editing a notebook
+  needs no restart. Two restarts in that session were self-inflicted. The real
+  remaining triggers are narrower: a kernel that predates an imported **package
+  src** change (module cache), a new dependency, a wedged kernel, or globals
+  poisoned by a bad cell.
+- **A server relaunch is the wrong instrument when a restart IS needed.** The
+  operator workaround — kill the process, relaunch `marimo edit` — rotates the
+  **skew-protection token**. Every page already open keeps sending the previous
+  one and 401s with `{"error": "Invalid server token"}`
+  (`_server/api/middleware.py:161-172`) until the user hard-reloads; the consumer
+  read that as *"I am not authorised to change anything"*. A **kernel** restart
+  leaves the server process, its token and the frontend's websocket intact, so an
+  open page keeps working. That alone puts `restart_kernel` above
+  `start_notebook`/`stop_notebook` in priority.
+- **DoD must include re-materialization.** `POST /api/kernel/restart_session`
+  needs the `Marimo-Session-Id` header *and* the `Marimo-Server-Token` skew
+  header, and the endpoint only **closes** the session: no replacement kernel
+  spawns until a client reconnects, so an agent-driven restart can leave the
+  server at **0 sessions**. The tool must re-materialize the session itself (a
+  fresh `/sse` handshake, or whatever marimo 0.24.x needs) or fail with an
+  explicit reason — never report success over a sessionless server.
+- **A restart resets execution state.** Every cell goes stale and widget values
+  fall back to their constructor defaults, so the payload should say so: the
+  caller re-runs cells top-to-bottom and re-selects widget state before reading
+  anything back.
+
 ## What NOT to Change
 
 ### Scratchpad Transport
