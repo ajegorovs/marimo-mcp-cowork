@@ -7,7 +7,7 @@ skew token — see AGENTS.md). That assumption is too conservative: a cell
 *created through the MCP write tools* runs fine, so a widget can be
 materialized in-kernel and driven end to end here.
 
-Three behaviours are locked in against a real marimo 0.24 kernel:
+The behaviours below are locked in against a real marimo 0.24 kernel:
 
 * **Reactivity** — `set_ui_value("gate_slider", 7)` moves the element 3 -> 7 AND
   reactively re-runs its dependent cell (derived global 103 -> 107), both cells
@@ -22,6 +22,15 @@ Three behaviours are locked in against a real marimo 0.24 kernel:
   options (`options=[1, 2, 3, 4]`) is keyed by the strings `"1"`..`"4"` and
   stores the number. The scalar `4` is therefore refused with `did_you_mean
   == ["4"]` (never `[4]`), and that exact correction applies the numeric 4.
+* **T20 — a button's value is not the click.** `mo.ui.button` exposes the
+  `on_click` return as `value` and a click counter as its frontend value, so a
+  side-effect-only handler leaves `value` unchanged while the click landed. The
+  counter (0 is the initialization sentinel) is the delivery evidence:
+  `handler_invoked` is `true` when the counter moves to the submitted value,
+  `false` for the sentinel, and `null` when a repeated counter does not change
+  (unknown — even though marimo's runtime does call the handler again). A
+  raising `on_click` is `on_click_failed`, and the handler's partial side
+  effects are acknowledged.
 """
 
 from __future__ import annotations
@@ -84,6 +93,45 @@ _NUMERIC_DROPDOWN_SOURCE = (
 # Reading .value back in a dependent cell proves the stored value is the
 # NUMBER 4: int 4 * 2 == 8, whereas the string "4" * 2 would be "44".
 _NUMERIC_READER_SOURCE = f"gate_number_readback = {_NUMERIC_DROPDOWN}.value * 2"
+
+# --- T20: button click evidence -------------------------------------------
+#
+# A button whose `on_click` only sets state — the consumer's step-button shape.
+# The element's own value is the handler's return (None here), so it never
+# moves; the frontend click counter is the only evidence the click landed.
+_BUTTON = "gate_button"
+_BUTTON_READER = "gate_button_clicks"
+_BUTTON_SOURCE = (
+    "import marimo as mo\n"
+    "gate_clicks, gate_set_clicks = mo.state(0)\n"
+    "\n"
+    "def _on_click(_value):\n"
+    "    gate_set_clicks(gate_clicks() + 1)\n"
+    "\n"
+    f"{_BUTTON} = mo.ui.button(on_click=_on_click, label='go')\n"
+    f"{_BUTTON}"
+)
+_BUTTON_READER_SOURCE = f"{_BUTTON_READER} = gate_clicks()"
+
+# A button whose on_click applies a side effect and THEN raises: a partial side
+# effect that the error report must acknowledge.
+_BOOM_BUTTON = "gate_boom_button"
+_BOOM_BUTTON_READER = "gate_boom_button_clicks"
+_BOOM_BUTTON_SOURCE = (
+    "import marimo as mo\n"
+    "gate_boom_clicks, gate_set_boom_clicks = mo.state(0)\n"
+    "\n"
+    "def _on_click_boom(_value):\n"
+    "    gate_set_boom_clicks(gate_boom_clicks() + 1)\n"
+    "    raise ValueError('boom from on_click')\n"
+    "\n"
+    f"{_BOOM_BUTTON} = mo.ui.button(on_click=_on_click_boom, label='boom')\n"
+    f"{_BOOM_BUTTON}"
+)
+_BOOM_BUTTON_READER_SOURCE = f"{_BOOM_BUTTON_READER} = gate_boom_clicks()"
+
+# A run_button reuses the button component; its frontend value is a counter too.
+_RUN_BUTTON = "gate_run_button"
 
 
 def _inner_value(payload: dict, name: str):
@@ -566,6 +614,215 @@ async def test_set_ui_value_numeric_dropdown_correction_uses_the_string_key(
         after = await get_variables(session_id=session_id, server_url=server_url)
         assert _inner_value(after, _NUMERIC_DROPDOWN) == "4", after
         assert _inner_value(after, "gate_number_readback") == "8", after
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.live
+async def test_set_ui_value_reports_a_side_effect_only_button_click(mutation_server):
+    """T20: the click landed and its side effect applied, though `.value` did not.
+
+    A consumer step button's ``on_click`` only writes a ``mo.state`` value, so
+    the element's own value (the handler's ``None`` return) never moves. The
+    frontend click counter is the delivery evidence: 0 -> 1 proves the update
+    reached the element and marimo invoked the handler, and the side effect is
+    confirmed independently by the dependent reader cell.
+    """
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        created.append(await _make_cell(_BUTTON_SOURCE, server_url, session_id))
+        created.append(await _make_cell(_BUTTON_READER_SOURCE, server_url, session_id))
+
+        before = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(before, _BUTTON_READER) == "0", before
+
+        result = await set_ui_value(
+            _BUTTON, 1, session_id=session_id, server_url=server_url
+        )
+        assert result["status"] == "ok", result
+        assert result["element_type"] == "button", result
+        # The element's own value is the handler's return (None) — unchanged...
+        assert result["applied"] is False, result
+        assert result["value_before"] is None, result
+        assert result["value_after"] is None, result
+        # ...but the click is confirmed by the frontend counter, which the old
+        # payload never reported (the T20 misread).
+        assert result["frontend_value_before"] == 0, result
+        assert result["frontend_value_after"] == 1, result
+        assert result["click_delivered"] is True, result
+        assert result["handler_invoked"] is True, result
+        assert result["side_effects_verified"] is False, result
+        # A button no-change report is NOT "already held this value".
+        assert result.get("no_change") is None, result
+        assert "already held" not in result["message"].lower(), result
+        assert result["next_steps"], result
+
+        after = await get_variables(session_id=session_id, server_url=server_url)
+        # The handler's side effect is confirmed by an independent read.
+        assert _inner_value(after, _BUTTON_READER) == "1", after
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.live
+async def test_set_ui_value_zero_counter_does_not_click_a_button(mutation_server):
+    """T20: submitting 0 is the initialization sentinel — on_click never runs."""
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        created.append(await _make_cell(_BUTTON_SOURCE, server_url, session_id))
+        created.append(await _make_cell(_BUTTON_READER_SOURCE, server_url, session_id))
+
+        result = await set_ui_value(
+            _BUTTON, 0, session_id=session_id, server_url=server_url
+        )
+        assert result["status"] == "ok", result
+        assert result["handler_invoked"] is False, result
+        assert result["click_delivered"] is False, result
+        assert result["side_effects_verified"] is False, result
+        assert "warning" in result, result
+        assert "sentinel" in result["message"].lower(), result
+
+        after = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after, _BUTTON_READER) == "0", after
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.live
+async def test_set_ui_value_repeated_button_counter_is_unknown(mutation_server):
+    """T20: a repeated nonzero counter cannot be verified from the read-back.
+
+    marimo's runtime does invoke the handler again (the side effect grows), but
+    the frontend counter is unchanged, so the tool must report
+    ``handler_invoked: null`` — never ``true`` and never ``false``.
+    """
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        created.append(await _make_cell(_BUTTON_SOURCE, server_url, session_id))
+        created.append(await _make_cell(_BUTTON_READER_SOURCE, server_url, session_id))
+
+        first = await set_ui_value(
+            _BUTTON, 1, session_id=session_id, server_url=server_url
+        )
+        assert first["handler_invoked"] is True, first
+        after_first = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after_first, _BUTTON_READER) == "1", after_first
+
+        # Replay the SAME counter: the frontend value does not change.
+        repeat = await set_ui_value(
+            _BUTTON, 1, session_id=session_id, server_url=server_url
+        )
+        assert repeat["status"] == "ok", repeat
+        assert repeat["handler_invoked"] is None, repeat
+        assert repeat.get("click_delivered") is None, repeat
+        assert repeat.get("no_change") is None, repeat
+        assert "warning" in repeat, repeat
+        assert repeat["side_effects_verified"] is False, repeat
+
+        # The runtime DID invoke the handler again — the point is that the tool
+        # declines to claim it, not that the handler was skipped.
+        after_repeat = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after_repeat, _BUTTON_READER) == "2", after_repeat
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.live
+async def test_set_ui_value_reports_a_raising_on_click_as_an_error(mutation_server):
+    """T20: a button whose on_click raises is an error, and partial effects count.
+
+    marimo catches the exception inside the button's own conversion and writes
+    a distinct stderr marker, so the call would otherwise look like a success.
+    The handler ran (the partial side effect proves it) and raised, so the
+    payload must say so and must not tell the caller to re-send the counter.
+    """
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        created.append(await _make_cell(_BOOM_BUTTON_SOURCE, server_url, session_id))
+        created.append(
+            await _make_cell(_BOOM_BUTTON_READER_SOURCE, server_url, session_id)
+        )
+
+        result = await set_ui_value(
+            _BOOM_BUTTON, 1, session_id=session_id, server_url=server_url
+        )
+        assert result["status"] == "error", result
+        assert result["reason"] == "on_click_failed", result
+        assert result["handler_ran"] is True, result
+        assert result["handler_invoked"] is True, result
+        assert result["side_effects_verified"] is False, result
+        assert "boom from on_click" in result["message"], result
+        # Partial side effects must be acknowledged, not denied.
+        assert "partial" in result["message"].lower(), result
+        assert "Re-send" not in " ".join(result["next_steps"]), result
+        assert "already held" not in result["message"].lower(), result
+
+        # The handler applied its side effect before raising.
+        after = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after, _BOOM_BUTTON_READER) == "1", after
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.parametrize("counter", [1, 2])
+@pytest.mark.live
+async def test_set_ui_value_reports_run_button_click_evidence(mutation_server, counter):
+    """T20: run_button carries the same frontend click-counter semantics.
+
+    marimo reuses the button component for `run_button`, so a nonzero counter
+    is delivered and invokes the conversion exactly like `button`; the payload
+    must report the same counter evidence instead of a bare no-change.
+    """
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        source = (
+            "import marimo as mo\n"
+            f"{_RUN_BUTTON} = mo.ui.run_button(label='run')\n"
+            f"{_RUN_BUTTON}"
+        )
+        created.append(await _make_cell(source, server_url, session_id))
+
+        result = await set_ui_value(
+            _RUN_BUTTON, counter, session_id=session_id, server_url=server_url
+        )
+        assert result["status"] == "ok", result
+        assert result["element_type"] == "run_button", result
+        assert result["frontend_value_before"] == 0, result
+        assert result["frontend_value_after"] == counter, result
+        assert result["click_delivered"] is True, result
+        assert result["handler_invoked"] is True, result
+        assert result["side_effects_verified"] is False, result
+        assert result["next_steps"], result
     finally:
         for cell_id in reversed(created):
             deleted = await delete_cell(

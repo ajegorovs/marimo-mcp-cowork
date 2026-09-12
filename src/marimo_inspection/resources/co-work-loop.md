@@ -166,11 +166,38 @@ element's own value **moved** (`applied: true`, with `value_before` /
 `no_change: true`). Only a read-back that failed reports `verified: false`, with
 a `warning` saying the value is unconfirmed.
 
+### Buttons: an element value is not the interaction
+
+A `button` (and `run_button`) is the exception to "an unchanged value means
+nothing happened". **Its frontend value is a click counter** — `0` during
+initialization, then `1`, `2`, `3`, … for each click — assigned *before* the
+conversion runs, so the counter read-back is the delivery evidence, and a button
+interaction payload never reads "already held this value, nothing changed". The
+element `value` differs by type: a `button`'s is its `on_click` return (`None`
+for a handler that only sets state), while a `run_button` has **no `on_click`** —
+a click sets its value `True` and the runtime resets it to `False` after the
+dependent cells run, so its value may also read unchanged for a click that
+landed:
+
+| Submitted counter | `handler_invoked` | Meaning |
+| --- | --- | --- |
+| `0` | `false` | The initialization sentinel: marimo's conversion returns the initial value (`False` for `run_button`) and processes **no click**. No click was delivered; a `warning` says so. Submit a nonzero, advancing counter instead. |
+| nonzero, counter moved to it | `true` | The update was delivered and marimo ran the button's conversion (`click_delivered: true`, `frontend_value_before` → `frontend_value_after`): for a `button` that invokes its `on_click` handler, for a `run_button` it sets `value` true for the dependent re-run (then resets it `false`). |
+| nonzero, counter already at it | `null` | The counter did not change, so the read-back **cannot tell** whether the click was processed again — even though marimo's runtime does process it. Do not report the click as delivered, and do not report it as skipped. Send a new, higher counter. |
+
+Every button payload carries `side_effects_verified: false`: the read-back only
+sees the element, so the handler's arbitrary side effects (a `mo.state` update,
+a database write, the cells it re-ran) are **never** verified by
+`set_ui_value`. `applied` still reports whether the element's own `value`
+moved, but an unchanged element value on a button is the handler's normal shape,
+not evidence the click was skipped. Confirm the effects with `get_variables`,
+`get_cell_outputs`, and `get_errors` (see §6).
+
 A value the kernel raised on while applying it is `status: error` with the
 kernel's own message in `kernel_message`. The `reason` names the failure
 **site**, read from the kernel traceback's own call site — marimo writes the
-*same* notice for both failure points, so the notice text cannot decide it —
-with the read-back filling in whether the value moved:
+*same* notice for both generic failure points, so the notice text cannot decide
+it — with the read-back filling in whether the value moved:
 
 - `value_not_applied` — the element's conversion rejected the value *before*
   assigning it, so the element is genuinely unchanged (`applied: false`;
@@ -185,11 +212,28 @@ with the read-back filling in whether the value moved:
   - `applied: false` + `no_change: true` — the element already held the
     submitted value, so nothing moved, and the handler still ran and raised
     (marimo's value update has no equality shortcut). Nothing was rejected:
-    re-sending the value cannot help.
+    re-sending the value cannot help. (For a `button`/`run_button`,
+    `no_change` is **not** set: an unchanged element value is the type's normal
+    shape, not a "nothing changed" result.)
 
   In both shapes, fix the handler in the widget's cell and re-run it — do not
   re-send the value, and do not report the interaction as "the widget did not
   change".
+- `on_click_failed` — a **`button`'s** `on_click` handler ran and raised (this
+  reason is attributed only to a `button` clicked with a nonzero counter; a
+  `run_button` has no `on_click`). marimo catches that exception inside the
+  button itself, so the call would otherwise look like a success: the click
+  *was* delivered (`handler_ran: true`, `handler_invoked: true`), and the
+  handler may have applied **partial side effects before it raised**. Nothing
+  was rejected, so re-sending cannot help; fix the handler in the widget's
+  cell, re-run it, then verify the state it was meant to change.
+  `side_effects_verified` is `false`.
+- `ui_update_failed` — stderr carried a UI-update traceback that could **not**
+  be attributed to this element's own handler (for example marimo's button
+  `on_click` marker cannot belong to a `run_button`, to another element, or to
+  a `0` counter). The failure is real but the site is not this target's
+  `on_click`, so the call makes no `handler_invoked` claim: inspect `get_errors`
+  / `console_stderr` and read the element before deciding what happened.
 
 If the traceback is truncated and its call site is unreadable, the read-back
 alone decides (unmoved → `value_not_applied`, moved → `on_change_failed`); a
@@ -199,9 +243,14 @@ rejected update is never reported as a success.
 
 After every write, confirm with `get_variables`, `get_cell_outputs`, and
 `get_errors`. Widget updates and cell runs are queued and flushed on code-mode
-context exit, and the reactive re-runs of *dependent* cells are not awaited by
-the write call — so verify their effects, don't assume them. `get_errors`
-reports `cells[].structured_errors` and `cells[].console_stderr` separately;
+context exit. `set_ui_value` does **not** verify arbitrary downstream effects of
+a widget interaction: in autorun mode the kernel re-runs the dependent cells as
+part of the update, while in lazy mode it only marks them stale and they re-run
+on demand — so verify their effects, don't assume them. For a `button` this is
+especially load-bearing: `handler_invoked` (true/false/null) is the only
+statement the tool can make, and the handler's own side effects are never
+verified by the read-back (see §5). `get_errors` reports `cells[].structured_errors`
+and `cells[].console_stderr` separately;
 top-level `has_errors`/`total_errors` count structured errors only.
 
 A cell is flagged on the console channel only on **real exception evidence**: a

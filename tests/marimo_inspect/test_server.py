@@ -282,6 +282,36 @@ class TestToolRegistration:
             assert "session_id" in props
             assert "server_url" in props
 
+    async def test_set_ui_value_description_scopes_button_click_evidence(
+        self, mcp_server
+    ):
+        """T20: the exposed description teaches the button click contract.
+
+        The consumer-visible description must say that a button's element value
+        is its ``on_click`` return while a ``run_button`` has no ``on_click``
+        and resets to ``False``, that both expose a click counter, that
+        delivery/invocation is reported as ``handler_invoked`` (with the
+        0 sentinel and the unverifiable repeated counter), and that side
+        effects are not verified by the read-back.
+        """
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            tool = next(t for t in tools if t.name == "set_ui_value")
+        description = " ".join((tool.description or "").lower().split())
+
+        assert "button" in description
+        assert "on_click" in description
+        assert "counter" in description
+        assert "handler_invoked" in description
+        assert "side_effects_verified" in description
+        assert "sentinel" in description
+        assert "on_click_failed" in description
+        # button vs run_button are distinguished, not conflated.
+        assert "run_button" in description
+        assert "reset" in description
+        # The corrected downstream-effects claim, not the old blanket one.
+        assert "not awaited" not in description
+
     async def test_run_cell_mode_schema_is_backward_compatible(self, mcp_server):
         """T15: run_cell keeps optional args and offers the three-literal mode.
 

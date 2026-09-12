@@ -92,8 +92,23 @@ def create_server(
         (`dropdown` takes its option key inside a one-element list); a
         mismatched shape is refused with the corrected payload in
         `did_you_mean`, and the element's value is read back so `status: ok`
-        means the widget actually moved. It is a narrow widget tool and
-        accepts NO source code.
+        means the widget actually moved. A `button`/`run_button` is the
+        exception. Both expose a frontend click counter (`0` is the
+        initialization sentinel, for which marimo processes no click), but
+        their element value differs: a `button`'s is its `on_click` return
+        (unchanged when the handler only sets state), while a `run_button` has
+        no `on_click` and its value is set `True` on a click then reset
+        `False` after its dependents run — so either can read unchanged for a
+        click that landed. Those payloads report the counter evidence
+        (`frontend_value_before`/`after`, `click_delivered`) and a tri-state
+        `handler_invoked` — `false` for the sentinel, `true` when the counter
+        moved to the submitted value, `null` when the counter already held it
+        (unknown; never claimed either way) — plus `side_effects_verified:
+        false` (the read-back never verifies the handler's arbitrary side
+        effects; a `button`'s raising `on_click` is `reason: on_click_failed`
+        with `handler_ran: true`, and a marker that cannot be attributed to
+        the target is a generic `ui_update_failed`). It is a narrow widget tool
+        and accepts NO source code.
 
         Lifecycle: `restart_kernel` closes the current kernel and
         re-materializes a fresh one, keeping the server process (and any open

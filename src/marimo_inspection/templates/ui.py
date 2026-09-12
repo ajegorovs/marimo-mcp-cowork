@@ -2,7 +2,7 @@
 
 ``set_ui_value`` is a *narrow* widget-interaction template: it takes a
 variable name that resolves to a live kernel global which is a marimo UI
-element, plus the new value. Three properties make it safe for agent use:
+element, plus the new value. Four properties make it safe for agent use:
 
 1. **No source is evaluated.** The element is looked up by name in
    ``ctx.globals`` and the value is embedded as a JSON literal, so its shape
@@ -18,6 +18,14 @@ element, plus the new value. Three properties make it safe for agent use:
    to the kernel's stderr, the flush still reports success). A second context
    re-reads the element's value afterwards and reports whether it actually
    moved, so ``status: ok`` never means merely "the update was queued".
+4. **The raw frontend value is read too.** marimo assigns the frontend
+   (transport) value *before* converting it, so it moves even for a widget
+   whose own ``.value`` does not — a ``button``'s frontend value is a click
+   counter while its element value is the ``on_click`` return, and a
+   ``run_button`` shares the counter (its value is set ``True`` then reset
+   ``False`` once its dependents run). Reporting the frontend value before and
+   after is what lets the caller see a delivered click whose element value
+   does not move (a handler returning ``None``, or a ``run_button`` reset).
 
 Read the element's value back in the payload, not just the flush.
 """
@@ -44,8 +52,9 @@ def build_set_ui_value_template(variable_name: str, value: Any) -> str:
     Returns:
         Python code string that runs in the scratchpad. It returns a JSON
         payload: an ``ok`` payload carrying ``applied``/``verified`` plus the
-        before/after values, or a structured error when the name is missing,
-        is not a UI element, or the value shape does not match the element.
+        before/after values and the raw frontend value before/after, or a
+        structured error when the name is missing, is not a UI element, or the
+        value shape does not match the element.
     """
     name_json = json.dumps(variable_name)
     value_literal = json.dumps(json.dumps(value))
@@ -197,6 +206,21 @@ def _same(a, b):
             return False
 
 
+def _frontend_value(element):
+    '''The element's raw frontend (transport) value, or None if unreadable.
+
+    marimo's ``UIElement._update`` assigns this BEFORE converting it, so it
+    moves even when the element's own ``.value`` does not. It is the click
+    counter for ``button``/``run_button`` (0 is the initialization sentinel),
+    and the transport payload for any other widget. It lives on the UIElement
+    base class, so reading it is harmless for every element; a missing/odd
+    attribute is reported as None, never raised.'''
+    try:
+        return getattr(element, "_value_frontend", None)
+    except Exception:
+        return None
+
+
 def _option_keys(element):
     '''Option keys the element accepts (dropdown/radio/multiselect), or None.
 
@@ -329,6 +353,7 @@ async def _run():
             })
 
         before = element.value
+        frontend_before = _jsonable(_frontend_value(element))
         ctx.set_ui_value(element, value)
     # Leaving the context flushes the queued update and triggers reactive
     # re-runs. A flush is NOT proof of application: marimo catches a rejected
@@ -336,12 +361,16 @@ async def _run():
 
     verified = True
     readback_error = None
+    frontend_after = None
     try:
         async with cm.get_context() as verify_ctx:
             element_after = verify_ctx.globals.get(name)
             if element_after is None:
                 raise LookupError(json.dumps(name) + " is gone after the update")
             after = element_after.value
+            # The frontend value moved even if `.value` did not: it is the
+            # click counter for a button, so it is the delivery evidence.
+            frontend_after = _jsonable(_frontend_value(element_after))
     except Exception as exc:
         verified = False
         readback_error = type(exc).__name__ + ": " + str(exc)[:300]
@@ -357,6 +386,8 @@ async def _run():
         "applied": (not _same(before, after)) if verified else None,
         "value_before": _jsonable(before),
         "value_after": _jsonable(after) if verified else None,
+        "frontend_value_before": frontend_before,
+        "frontend_value_after": frontend_after if verified else None,
     })
 
 

@@ -109,9 +109,31 @@ tool call is not proof of a correct result.
   while a value the element's `on_change` handler raised on returns `reason:
   on_change_failed` (`handler_ran: true`) — the value WAS accepted, with
   `applied: true` when it moved and `applied: false` + `no_change: true` when
-  the element already held it, so only the callback failed. Read those — never
+  the element already held it (a button does **not** set `no_change` — an
+  unchanged button value is its normal shape), so only the callback failed.
+  Read those — never
   assume the interaction happened.
   `status: ok` means the value was read back
   (`verified: true`: `applied: true` if it moved, `no_change: true` if it
-  already held that value), but dependent cells' reactive re-runs are not
-  awaited.
+  already held that value — a button instead reports `handler_invoked` from the
+  click counter, never `no_change`).
+- **A button's value is not the click.** A `button` exposes the `on_click`
+  return as `value` (unchanged when the handler only sets state); a
+  `run_button` has no `on_click` — a click sets its `value` to `True` and the
+  runtime resets it to `False` after the dependent cells run. Both expose a
+  click **counter** as their frontend value, so either can leave `value`
+  unchanged while the click landed. The payload reports the counter evidence
+  (`frontend_value_before`/`after`, `click_delivered`) and `handler_invoked`:
+  `false` for the `0` initialization sentinel (marimo processes no click for
+  it), `true` when the counter moved to what you sent, and `null` when the
+  counter already held it (a repeated counter is **unknown**; never report it
+  delivered or skipped). `side_effects_verified` is always `false`, and a
+  raising `on_click` is `reason: on_click_failed` with `handler_ran: true`
+  (attributed only to a `button` clicked with a nonzero counter — otherwise the
+  call fails as a generic `ui_update_failed`) — partial side effects may
+  already have been applied. A no-change button report is never evidence the
+  click was dropped.
+- `set_ui_value` does **not** verify arbitrary downstream effects: in autorun
+  mode the kernel re-runs dependent cells as part of the update, in lazy mode
+  it only marks them stale (they re-run on demand). Confirm a handler's effects
+  with `get_variables` / `get_cell_outputs` / `get_errors` either way.

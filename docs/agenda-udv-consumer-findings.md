@@ -1,11 +1,12 @@
 # Agenda (resolved): first-consumer integration findings (udv-echo-process)
 
-> **Status:** **Round 1 closed; Round 2 open (T15/T17/T21 since resolved)** —
+> **Status:** **Round 1 closed; Round 2 open (T15/T17/T20/T21 since resolved)** —
 > T15–T22: added 2026-09-12, extended the same day with T20–T22 from a third
 > pass over that session (§Round 2). Round 2's T15 (execution modes), T17
-> (validation-before-bind) and T21 (row-level staleness) are closed — the
-> per-item state column and the Resolved log carry the decision trail; the
-> prose below records each finding as it was filed, not as it stands today.
+> (validation-before-bind), T20 (truthful button click reporting) and T21
+> (row-level staleness) are closed — the per-item state column and the Resolved
+> log carry the decision trail; the prose below records each finding as it was
+> filed, not as it stands today.
 > T3, round 1's last item, was resolved by review on 2026-09-10: the DSH
 > list-argument mangling it reported does not reproduce, and the defensive types
 > it recorded as "no defensive type landed here" had in fact landed in `8a44b8c`
@@ -72,7 +73,7 @@ test that pins it.
 | T17 | Session identity is unstable without an attached client; an invented id binds but is then "not found" | **resolved — validation-before-bind; see Resolved log** |
 | T18 | A server with no session is invisible, and two headless `marimo edit` launches disagreed about having one | open |
 | T19 | Recipe: which session a browser or `/sse` stream ends up on, and why a page-vs-kernel divergence happens | open |
-| T20 | `set_ui_value` reports `applied: false / no_change: true` for a button whose `on_click` only sets state, though the click fired | open |
+| T20 | `set_ui_value` reports `applied: false / no_change: true` for a button whose `on_click` only sets state, though the click fired | **resolved — frontend click-counter evidence and `handler_invoked`; see Resolved log** |
 | T21 | `get_cell_outputs` carries no staleness signal, so a RESTORED cell output reads as current | **resolved — row-level state and stale flag; see Resolved log** |
 | T22 | A session's provenance is invisible (agent-materialized vs frontend-owned), so a forced takeover is undiscoverable | open |
 
@@ -150,7 +151,8 @@ notebook through the write tools (which serialize back to the file) and reserve
 restarts for what actually needs one, or announce the reload as part of the
 restart.
 
-**T20 — `set_ui_value` cannot report a click on a side-effect-only button.** A
+**T20 — `set_ui_value` cannot report a click on a side-effect-only button (as
+filed 2026-09-12; RESOLVED — see the Resolved log).** A
 consumer notebook used step buttons (`±1`, coarse `±page`) whose handlers only
 write a `mo.state` dict, and every click came back `verified: true,
 applied: false, no_change: true, value_before: null, value_after: null` plus
@@ -474,6 +476,55 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   stdio/HTTP isolation regressions, and a real marimo-kernel probe preserved in
   `.hermes/probes/t17-prefix/`; the packaged fallback reference teaches the
   validation-before-write rule.
+- **T20** ✅ *A button click is reported truthfully* — `set_ui_value` no longer
+  reads an unchanged `button`/`run_button` element value as "already held this
+  value, nothing changed". The two types differ and the payloads say so: a
+  `button`'s element value is its `on_click` return (often `None`), while a
+  `run_button` has no `on_click` — a nonzero counter sets its value `True` and
+  the runtime resets it to `False` after the dependent cells run — and both
+  expose a **frontend** click counter
+  (`_plugins/ui/_core/ui_element.py`: `_update` assigns `_value_frontend`
+  *before* converting), so the template now reports
+  `frontend_value_before`/`after` (JSON-safe) alongside the element value. The
+  handler then classifies: submitting `0` is the initialization sentinel
+  (`_impl/input.py::button._convert_value` returns the initial value without
+  calling `on_click`) → `handler_invoked: false` + warning; a nonzero counter
+  that moved to the submitted value → `handler_invoked: true` with
+  `click_delivered: true`; a counter already at the submitted value →
+  `handler_invoked: null` (unknown — the read-back cannot see a repeated click,
+  even though the runtime does process it), never true or false. Every button
+  payload carries `side_effects_verified: false` and actionable verification
+  guidance, because the element read-back never verifies the handler's
+  arbitrary side effects — including the `on_change` error path, which for a
+  button also omits the generic `no_change`/"already held" framing. A `button`
+  whose `on_click` raises is now caught: the handler's own stderr marker
+  (`on_click handler for button`, a third `_UI_UPDATE_MARKERS` entry and its
+  own `_rejection_site`) yields `status: error`, `reason: on_click_failed`,
+  `handler_ran: true`, `handler_invoked: true`, `side_effects_verified: false`,
+  and a message acknowledging partial side effects may already have been
+  applied — with no re-send or "already held" instruction. That marker is
+  attributed only to a `button` clicked with a nonzero counter (an adversarial
+  review guard, `_attributable_on_click`): a `run_button`, any other element,
+  or a `0` counter instead fails as a truthful generic `ui_update_failed` with
+  no `handler_invoked` claim, so a literal marker or another element's handler
+  can never be misread as this target's `on_click`. The corresponding
+  `verified: true`-but-counter-unreadable branch reports
+  `handler_invoked: unknown` because the counter is unavailable — it never
+  interpolates `(None)` or blames the element read-back. The blanket
+  "dependent re-runs are NOT awaited" claim was corrected in the tool, README,
+  and all three packaged resources to "this call does not verify arbitrary
+  downstream effects" with the autorun/lazy distinction stated. Pinned non-live
+  by 20 `test_ui.py` cases (the frontend read-back, the four button branches,
+  the `on_click` site, the attribution guard, the unreadable-counter branch and
+  the `on_click` error payload), 4 resource-content cases, and a `set_ui_value`
+  description case; live by 6 hermetic cases in
+  `tests/marimo_inspect/live/test_ui.py` — a side-effect-only button click
+  (counter 0 → 1, side effect confirmed by an independent read), the `0`
+  sentinel (no click, no side effect), a repeated counter
+  (`handler_invoked: null` while the runtime *did* run the handler again — the
+  side effect grew), a raising `on_click` (partial side effect applied before
+  the raise), and `run_button` click evidence — all fail pre-fix (pre-fix
+  evidence in `.hermes/probes/t20-prefix/`).
 - **T21** ✅ *Stale or restored output is explicitly labelled* — every
   `get_cell_outputs().cells[]` row now carries the kernel's `runtime_state`
   (the same value exposed by `get_cell_map`) and `output_stale`, true exactly

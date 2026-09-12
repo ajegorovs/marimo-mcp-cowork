@@ -5,7 +5,7 @@ variable name. It deliberately accepts ONLY ``variable_name`` + ``value`` —
 there is no source-code argument, ever. Template tests run against a fake
 code-mode context (no real kernel); handler tests mock the MarimoClient.
 
-Two contracts are locked in here:
+Three contracts are locked in here:
 
 * **No coercion.** The value shape is per widget and never re-wrapped; a shape
   the element cannot accept is refused with ``did_you_mean`` before anything is
@@ -16,6 +16,12 @@ Two contracts are locked in here:
 * **A flush is not proof.** marimo swallows a rejected update (stderr only), so
   the template re-reads the element's value in a second context and the handler
   scans stderr; a rejected update must surface as an error, never as ``ok``.
+* **An element value is not the interaction (T20).** The template also reports
+  the raw frontend value before/after (the button click counter), and the tool
+  turns it into ``handler_invoked`` (true / false / null) plus
+  ``side_effects_verified: false``. The ``0`` initialization sentinel is not a
+  click, a moved nonzero counter proves the handler was invoked, and a repeated
+  counter is *unknown* — never claimed either way.
 """
 
 from __future__ import annotations
@@ -65,6 +71,11 @@ class _FakeCtx:
 
     def set_ui_value(self, element, value):
         self.calls.append((element, value))
+        # marimo's `UIElement._update` assigns the raw *frontend* value BEFORE
+        # converting it, so the frontend value moves even when the conversion
+        # later fails or is swallowed. Mirror that: the frontend assignment is
+        # unconditional, the element value (`apply`) is not.
+        element._value_frontend = value
         if self.apply:
             element._value = value
 
@@ -132,9 +143,13 @@ class _FakeUIElement:
 
     __module__ = "marimo._plugins.ui._impl.input"
 
-    def __init__(self, id: str = "ui-fake-1", value=None):
+    def __init__(self, id: str = "ui-fake-1", value=None, frontend=None):
         self._id = id
         self._value = value
+        # The raw frontend/transport value. For a real widget the constructor
+        # seeds it from the initial value; a button seeds it to 0 (the click
+        # counter). Default to the element value so existing cases round-trip.
+        self._value_frontend = value if frontend is None else frontend
 
     @property
     def value(self):
@@ -430,6 +445,74 @@ class TestSetUiValueTemplate:
         assert payload["value_after"] is None
         assert "RuntimeError" in payload["readback_error"]
 
+    # --- frontend (click-counter) evidence (T20) ----------------------
+
+    async def test_reports_json_safe_frontend_before_and_after(self, monkeypatch):
+        """The raw frontend value is reported before and after the update.
+
+        For a button that is the click counter; marimo assigns it before the
+        conversion runs, so it is the only evidence that a click whose handler
+        leaves the element's own ``.value`` untouched was delivered.
+        """
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _FakeUIElement(value="same", frontend="same")
+        payload, _ = await _run_template_payload(
+            build_set_ui_value_template("w", "next"),
+            {"w": element},
+            monkeypatch,
+        )
+        assert payload["status"] == "ok"
+        assert payload["frontend_value_before"] == "same"
+        assert payload["frontend_value_after"] == "next"
+
+    async def test_frontend_before_is_the_initial_counter_for_a_button(
+        self, monkeypatch
+    ):
+        """A button's frontend value starts at 0 while its own value is None."""
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _FakeUIElement(value=None, frontend=0)
+        payload, _ = await _run_template_payload(
+            build_set_ui_value_template("btn", 1),
+            {"btn": element},
+            monkeypatch,
+        )
+        assert payload["frontend_value_before"] == 0
+        assert payload["frontend_value_after"] == 1
+
+    async def test_unserializable_frontend_value_is_json_safe(self, monkeypatch):
+        """An exotic frontend value must never break the JSON payload."""
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        class _Weird:
+            def __repr__(self) -> str:  # pragma: no cover - repr is what we keep
+                return "<weird frontend>"
+
+        element = _FakeUIElement(value=1, frontend=_Weird())
+        payload, _ = await _run_template_payload(
+            build_set_ui_value_template("w", 2),
+            {"w": element},
+            monkeypatch,
+        )
+        assert payload["status"] == "ok"
+        assert isinstance(payload["frontend_value_before"], str)
+        assert payload["frontend_value_after"] == 2
+
+    async def test_unverified_readback_reports_no_frontend_after(self, monkeypatch):
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _FakeUIElement(value=1, frontend=1)
+        payload, _ = await _run_template_payload(
+            build_set_ui_value_template("w", 2),
+            {"w": element},
+            monkeypatch,
+            raise_on_entry=2,
+        )
+        assert payload["verified"] is False
+        assert payload["frontend_value_before"] == 1
+        assert payload["frontend_value_after"] is None
+
     # --- safe quoting / weird inputs ---------------------------------
 
     async def test_weird_name_and_value_roundtrip(self, monkeypatch):
@@ -542,6 +625,23 @@ ValueError: boom from on_change
 An exception was raised by a UIElement's on_change handler:"""
 
 
+# Real kernel stderr for a BUTTON whose `on_click` handler raises, captured
+# from a marimo 0.24.0 kernel. `button._convert_value` catches the exception
+# ITSELF and writes this notice before the traceback, so `_update` never raises
+# and marimo's generic "on_change handler" notice is never written — the
+# failure is invisible to the on_change/convert markers alone. The traceback
+# quotes the button's own call site, `self._on_click(self._value)`, not
+# `self._on_change(self._value)` / `self._convert_value(value)`.
+_ONCLICK_STDERR = """on_click handler for button (<marimo.ui.button object at 0x7f00>) raised an Exception:
+ Traceback (most recent call last):
+  File ".../marimo/_plugins/ui/_impl/input.py", line 1318, in _convert_value
+    return self._on_click(self._value)
+  File ".../test_notebook.py", line 5, in _on_click
+    raise ValueError('boom from on_click')
+ValueError: boom from on_click
+"""
+
+
 class TestRejectionSite:
     """Which call site marimo raised at, read from its own traceback frames."""
 
@@ -549,6 +649,26 @@ class TestRejectionSite:
         from marimo_inspection.tools.ui import _rejection_site
 
         assert _rejection_site(_HANDLER_STDERR_NO_MOVE) == "on_change"
+
+    def test_on_click_site_is_recognised(self):
+        """A button's on_click failure carries its OWN marker."""
+        from marimo_inspection.tools.ui import _rejection_site
+
+        assert _rejection_site(_ONCLICK_STDERR) == "on_click"
+
+    def test_on_click_is_attributable_only_to_a_nonzero_button(self):
+        """T20 guard: the marker alone never earns an on_click attribution.
+
+        Only a ``button`` clicked with a nonzero counter can own marimo's
+        ``on_click handler for button`` marker; a ``run_button`` (no on_click),
+        any other element type, or the ``0`` sentinel must not.
+        """
+        from marimo_inspection.tools.ui import _attributable_on_click
+
+        assert _attributable_on_click({"element_type": "button"}, 1) is True
+        assert _attributable_on_click({"element_type": "button"}, 0) is False
+        assert _attributable_on_click({"element_type": "run_button"}, 1) is False
+        assert _attributable_on_click({"element_type": "text"}, 1) is False
 
     def test_conversion_site_is_recognised(self):
         from marimo_inspection.tools.ui import _rejection_site
@@ -598,6 +718,31 @@ class TestSetUiValueTool:
             "applied": True,
             "value_before": 3,
             "value_after": 7,
+            "frontend_value_before": 3,
+            "frontend_value_after": 7,
+        }
+        payload.update(overrides)
+        return [json.dumps(payload)]
+
+    def _button_payload(self, **overrides):
+        """A side-effect-only button: element value None -> None, counter moved.
+
+        This is the T20 shape: `mo.ui.button`'s element value is its
+        `on_click` return (None here), while its frontend value is the click
+        counter (0 -> 1).
+        """
+        payload = {
+            "status": "ok",
+            "variable_name": "gate_button",
+            "element_type": "button",
+            "accepted_shape": None,
+            "verified": True,
+            "readback_error": None,
+            "applied": False,
+            "value_before": None,
+            "value_after": None,
+            "frontend_value_before": 0,
+            "frontend_value_after": 1,
         }
         payload.update(overrides)
         return [json.dumps(payload)]
@@ -646,6 +791,168 @@ class TestSetUiValueTool:
         assert result["verified"] is True
         assert result["applied"] is False
         assert result["no_change"] is True
+
+    # --- button click evidence (T20) ----------------------------------
+
+    async def test_button_side_effect_only_click_reports_handler_invoked(self):
+        """T20: the click landed but the element's own value did not move.
+
+        The element value is None -> None (the handler returned nothing), yet
+        the frontend counter moved 0 -> 1, so the update was delivered and
+        marimo's conversion invoked the handler. This must NOT read as
+        "already held this value, nothing changed".
+        """
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(self._button_payload(), stderr=[]):
+            result = await set_ui_value(
+                "gate_button", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "ok"
+        assert result["applied"] is False  # the element's own value did not move
+        assert result["handler_invoked"] is True
+        assert result["click_delivered"] is True
+        assert result["side_effects_verified"] is False
+        assert result["frontend_value_before"] == 0
+        assert result["frontend_value_after"] == 1
+        # The button no-change report is NOT the element no-change report.
+        assert result.get("no_change") is None
+        message = result["message"].lower()
+        assert "already held" not in message
+        assert "nothing changed" not in message
+        assert "on_click" in message
+        assert result["next_steps"]
+        assert any("side effect" in s.lower() for s in result["next_steps"])
+
+    async def test_button_zero_counter_is_the_initialization_sentinel(self):
+        """Submitting 0 is not a click: on_click is never called."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(frontend_value_before=0, frontend_value_after=0),
+            stderr=[],
+        ):
+            result = await set_ui_value(
+                "gate_button", 0, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "ok"
+        assert result["handler_invoked"] is False
+        assert result["click_delivered"] is False
+        assert result["side_effects_verified"] is False
+        assert "warning" in result
+        assert "sentinel" in result["message"].lower()
+        assert "no click was delivered" in result["message"].lower()
+        assert result["next_steps"]
+
+    async def test_button_repeated_counter_is_unknown_not_true_or_false(self):
+        """A repeated nonzero counter cannot be verified from the read-back."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(frontend_value_before=1, frontend_value_after=1),
+            stderr=[],
+        ):
+            result = await set_ui_value(
+                "gate_button", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "ok"
+        assert result["handler_invoked"] is None
+        # No delivery claim either: the counter did not move.
+        assert result.get("click_delivered") is None
+        assert result["side_effects_verified"] is False
+        assert result.get("no_change") is None
+        assert "warning" in result
+        message = result["message"].lower()
+        # Neither claim: the handler did not run, or it definitely did.
+        assert "cannot tell" in message or "cannot verify" in message
+        assert "already held" not in message
+
+    async def test_button_unverified_readback_keeps_handler_invoked_unknown(self):
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(
+                verified=False,
+                applied=None,
+                value_after=None,
+                frontend_value_after=None,
+                readback_error="RuntimeError: kernel read-back unavailable",
+            ),
+            stderr=[],
+        ):
+            result = await set_ui_value(
+                "gate_button", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "ok"
+        assert result["verified"] is False
+        assert result["handler_invoked"] is None
+        assert result["side_effects_verified"] is False
+
+    async def test_button_unreadable_before_counter_is_unknown(self):
+        """Half a counter read-back is not enough to claim invocation."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(frontend_value_before=None, frontend_value_after=1),
+            stderr=[],
+        ):
+            result = await set_ui_value(
+                "gate_button", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "ok"
+        assert result["verified"] is True
+        assert result["handler_invoked"] is None
+        assert result.get("click_delivered") is None
+        assert result["side_effects_verified"] is False
+        assert "warning" in result
+
+    async def test_run_button_repeated_counter_is_unknown_too(self):
+        """run_button shares the button frontend-counter semantics."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(
+                variable_name="gate_run",
+                element_type="run_button",
+                value_before=False,
+                value_after=False,
+                frontend_value_before=2,
+                frontend_value_after=2,
+            ),
+            stderr=[],
+        ):
+            result = await set_ui_value(
+                "gate_run", 2, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "ok"
+        assert result["handler_invoked"] is None
+        assert result["side_effects_verified"] is False
+        assert result.get("no_change") is None
+
+    async def test_raising_on_click_is_reported_as_on_click_failed(self):
+        """A button whose on_click raises is an error, not an ok/no-change."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(), stderr=_ONCLICK_STDERR.splitlines()
+        ):
+            result = await set_ui_value(
+                "gate_button", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "error"
+        assert result["reason"] == "on_click_failed"
+        assert result["handler_ran"] is True
+        assert result["handler_invoked"] is True
+        assert result["side_effects_verified"] is False
+        assert result["kernel_message"] == "ValueError: boom from on_click"
+        assert "boom from on_click" in result["message"]
+        # Partial side effects before the raise must be acknowledged.
+        assert "partial" in result["message"].lower()
+        # Never a re-send instruction, and never an "already held" claim.
+        joined = " ".join(result["next_steps"]).lower()
+        assert "re-send" not in joined
+        assert "already held" not in joined
+        assert "nothing changed" not in result["message"].lower()
 
     async def test_unverified_update_carries_a_warning(self):
         from marimo_inspection.tools.ui import set_ui_value
@@ -811,6 +1118,168 @@ class TestSetUiValueTool:
                 "slider", value=7, session_id=self.SID, server_url=self.URL
             )
         assert result["status"] == "ok"
+
+    # --- on_click attribution guard (T20) -----------------------------
+
+    async def test_on_click_marker_is_not_attributed_to_a_run_button(self):
+        """A run_button has no on_click, so the marker cannot be its failure."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(
+                variable_name="gate_run",
+                element_type="run_button",
+                value_before=False,
+                value_after=False,
+                frontend_value_before=0,
+                frontend_value_after=1,
+            ),
+            stderr=_ONCLICK_STDERR.splitlines(),
+        ):
+            result = await set_ui_value(
+                "gate_run", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "error"
+        assert result["reason"] == "ui_update_failed"
+        assert result["reason"] != "on_click_failed"
+        # Never a false attribution and never a handler_invoked claim.
+        assert "handler_invoked" not in result
+        assert "handler_ran" not in result
+        assert result["side_effects_verified"] is False
+        assert "on_click_failed" not in result["message"]
+
+    async def test_on_click_marker_is_not_attributed_to_another_element(self):
+        """A text field's handler can print the marker text; it is not on_click."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._ok_payload(variable_name="gate_text", element_type="text"),
+            stderr=_ONCLICK_STDERR.splitlines(),
+        ):
+            result = await set_ui_value(
+                "gate_text", "x", session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "error"
+        assert result["reason"] == "ui_update_failed"
+        assert "handler_invoked" not in result
+
+    async def test_on_click_marker_with_a_zero_counter_is_not_attributed(self):
+        """0 is the sentinel: marimo never calls on_click, so the marker is not ours."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(frontend_value_before=0, frontend_value_after=0),
+            stderr=_ONCLICK_STDERR.splitlines(),
+        ):
+            result = await set_ui_value(
+                "gate_button", 0, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "error"
+        assert result["reason"] == "ui_update_failed"
+        assert "handler_invoked" not in result
+
+    # --- truthful verified/counter branches (T20) ---------------------
+
+    async def test_button_verified_but_unreadable_counter_is_unknown(self):
+        """verified but the frontend counter is missing: unknown, never (None)."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(frontend_value_after=None, readback_error=None),
+            stderr=[],
+        ):
+            result = await set_ui_value(
+                "gate_button", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "ok"
+        assert result["verified"] is True
+        assert result["handler_invoked"] is None
+        assert result.get("click_delivered") is None
+        assert result["side_effects_verified"] is False
+        assert "warning" in result
+        # The element read-back succeeded: do not blame it, and never
+        # interpolate the absent readback_error as "(None)".
+        assert "(None)" not in result["message"]
+        assert "(None)" not in result["warning"]
+        assert "read-back failed" not in result["message"]
+        assert "counter" in result["message"].lower()
+
+    async def test_run_button_message_describes_the_false_reset_not_on_click(self):
+        """A run_button has no on_click; its value is reset False after running."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(
+                variable_name="gate_run",
+                element_type="run_button",
+                value_before=False,
+                value_after=False,
+                frontend_value_before=0,
+                frontend_value_after=1,
+            ),
+            stderr=[],
+        ):
+            result = await set_ui_value(
+                "gate_run", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "ok"
+        assert result["handler_invoked"] is True
+        assert result["click_delivered"] is True
+        message = result["message"].lower()
+        assert "reset" in message and "false" in message
+        assert "on_click" not in message
+
+        # Sentinel wording is type-aware too.
+        with self._patch_client(
+            self._button_payload(
+                variable_name="gate_run",
+                element_type="run_button",
+                value_before=False,
+                value_after=False,
+                frontend_value_before=0,
+                frontend_value_after=0,
+            ),
+            stderr=[],
+        ):
+            sentinel = await set_ui_value(
+                "gate_run", 0, session_id=self.SID, server_url=self.URL
+            )
+        assert sentinel["handler_invoked"] is False
+        assert "on_click" not in sentinel["message"].lower()
+
+    async def test_button_on_change_error_has_no_no_change_and_unverified_effects(self):
+        """A button's on_change failure is not the generic 'already held' shape."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._button_payload(applied=False, value_before=None, value_after=None),
+            stderr=_HANDLER_STDERR_NO_MOVE.splitlines(),
+        ):
+            result = await set_ui_value(
+                "gate_button", 1, session_id=self.SID, server_url=self.URL
+            )
+        assert result["status"] == "error"
+        assert result["reason"] == "on_change_failed"
+        assert result["handler_ran"] is True
+        assert result["side_effects_verified"] is False
+        assert result.get("no_change") is None
+        assert "already held" not in result["message"].lower()
+        assert "nothing changed" not in result["message"].lower()
+
+    async def test_nonbutton_on_change_error_keeps_no_change(self):
+        """The generic on_change shape is unchanged for a non-button."""
+        from marimo_inspection.tools.ui import set_ui_value
+
+        with self._patch_client(
+            self._ok_payload(applied=False, value_before=7, value_after=7),
+            stderr=_HANDLER_STDERR_NO_MOVE.splitlines(),
+        ):
+            result = await set_ui_value(
+                "slider", value=7, session_id=self.SID, server_url=self.URL
+            )
+        assert result["reason"] == "on_change_failed"
+        assert result["no_change"] is True
+        assert "already held" in result["message"]
 
     async def test_shape_mismatch_passthrough(self):
         """An in-kernel shape refusal is returned verbatim, not re-wrapped."""

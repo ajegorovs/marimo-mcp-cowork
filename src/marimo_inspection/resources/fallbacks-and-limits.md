@@ -15,9 +15,22 @@ missing from `get_cell_outputs`, inspect the cell's variables instead.
 `set_ui_value` expects a widget-specific JSON value shape; a shape the element
 cannot accept is refused before anything is applied, and the element's own value
 is read back before the call returns (see
-`workflow://marimo-inspect/co-work-loop` §5 for the per-widget shapes). What is
-*not* awaited is the reactive re-run of dependent cells — confirm its effects
-with `get_variables` or `get_cell_outputs`.
+`workflow://marimo-inspect/co-work-loop` §5 for the per-widget shapes). The call
+does **not** verify arbitrary downstream effects: in autorun mode the kernel
+re-runs the dependent cells as part of the update, while in lazy mode it only
+marks them stale — confirm those effects with `get_variables` or
+`get_cell_outputs`.
+
+A `button`/`run_button` is the one shape where the element value is not the
+interaction. A `button`'s `value` is its `on_click` return (unchanged when the
+handler only sets state); a `run_button` has no `on_click` and its `value` is
+set `True` on a click then reset `False` after its dependents run. Both expose a
+frontend click counter that carries the delivery evidence. Those payloads report
+`frontend_value_before`/`after`, `click_delivered`, and a tri-state
+`handler_invoked` (`false` for the `0` initialization sentinel, `true` when the
+counter moved to the submitted value, `null` when it did not change — unknown,
+never claimed either way), plus `side_effects_verified: false`, because the
+handler's arbitrary side effects are outside the read-back.
 
 ## Frontend refresh
 

@@ -163,9 +163,32 @@ value_not_applied` and the kernel's message instead of a misleading success
 `on_change` handler raised on is `reason: on_change_failed` with
 `handler_ran: true` — the value was accepted, with `applied: true` when it moved
 or `applied: false` + `no_change: true` when the element already held it, so
-only the callback failed. The update is flushed and
-triggers reactive re-execution of dependent cells, but that re-run is not
-awaited.
+only the callback failed.
+
+A `button`/`run_button` is the exception. Both expose a click **counter** as
+their frontend value, but their element value differs: a `button`'s value is its
+`on_click` return (unchanged when the handler only sets state), while a
+`run_button` has no `on_click` and its value is set to `True` on a click and
+reset to `False` after the dependent cells run — so either can show an unchanged
+`value` even though the click landed. Those payloads carry the frontend counter
+read (`frontend_value_before`/`after`), `click_delivered`, a tri-state
+`handler_invoked`, and `side_effects_verified: false`. `0` is the
+initialization sentinel (`handler_invoked: false`, no click — marimo processes
+no click for it); a nonzero counter that moved to the submitted value is
+`handler_invoked: true`; a counter that already held the submitted value is
+`null` (unknown — the read-back cannot see a repeated click, so neither
+"delivered" nor "skipped" is reported). A `button` whose `on_click` raises
+returns `reason: on_click_failed` with `handler_ran: true` and acknowledges that
+partial side effects may already have been applied; that marker is attributed
+only to a `button` clicked with a nonzero counter (never a `run_button` or any
+other element), otherwise the call fails as a generic `ui_update_failed` rather
+than mis-attributing it.
+
+The update is flushed and triggers reactive re-execution of dependent cells, but
+`set_ui_value` does not verify arbitrary downstream effects: in autorun mode the
+kernel re-runs dependent cells as part of the update, in lazy mode it only marks
+them stale — confirm a handler's effects (including a side-effect-only button's)
+with the read tools.
 
 ## MCP resources
 

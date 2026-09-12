@@ -270,6 +270,63 @@ class TestResourceContent:
         # The per-cell outcome lists cover the requested targets only.
         assert "requested targets only" in text
 
+    async def test_co_work_loop_documents_button_click_semantics(self, mcp_server):
+        """T20: the loop teaches the button click counter and its evidence.
+
+        A caller must be able to learn, from the packaged loop alone: that a
+        button's element value is its ``on_click`` return while a ``run_button``
+        has no ``on_click`` and resets to ``False`` after its dependents run,
+        that both expose a click counter, that delivery is evidenced by
+        ``handler_invoked`` (true / false / null), that an invocation is never
+        verifiable when the counter did not move, that 0 is the initialization
+        sentinel, and that arbitrary side effects are not verified.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(CO_WORK_URI))
+        text = " ".join(raw.lower().split())
+
+        assert "button" in text
+        assert "on_click" in text
+        assert "counter" in text
+        assert "handler_invoked" in text
+        assert "side_effects_verified" in text
+        assert "sentinel" in text
+        assert "on_click_failed" in text
+        # button vs run_button are distinguished, not conflated.
+        assert "run_button" in text
+        assert "no `on_click`" in text
+        assert "reset" in text
+        # The old blanket "not awaited" claim is corrected, not merely kept.
+        assert "not awaited" not in text
+        assert "autorun" in text
+
+    async def test_co_work_loop_scopes_the_downstream_effects_claim(self, mcp_server):
+        """The loop states this call does not verify arbitrary downstream effects."""
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(CO_WORK_URI))
+        # Drop Markdown emphasis so a bolded "does **not** verify" still matches.
+        text = " ".join(raw.lower().replace("*", "").split())
+        assert "this call does not verify" in text or "does not verify" in text
+
+    async def test_live_safety_documents_the_button_click_contract(self, mcp_server):
+        """T20: the safety rules carry the button read-back truth."""
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(LIVE_SAFETY_URI))
+        text = " ".join(raw.lower().split())
+        assert "on_click" in text
+        assert "handler_invoked" in text
+        assert "side_effects_verified" in text
+        # No blanket "re-runs are not awaited" claim survives here either.
+        assert "not awaited" not in text
+
+    async def test_fallbacks_scopes_the_reactive_rerun_claim(self, mcp_server):
+        """The limits reference must not blanket-claim re-runs are unawaited."""
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().split())
+        assert "not awaited" not in text
+        assert "autorun" in text or "does not verify" in text
+
     async def test_fallbacks_documents_that_bulk_run_is_a_mode_not_a_tool(
         self, mcp_server
     ):

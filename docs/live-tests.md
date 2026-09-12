@@ -1,9 +1,9 @@
 # How we run live kernel tests
 
-> Updated: 2026-09-12 — verified against the current working tree (live suite
+> Updated: 2026-09-13 — verified against the current working tree (live suite
 > green, incl. the hermetic mutation, widget, run-mode (T15), kernel-restart
-> (Wave 3), T-V3 dependency-completeness and T-V4 notebook-only-variables
-> regressions; see [Current status](#current-status)).
+> (Wave 3), T-V3 dependency-completeness, T-V4 notebook-only-variables and
+> T20 button-click regressions; see [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
 > is, the commands, the boot mechanics, and its *actual* status today.
 > The redesign that made this suite green is documented in
@@ -135,7 +135,7 @@ instead: cells created through the write tools *do* run, which is what makes the
 dependency, variables and widget regressions behavioral rather than structural
 (see the hermetic sections below).
 
-## What's tested (51 tests, 11 files in `tests/marimo_inspect/live/`)
+## What's tested (57 tests, 11 files in `tests/marimo_inspect/live/`)
 
 The directory holds 10 test modules plus the shared `conftest.py` harness
 (`MarimoServerManager` + fixtures). Counts are stable as of the run in
@@ -153,7 +153,7 @@ The directory holds 10 test modules plus the shared `conftest.py` harness
 | `test_mutation.py` | 8 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, external-conflict→re-read→recover, and the guard-scope invariants — an unrelated write neither disarms the guard nor blesses a never-read cell, a `get_cell_map` preview records no read baseline, an insert/delete leaves every other cell's `code_hash` unchanged, and `get_cell_map` still reports `changes_since_last` — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
 | `test_run_cell_modes.py` | 5 | **hermetic run-mode regressions**: `mode="all"` on a fresh `/sse` session runs every document cell and registers an unreferenced widget leaf (unreachable via `set_ui_value` before); `mode="descendants"` refuses `graph_unpopulated` on an unregistered target (nothing runs) and resolves target + descendants once `mode="all"` populated the graph; a mixed batch reports `exception` and `cancelled` per cell while the run call itself errored; unknown ids/names and `all` + non-empty `cell_id` abort before anything runs, and the default `mode="cell"` stays single-target; a cell NAME resolves like a cell id (pre-modes compat) for `cell` and `descendants`, with the resolved id reported — see [Hermetic run-mode regressions](#hermetic-run-mode-regressions) below |
 | `test_restart.py` | 3 | **hermetic kernel-restart regressions** (Wave 3): `restart_kernel` closes the kernel and **re-materializes** a replacement via the `/sse` handshake — never reporting success from the POST 200 alone — asserting `re_materialized: true`, one live session under the **expected** id, a genuinely new kernel (the scratchpad's `os.getpid()` changes), execution state reset (a kernel global is gone, every cell `stale`), the change tracker cleared (the first `edit_cell` of a file-parsed cell is `needs_read` again), the server process preserved (the skew token re-read from the page and unchanged), and a following `run_cell(mode="all")` re-running the document green; plus `session_id_stable: false` / `session_verification: "point_in_time"` with a later browser-like reconnect re-keying the id (the old id then answers `Invalid session id`); plus the zero-session/unknown-id guard (`reason: session_not_found`, `state_changed: false`, nothing closed, the live session named) — see [Hermetic kernel-restart regressions](#hermetic-kernel-restart-regressions) below |
-| `test_ui.py` | 9 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; a dropdown built from numeric options stores the number and is addressed by its STRING transport key — sending scalar `4` is refused with `did_you_mean: ["4"]` (never `[4]`, which the kernel itself rejects), and applying `["4"]` moves the element to the numeric 4 (`value_after: 4`, confirmed by a dependent read `4 * 2 == 8`); missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
+| `test_ui.py` | 15 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; a dropdown built from numeric options stores the number and is addressed by its STRING transport key — sending scalar `4` is refused with `did_you_mean: ["4"]` (never `[4]`, which the kernel itself rejects), and applying `["4"]` moves the element to the numeric 4 (`value_after: 4`, confirmed by a dependent read `4 * 2 == 8`); **T20** — a side-effect-only `button` click is reported from the frontend click counter (0 → 1, `handler_invoked: true`) with the `mo.state` side effect confirmed by an independent read, the `0` counter sentinel reports `handler_invoked: false` and clicks nothing, a repeated nonzero counter reports `handler_invoked: null` while the runtime *did* run the handler again, a raising `on_click` returns `reason: on_click_failed` acknowledging the partial side effect it applied before raising, and `run_button` carries the same counter evidence; missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
 do **not** need a kernel, so they live in the fast path (`tests/marimo_inspect/`).
@@ -225,10 +225,10 @@ materialized in-kernel with no browser at all. The reactivity test:
    `value_before`/`value_after` = 3/7, the widget is `7`, **and the dependent
    cell re-ran** to `107`, with both cells `idle`.
 
-The remaining eight tests cover the dropdown contract (including the
-numeric-option string key), the rejection paths, the `on_change` failure classes
-and the cell-private name rule — they exist because a flush is not proof of
-application (`set_ui_value` in `tools/ui.py`):
+The remaining fourteen tests cover the dropdown contract (including the
+numeric-option string key), the rejection paths, the `on_change` failure classes,
+the T20 button-click evidence and the cell-private name rule — they exist
+because a flush is not proof of application (`set_ui_value` in `tools/ui.py`):
 
 | Test | Locked-in behaviour |
 | --- | --- |
@@ -239,6 +239,12 @@ application (`set_ui_value` in `tools/ui.py`):
 | `on_change` raises, value moved | `status: error`, `reason: on_change_failed`, `applied: true`, 1 → 5 confirmed by an independent read — only the callback failed |
 | `on_change` raises, value already held | `status: error`, `reason: on_change_failed` with `applied: false` + `no_change: true` + `handler_ran: true` — the read-back is unmoved, and only the traceback's call site (`self._on_change(self._value)` vs `self._convert_value(value)`) separates this from a rejected conversion, because marimo writes the **same** notice for both |
 | scalar `4` → numeric-options `dropdown` | the element is keyed by the strings `"1"`..`"4"` and stores the number, so the scalar is refused with `did_you_mean: ["4"]` (`value_shape_mismatch`, nothing moved); the int `[4]` a caller would naively try is *rejected by the kernel* (`value_not_applied`, unmoved), and only `["4"]` applies — verified read-back to the numeric `4`, with the dependent cell reading `4 * 2 == 8` (not the string `"44"`) |
+
+| side-effect-only `button` click | **T20** — the click lands but the element's own value does not move (it is the handler's `None` return). `status: ok` with `applied: false`, `value_before`/`value_after` `None`, yet `frontend_value_before`/`after` = 0/1, `click_delivered: true`, `handler_invoked: true`, `side_effects_verified: false`, and **no** `no_change`; the `mo.state` side effect is confirmed by an independent read of the dependent reader cell (the old payload said "already held this value", the T20 misread) |
+| `button` counter `0` | the initialization sentinel: `handler_invoked: false`, `click_delivered: false`, a `warning`, and the reader cell still `0` — marimo's button conversion returns the initial value for 0 and never calls `on_click` |
+| repeated `button` counter | `handler_invoked: null`, `click_delivered: null`, no `no_change`, a `warning` — the counter did not change, so the read-back cannot say whether the handler ran again. The runtime *did* invoke it (the reader cell grew 1 → 2), which is exactly the claim the tool declines to make |
+| `button` `on_click` raises | `status: error`, `reason: on_click_failed`, `handler_ran: true`, `handler_invoked: true`, `side_effects_verified: false`; the message acknowledges the partial side effect the handler applied before raising (reader cell `1`), and no next step tells the caller to re-send the counter |
+| `run_button` click evidence | `run_button` reuses the button component, so a nonzero counter reports the same counter evidence (`frontend_value_before`/`after` = 0/counter, `click_delivered: true`, `handler_invoked: true`, `side_effects_verified: false`) instead of a bare no-change |
 
 `set_ui_value`'s failure *site* therefore comes from the kernel traceback and its
 `applied`/`no_change` from the read-back; a truncated traceback with no readable
@@ -372,17 +378,17 @@ file, failed re-materialization, a foreign single session that is never adopted,
 an unknown-outcome transport failure, tracker reset, token-rotation honesty) are
 unit-tested without a kernel in `tests/marimo_inspect/test_lifecycle.py`.
 
-## Current status (verified 2026-09-12)
+## Current status (verified 2026-09-13)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (502 tests collected in total):
+split (533 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 51 passed, 451 deselected
+=> 57 passed, 476 deselected
 
 uv run pytest -m "not live"
-=> 451 passed, 51 deselected
+=> 476 passed, 57 deselected
 ```
 
 (Elapsed times are machine-dependent and not part of the contract; the split and
@@ -392,7 +398,7 @@ The widget regressions alone (they boot one isolated server per test):
 
 ```text
 uv run pytest tests/marimo_inspect/live/test_ui.py -m live
-=> 9 passed
+=> 15 passed
 ```
 
 The run-mode regressions alone (one purpose-built notebook per test):
