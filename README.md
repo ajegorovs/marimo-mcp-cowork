@@ -53,13 +53,16 @@ marimo-inspect --transport stdio
 
 ## MCP tools
 
-14 tools over the same live kernel.
+15 tools over the same live kernel.
 
 Reads / state: `list_active_notebooks`, `set_active_session`,
 `get_cell_map`, `get_cell_data`, `get_cell_outputs`, `get_variables`,
 `get_dependency_graph`, `get_errors`, `lint_notebook`.
 Writes: `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
 Widget interaction: `set_ui_value`.
+Lifecycle: `restart_kernel` (closes the kernel and re-materializes a fresh one;
+the server process survives, but the confirmed session id is point-in-time —
+`session_id_stable: false`).
 
 `list_active_notebooks` discovers sessions and auto-binds the first one
 (`session_id` **and** `server_url`); every other tool falls back to that
@@ -193,7 +196,7 @@ async with Client(transport=create_server()) as client:
 FastMCP 4.0.3 resource annotations only carry
 `audience`/`priority`/`lastModified`, so read-only intent is carried by tags +
 description; tool annotations do support `readOnlyHint`/`destructiveHint`/
-`idempotentHint`/`openWorldHint` (used by `set_ui_value`).
+`idempotentHint`/`openWorldHint` (used by `set_ui_value` and `restart_kernel`).
 
 ## Output limits
 

@@ -238,3 +238,39 @@ before merging cells. Then repeat steps 2–7 as the notebook evolves.
 are refused (`reason: unsupported_argument`), never accepted-and-ignored. Walk
 `cells[].parent_cell_ids` / `cells[].child_cell_ids` for a neighbourhood, and
 `cells[].cell_name` matches the name `get_cell_map` reports.
+
+## 8. Restart the kernel — the last resort, not a reflex
+
+`restart_kernel` closes the current kernel and re-materializes a fresh one
+through the frontend's `/sse` handshake, keeping the server process alive (so an
+open page keeps working). Use it only when the **kernel** is the problem: an
+imported package's source changed (module cache), a new dependency was
+installed, the kernel is wedged, or globals are poisoned.
+
+A **cell edit never needs one.** `edit_cell` + `run_cell` apply live, and
+`edit_cell` already serializes the edit back to the `.py`. If a change did not
+seem to take effect, re-read first (`get_cell_map` / `get_cell_data`) — a stale
+cell marked `output_stale` is a re-run, not a restart.
+
+What it costs: all execution state is discarded (kernel globals, module caches,
+widget values back at their constructor defaults), every cell becomes `stale`
+until re-run, and a cell created in-session can come back under a different cell
+id. The tool clears the change tracker, so every cell reports `needs_read` again
+until re-read, and it reports `cell_ids_stable: false` — never reuse a cached
+cell id. Then re-run what you need: `run_cell(mode="all")` re-executes the whole
+document, and `set_ui_value` re-applies widget values.
+
+The endpoint needs the server's skew token, which the tool reads from the served
+page (`GET /`); with marimo auth on the session census is refused outright, so
+it returns `reason: auth_required` without closing anything (whether the page is
+also gated so no token can be read is server-config dependent and is not
+assumed). A restart is never reported as success without the expected session id
+confirmed live afterwards — `session_not_rematerialized` or `server_sessionless`
+means the kernel is closed and no usable session was confirmed (the server may be
+at zero sessions).
+
+That confirmation is **point-in-time**: the payload reports
+`session_id_stable: false` and `session_verification: "point_in_time"`, because
+the tool closes its own `/sse` stream and the session is then an ordinary orphan
+— a later browser reconnect can re-key it and the server's session TTL can reap
+it. On `Invalid session id`, re-run `list_active_notebooks` and re-bind.

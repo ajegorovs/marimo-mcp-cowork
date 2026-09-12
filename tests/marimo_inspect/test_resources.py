@@ -273,7 +273,7 @@ class TestResourceContent:
     async def test_fallbacks_documents_that_bulk_run_is_a_mode_not_a_tool(
         self, mcp_server
     ):
-        """T15: bulk execution stays on the fixed 14-tool surface.
+        """T15: bulk execution stays on the fixed tool surface.
 
         There is no separate run-all tool; the packaged reference must say the
         capability lives in ``run_cell(mode="all")`` and that ``descendants``
@@ -284,12 +284,59 @@ class TestResourceContent:
         text = " ".join(raw.lower().split())
 
         assert 'mode="all"' in text
-        assert "14-tool" in text
+        assert "15-tool" in text
         assert "graph_unpopulated" in text
         # Names resolve, and a null errors channel is a stated limit.
         assert "id or cell name" in text
         assert "errors_readable" in text
         assert "unverified_cell_ids" in text
+
+    async def test_fallbacks_documents_kernel_restart_and_its_cost(self, mcp_server):
+        """Wave 3: the lifecycle section names the tool, its cost, and the token.
+
+        The reference must (a) stop claiming there is no kernel-restart tool,
+        (b) state what a restart costs (execution state, stale cells, re-keyed
+        ids, cleared baselines), (c) name the token acquisition path and its
+        refusal, (d) promise that a sessionless server is never reported as
+        success, and (e) state that the verified session id is point-in-time,
+        not durable (a later reconnect/TTL can invalidate it).
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().split())
+
+        assert "restart_kernel" in text
+        assert "no kernel-restart tool" not in text
+        assert "re-materialize" in text
+        assert "stale" in text
+        assert "needs_read" in text
+        assert "<marimo-server-token" in text
+        assert "auth_required" in text
+        assert "skew_token_unavailable" in text
+        assert "server_sessionless" in text
+        assert "never reported as success" in text
+        # No durable-id claim: the point-in-time contract and the TTL caveat.
+        assert "session_id_stable" in text
+        assert "point_in_time" in text
+        assert "ttl" in text
+        assert "never adopted" in text
+
+    async def test_co_work_loop_documents_when_a_restart_is_warranted(self, mcp_server):
+        """The loop says when a kernel restart is (and is not) the instrument."""
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(CO_WORK_URI))
+        text = " ".join(raw.lower().split())
+
+        assert "restart_kernel" in text
+        # A cell edit never needs one — the consumer's own self-inflicted restart.
+        assert "cell edit" in text
+        assert 'run_cell(mode="all")' in text
+        # The token path, and the auth-on refusal it produces.
+        assert "skew token" in text
+        assert "auth_required" in text
+        # And that the confirmed id is point-in-time, not durable.
+        assert "session_id_stable" in text
+        assert "point_in_time" in text
 
     async def test_fallbacks_documents_one_main_output_limit(self, mcp_server):
         async with Client(transport=mcp_server) as client:

@@ -9,6 +9,25 @@ These tools act on a **live kernel**. Treat every write as production.
 `edit_cell` and `run_cell` mutate the session the server is attached to. The
 `.py` file on disk is reconciled by marimo separately. There is no undo.
 
+## A kernel restart invalidates every id and read baseline
+
+`restart_kernel` discards all execution state: kernel globals, imported-module
+caches and widget values are gone, and a cell created in-session can come back
+under a **different cell id**. The tool therefore clears the change tracker —
+every cell reports `needs_read` again until you re-read it with `get_cell_data`
+— and reports `cell_ids_stable: false`, so a cached cell id or a pre-restart
+read baseline must not be reused. Re-read the notebook (`get_cell_map`), re-run
+what you need (`run_cell(mode="all")` re-runs the document), and re-apply widget
+values with `set_ui_value` before trusting anything you read back. The notebook
+file and the server process itself survive.
+
+The verified session id is **point-in-time, not durable**: the tool closes its
+own `/sse` stream, so the re-materialized session is an ordinary orphan — a later
+browser reconnect can re-key it to a new id and the server's session TTL can
+reap it. The payload says so (`session_id_stable: false`,
+`session_verification: "point_in_time"`); if a later call answers
+`Invalid session id`, re-run `list_active_notebooks` and re-bind.
+
 ## `mode="all"` re-runs every document cell
 
 `run_cell(mode="all")` queues **every document cell** in the notebook — not only

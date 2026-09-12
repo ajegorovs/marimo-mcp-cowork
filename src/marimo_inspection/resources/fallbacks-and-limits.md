@@ -31,10 +31,63 @@ or other browser tooling.
 
 ## Server and kernel lifecycle
 
-Launching, restarting, or stopping the notebook server is a local/operator
-action — there is no MCP tool for it, and no kernel-restart tool. A live
-kernel also caches imported modules, so a package source change needs a
-server/kernel restart to take effect.
+Launching or stopping the notebook **server** is a local/operator action — there
+is no MCP tool for it. The **kernel** is different: `restart_kernel` closes the
+current kernel and re-materializes a fresh one through the frontend's `/sse`
+handshake, so the window in which the server is at zero sessions is closed
+again; the server process — and therefore its skew-protection token, any
+already-open page and its websocket — survives the restart. Use it when the
+kernel itself is the problem: an imported package's source changed (module
+cache), a new dependency was installed, the kernel is wedged, or globals are
+poisoned. A cell edit never needs one: `edit_cell` + `run_cell` apply live, and
+`edit_cell` already serializes the edit back to the `.py`.
+
+What it costs, stated in the payload rather than implied:
+`execution_state_reset` and `widget_values_reset` are true (kernel globals,
+module caches and widget values are gone — values are back at their constructor
+defaults), every cell is `stale` until re-run, and `cell_ids_stable` is `false`
+because a cell created in-session can come back under a **different cell id**.
+The change tracker is cleared (`change_tracking_cleared: true`), so every cell
+reports `needs_read` again until `get_cell_data` re-reads it — cached ids and
+code hashes from before the restart are not a valid basis for anything. The
+notebook file on disk survives; the server process survives.
+
+A success is **point-in-time, not durable**: the payload reports
+`session_id_stable: false` and `session_verification: "point_in_time"`. The tool
+opens its own `/sse` stream, verifies the expected id in `/api/sessions`, then
+closes that stream — the re-materialized session is an ordinary orphan, so a
+later browser reconnect can re-key it to a new id and the server's configured
+session **TTL** can reap it. If a later call answers `Invalid session id`,
+re-run `list_active_notebooks` and re-bind; do not treat the id as stable.
+
+The restart endpoint requires the `Marimo-Server-Token` skew header. This
+surface reads it from the server's own page: `GET /` renders a
+`<marimo-server-token>` element whose `data-token` attribute carries it — the
+same value the frontend sends. The token is server-process scoped, so it is
+stable across a kernel restart and changes only when the server process is
+relaunched —
+`skew_token_rotated` is a *measurement*, not an inference, and is `null` when
+skew protection is off or the rotation could not be measured;
+`server_process_preserved` is `null` in those same cases and `false` when the
+token was observed to rotate. The token and its fingerprint are never exposed in
+a payload. A POST the endpoint refuses 401 is reported with
+`reason: skew_token_unavailable` and states whether a token was read and tried;
+if the endpoint returns 403 it is `reason: edit_required` (the endpoint is
+served in `edit` mode only). If the session census itself is refused with 401
+the call fails up front with `reason: auth_required`, and **nothing is closed**.
+
+A restart is **never reported as success over a sessionless server**. The tool
+refuses up front when the id is not live (`reason: session_not_found`, nothing
+changed and `state_changed: false`), and if the kernel *was* closed but a
+session with the **expected id** could not be confirmed afterwards it reports
+`session_not_rematerialized` — or `server_sessionless` when the server is left
+at zero sessions — with `state_changed: true`. A lone *different* live id is
+never adopted as the re-materialized session. A transport failure on the restart
+POST leaves the outcome *unknown*: `state_changed`/`restarted` are `null` and
+the message says so, rather than claiming nothing was closed. When a confirmed
+session is later gone, every tool call on that session fails (`Invalid session
+id`): re-materialize a session (open the notebook in a browser, or run the
+`/sse` handshake) and re-bind before continuing.
 
 ## A session is not a run
 
@@ -45,7 +98,7 @@ accurately, not as a bug.
 
 ## Bulk execution is a `run_cell` mode, not a tool
 
-The advertised 14-tool surface is fixed: there is no separate run-all tool.
+The advertised 15-tool surface is fixed: there is no separate run-all tool.
 Bulk execution lives in `run_cell(mode="all")`, which queues every document cell
 and is the way to execute an unreferenced cell (and register the widgets it
 defines) on a fresh, never-instantiated session. `run_cell`'s `cell_id` is a
@@ -85,7 +138,9 @@ An in-process lint (`lint_notebook`, `marimo check`) executes nothing either.
 A **browser** client instantiates the session by opening the notebook, which is
 what runs the cells, and its controls only hold values from then on. A session
 created with the `/sse` handshake is not instantiated: `/api/kernel/instantiate`
-is token-gated and not exposed under `--no-token`. Without a browser, the write
+is skew-token-gated, and this surface deliberately does not call it — the token
+is served in the page HTML, but a tool sold as a **reset** must not execute
+arbitrary notebook code. Without a browser, the write
 tools are the route — cells created or run by `create_cell` / `run_cell` do
 execute, together with their dependents, and `run_cell(mode="all")` executes the
 whole document (see "Bulk execution is a `run_cell` mode, not a tool" above).

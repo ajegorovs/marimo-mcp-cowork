@@ -70,6 +70,7 @@ EXPECTED_TOOLS = [
     "run_cell",
     "delete_cell",
     "set_ui_value",
+    "restart_kernel",
 ]
 
 
@@ -92,7 +93,7 @@ class TestToolRegistration:
         """Exactly the expected number of tools are registered."""
         async with Client(transport=mcp_server) as client:
             tools = await client.list_tools()
-            assert len(tools) == 14
+            assert len(tools) == 15
 
     async def test_tools_have_descriptions(self, mcp_server):
         """All tools have non-empty descriptions."""

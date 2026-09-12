@@ -13,7 +13,7 @@ ledger.
 
 | Area | Current state | Canonical detail |
 | --- | --- | --- |
-| MCP upgrade roadmap | Kernel lifecycle work is in progress | [`mcp-upgrade-roadmap.md`](mcp-upgrade-roadmap.md) |
+| MCP upgrade roadmap | `restart_kernel` is implemented; notebook-server start/stop/switch remain operator-owned | [`mcp-upgrade-roadmap.md`](mcp-upgrade-roadmap.md) |
 | Consumer findings | Round 2 has remaining session/discovery and widget-verification gaps | [`agenda-udv-consumer-findings.md`](agenda-udv-consumer-findings.md) |
 | Example notebooks | Contract and verification wiring remain open | [`agenda-example-notebooks.md`](agenda-example-notebooks.md) |
 | Remote topology | Design investigation remains open | [`agenda-remote-marimo-mcp.md`](agenda-remote-marimo-mcp.md) |

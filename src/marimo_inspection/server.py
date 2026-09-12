@@ -93,7 +93,29 @@ def create_server(
         mismatched shape is refused with the corrected payload in
         `did_you_mean`, and the element's value is read back so `status: ok`
         means the widget actually moved. It is a narrow widget tool and
-        accepts NO source code.""",
+        accepts NO source code.
+
+        Lifecycle: `restart_kernel` closes the current kernel and
+        re-materializes a fresh one, keeping the server process (and any open
+        frontend page) alive. Use it only when the kernel itself is the
+        problem — an imported package's source changed, a new dependency was
+        installed, the kernel is wedged, or globals are poisoned. A notebook
+        cell edit NEVER needs one: `edit_cell` + `run_cell` apply live. The
+        restart discards all execution state (kernel globals, widget values),
+        makes every cell stale, and can re-key a cell created in-session to a
+        different cell id, so re-read the notebook and re-run cells
+        afterwards; the change tracker is cleared, so cells report `needs_read`
+        again. Success is point-in-time (`session_id_stable: false`,
+        `session_verification: point_in_time`): the tool closes its own SSE
+        stream, so a later browser reconnect can re-key the session and a
+        configured session TTL can reap it — on `Invalid session id`, re-run
+        `list_active_notebooks` and re-bind. It never reports success without
+        confirming the expected session came back — `session_not_rematerialized`
+        / `server_sessionless` mean the kernel was closed and no usable session
+        was confirmed (the server may be at zero sessions). A transport failure
+        on the restart POST reports `state_changed: null` (outcome unknown),
+        and a 403 is `edit_required` (the endpoint is served in `edit` mode
+        only).""",
     )
 
     # Register tools
@@ -119,6 +141,7 @@ def _register_tools(mcp: FastMCP) -> None:
         get_variables,
         lint_notebook,
         list_active_notebooks,
+        restart_kernel,
         run_cell,
         set_ui_value,
     )
@@ -150,6 +173,19 @@ def _register_tools(mcp: FastMCP) -> None:
             "openWorldHint": False,
         }
     )(set_ui_value)
+    # restart_kernel closes the session's kernel and discards all execution
+    # state (globals, widget values, module caches), so it is annotated
+    # non-read-only, destructive, non-idempotent (a second restart is a second
+    # reset, even though it succeeds), and not open-world (it acts on one
+    # already-bound local session).
+    mcp.tool(
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )(restart_kernel)
 
 
 def _register_resources(mcp: FastMCP) -> None:

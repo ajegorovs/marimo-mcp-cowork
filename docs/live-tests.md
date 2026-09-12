@@ -1,9 +1,9 @@
 # How we run live kernel tests
 
 > Updated: 2026-09-12 — verified against the current working tree (live suite
-> green, incl. the hermetic mutation, widget, run-mode (T15), T-V3
-> dependency-completeness and T-V4 notebook-only-variables regressions; see
-> [Current status](#current-status)).
+> green, incl. the hermetic mutation, widget, run-mode (T15), kernel-restart
+> (Wave 3), T-V3 dependency-completeness and T-V4 notebook-only-variables
+> regressions; see [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
 > is, the commands, the boot mechanics, and its *actual* status today.
 > The redesign that made this suite green is documented in
@@ -135,9 +135,9 @@ instead: cells created through the write tools *do* run, which is what makes the
 dependency, variables and widget regressions behavioral rather than structural
 (see the hermetic sections below).
 
-## What's tested (48 tests, 10 files in `tests/marimo_inspect/live/`)
+## What's tested (51 tests, 11 files in `tests/marimo_inspect/live/`)
 
-The directory holds 9 test modules plus the shared `conftest.py` harness
+The directory holds 10 test modules plus the shared `conftest.py` harness
 (`MarimoServerManager` + fixtures). Counts are stable as of the run in
 [Current status](#current-status).
 
@@ -152,6 +152,7 @@ The directory holds 9 test modules plus the shared `conftest.py` harness
 | `test_errors.py` | 5 | template returns consistent, typed error summary; stable across repeated runs — plus **console-channel regressions**: a UI-handler traceback marimo never records structurally is flagged through `console_stderr` (`has_console_exception: true`), and a `print()` lands in `get_cell_outputs.stdout` |
 | `test_mutation.py` | 8 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, external-conflict→re-read→recover, and the guard-scope invariants — an unrelated write neither disarms the guard nor blesses a never-read cell, a `get_cell_map` preview records no read baseline, an insert/delete leaves every other cell's `code_hash` unchanged, and `get_cell_map` still reports `changes_since_last` — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
 | `test_run_cell_modes.py` | 5 | **hermetic run-mode regressions**: `mode="all"` on a fresh `/sse` session runs every document cell and registers an unreferenced widget leaf (unreachable via `set_ui_value` before); `mode="descendants"` refuses `graph_unpopulated` on an unregistered target (nothing runs) and resolves target + descendants once `mode="all"` populated the graph; a mixed batch reports `exception` and `cancelled` per cell while the run call itself errored; unknown ids/names and `all` + non-empty `cell_id` abort before anything runs, and the default `mode="cell"` stays single-target; a cell NAME resolves like a cell id (pre-modes compat) for `cell` and `descendants`, with the resolved id reported — see [Hermetic run-mode regressions](#hermetic-run-mode-regressions) below |
+| `test_restart.py` | 3 | **hermetic kernel-restart regressions** (Wave 3): `restart_kernel` closes the kernel and **re-materializes** a replacement via the `/sse` handshake — never reporting success from the POST 200 alone — asserting `re_materialized: true`, one live session under the **expected** id, a genuinely new kernel (the scratchpad's `os.getpid()` changes), execution state reset (a kernel global is gone, every cell `stale`), the change tracker cleared (the first `edit_cell` of a file-parsed cell is `needs_read` again), the server process preserved (the skew token re-read from the page and unchanged), and a following `run_cell(mode="all")` re-running the document green; plus `session_id_stable: false` / `session_verification: "point_in_time"` with a later browser-like reconnect re-keying the id (the old id then answers `Invalid session id`); plus the zero-session/unknown-id guard (`reason: session_not_found`, `state_changed: false`, nothing closed, the live session named) — see [Hermetic kernel-restart regressions](#hermetic-kernel-restart-regressions) below |
 | `test_ui.py` | 9 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; a dropdown built from numeric options stores the number and is addressed by its STRING transport key — sending scalar `4` is refused with `did_you_mean: ["4"]` (never `[4]`, which the kernel itself rejects), and applying `["4"]` moves the element to the numeric 4 (`value_after: 4`, confirmed by a dependent read `4 * 2 == 8`); missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
@@ -321,17 +322,67 @@ three-literal `mode` schema, and `test_resources.py` for the packaged
 co-work/live-safety/fallbacks guidance). The pre-fix failure evidence for both
 tiers is preserved in `.hermes/probes/t15-prefix/`.
 
+## Hermetic kernel-restart regressions
+
+`test_restart.py` drives the **real** `restart_kernel` handler
+(`marimo_inspection.tools.lifecycle`) against a real marimo 0.24 kernel on a
+**purpose-built** notebook written into `tmp_path` (the `notebook_server`
+factory), so the restart target is deterministic and the repo fixture is never
+mounted. The purpose-built document holds only file-parsed cells, whose ids stay
+stable across a restart, which lets a test address a cell by the id it read
+before.
+
+- **Close + re-materialize is the operation.** `POST /api/kernel/restart_session`
+  only *closes* the session (the server is left at zero sessions until a client
+  reconnects), so the tool performs the frontend's `/sse` handshake itself and
+  the contract is pinned on the outcome: `re_materialized: true`,
+  `sessions_after == 1`, and the **expected** session id live in `/api/sessions`
+  again (a different id is never adopted). A cell created through `create_cell` +
+  `run_cell` defines a live global the probe reads back before the restart.
+- **The kernel is genuinely new.** The scratchpad reports the kernel process's
+  `os.getpid()` through `POST /api/kernel/execute`; it changes across the
+  restart, so a "session is live" check cannot pass by reusing the old kernel.
+- **Execution state is reset.** After the restart the probe's global is gone
+  (scratchpad `NameError`), the re-read cell map is `stale` because nothing has
+  run, and a following `run_cell(mode="all")` re-executes the document green —
+  while the notebook file survived on disk.
+- **The change tracker is cleared.** A pre-restart read baseline is dropped, so
+  the first `edit_cell` of a file-parsed cell is refused `needs_read` again
+  (cell ids are not a stable handle across a restart).
+- **The server process survives.** The skew-protection token is re-read from the
+  page HTML afterwards and is unchanged (`skew_token_rotated: false`,
+  `server_process_preserved: true`) — a server *relaunch* would rotate it, which
+  is why a kernel restart is the instrument.
+- **The id is point-in-time, not durable.** The payload reports
+  `session_id_stable: false` / `session_verification: "point_in_time"`, and a
+  later browser-like reconnect (a fresh-id `/sse` handshake; marimo edit mode is
+  single-session) re-keys the session — the tool's verified id then answers
+  `Invalid session id`. A configured session TTL can likewise reap the orphaned
+  session; that is a contract stated in the payload/resource docs rather than a
+  separate live case.
+- **The zero-session / unknown-id guard reports, never restarts.** An id no live
+  session reports returns `reason: session_not_found`, `state_changed: false`,
+  names the live session, and closes nothing (re-verified against `/api/sessions`
+  and a working read afterwards).
+
+The client primitives (token scrape from the page HTML, the `restart_session`
+status/body classification incl. the 403 → `edit_required` row, the `/sse`
+handshake) and the tool's guard rails (sessionless server, unknown id, unknown
+file, failed re-materialization, a foreign single session that is never adopted,
+an unknown-outcome transport failure, tracker reset, token-rotation honesty) are
+unit-tested without a kernel in `tests/marimo_inspect/test_lifecycle.py`.
+
 ## Current status (verified 2026-09-12)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (454 tests collected in total):
+split (502 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 48 passed, 406 deselected
+=> 51 passed, 451 deselected
 
 uv run pytest -m "not live"
-=> 406 passed, 48 deselected
+=> 451 passed, 51 deselected
 ```
 
 (Elapsed times are machine-dependent and not part of the contract; the split and
@@ -356,6 +407,13 @@ The mutation regressions alone:
 ```text
 uv run pytest tests/marimo_inspect/live/test_mutation.py -m live
 => 8 passed
+```
+
+The kernel-restart regressions alone (one purpose-built notebook per test):
+
+```text
+uv run pytest tests/marimo_inspect/live/test_restart.py -m live
+=> 3 passed
 ```
 
 The console-channel regressions alone:

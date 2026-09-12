@@ -119,9 +119,12 @@ simpler approach:
 
 ### Phase 4: Session Management Tools
 
-**Status: NOT landed.** No lifecycle tools exist; launching, restarting, or
-stopping the notebook server is still a local/operator action (there is no
-kernel-restart tool either).
+**Status: PARTIALLY landed.** The **kernel** lifecycle tool exists:
+`restart_kernel` closes the session's kernel and re-materializes a replacement
+through the `/sse` handshake, preserving the server process (verified against
+marimo 0.24; see the evidence below). Launching or stopping the notebook
+**server** is still a local/operator action — there is no
+`start_notebook`/`stop_notebook`/`switch_notebook` tool.
 
 **Problem:** Agents discover servers via terminal scripts (`discover-servers.sh`
 — now a human/debug fallback).
@@ -229,9 +232,11 @@ the staleness guard.
    `run_cell`/`delete_cell`) with an `edit_cell` staleness guard, plus
    `set_ui_value` for live widget interaction and three read-only MCP
    resources. The guard's read-baseline bug was repaired in 2026-09.
-4. **Phase 4 (session lifecycle) NOT landed** — no `start_notebook`/
-   `stop_notebook`/`switch_notebook` tools; server launch/restart/stop stays
-   local/operator.
+4. **Phase 4 (session lifecycle) PARTIALLY landed** — `restart_kernel` shipped
+   (kernel close + re-materialization, skew-token acquisition from the served
+   page, change-tracker reset, and explicit refusal when no live session can be
+   confirmed). No `start_notebook`/`stop_notebook`/`switch_notebook` tools:
+   server launch/restart/stop stays local/operator.
 5. **Keep terminal scripts as a bounded fallback** — `execute-code.sh` remains
    the deliberate escape hatch for arbitrary kernel probes, complex multi-op
    `cm` blocks, and lifecycle; `discover-servers.sh` is human/debug only. The

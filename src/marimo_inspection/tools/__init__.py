@@ -7,6 +7,7 @@ from marimo_inspection.tools.cells import (
 )
 from marimo_inspection.tools.dependency import get_dependency_graph
 from marimo_inspection.tools.errors import get_errors
+from marimo_inspection.tools.lifecycle import restart_kernel
 from marimo_inspection.tools.lint import lint_notebook
 from marimo_inspection.tools.mutation import (
     create_cell,
@@ -30,6 +31,7 @@ __all__ = [
     "get_variables",
     "lint_notebook",
     "list_active_notebooks",
+    "restart_kernel",
     "run_cell",
     "set_ui_value",
 ]

@@ -94,7 +94,8 @@ this standalone repo:
   network sync can kill the spawn under constrained filesystems.
 
 The hardened form — exec this repo's `.venv/bin/marimo-inspect --transport
-stdio` directly — dodges both. ✅ Verified: 13 marimo tools registered.
+stdio` directly — dodges both. ✅ Verified: 13 marimo tools registered at the
+date of the fix; the surface is 15 today — see Finding 3.
 
 **Finding 2 — no `--reload`/`--reload-dir` on a long-lived gateway.**
 
@@ -105,14 +106,14 @@ gets stuck on `MCPError: Invalid request parameters` and needs a full
 (`--transport stdio`) and restart the server process yourself when developing
 server code.
 
-**Finding 3 — the gateway registers 17 tools, not 13.**
+**Finding 3 — the gateway registers 4 resource/prompt wrappers on top of the marimo surface.**
 
 On 2026-09-09 the marimo surface was 13 tools, and the gateway adds 4
 resource/prompt tools of its own on top: `list_resources`, `read_resource`,
 `list_prompts`, `get_prompt` (this server's own catalog contains none of them —
-probed 2026-09-10). `set_ui_value` has since taken the marimo surface to 14, so
-a re-registered gateway is expected to list 18 names (14 + 4).
-Gateway log line (verified 2026-09-09):
+probed 2026-09-10). The marimo surface is now 15 tools, so a re-registered
+gateway is expected to list 19 names (15 marimo + 4 gateway wrappers). Gateway
+log line (verified 2026-09-09, when the surface was 13):
 
 ```
 MCP server 'marimo-inspect' (stdio): registered 17 tool(s):
@@ -120,8 +121,8 @@ mcp__marimo_inspect__list_active_notebooks, mcp__marimo_inspect__get_cell_map,
 … mcp__marimo_inspect__delete_cell, mcp__marimo_inspect__list_resources, …
 ```
 
-If you count 17 in a catalog dump, that is expected — the marimo surface is
-the 13 documented tools.
+If you count 19 in a catalog dump, that is expected — the marimo surface is the
+15 documented tools and the other 4 are the gateway's own wrappers.
 
 **Finding 4 — Hermes tool naming is `mcp__<entry-key>__<tool>`.**
 
@@ -146,7 +147,8 @@ hermes config set mcp_servers.marimo-inspect.timeout 60
 
 # 3. Confirm registration (hot-reload is automatic; watch the log):
 grep "MCP server 'marimo-inspect'" ~/.hermes/logs/agent.log | grep "registered" | tail -1
-# expect: registered 17 tool(s): mcp__marimo_inspect__list_active_notebooks, …
+# expect: registered 19 tool(s): mcp__marimo_inspect__list_active_notebooks, …
+#         (15 marimo tools + the gateway's 4 resource/prompt wrappers)
 # NOTE: grep for "registered" specifically — a *second* long-lived gateway
 # process (e.g. a `gateway run` daemon started before the config fix) may
 # still hold the old command in memory and keep logging
@@ -163,7 +165,7 @@ explicit `server_url`, then `get_cell_map`.
 ## Hardening
 
 - **DONE — venv binary over `uv run`.** Applied 2026-09-09; the stale
-  consumer-path entry is gone and the 14 marimo tools register cleanly (the
+  consumer-path entry is gone and the 15 marimo tools register cleanly (the
   gateway's own 4 resource/prompt wrappers sit on top — see Finding 3).
 - **DONE — minimal args, no `--reload`.** Applied; keep it that way
   (Finding 2).

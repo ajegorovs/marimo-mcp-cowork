@@ -278,11 +278,12 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   the gateway registered 17 tools on 2026-09-09 — the marimo surface was 13
   tools at that date (before `set_ui_value` landed) plus the 4 resource/prompt
   wrappers the gateway adds itself (`list_resources`, `read_resource`,
-  `list_prompts`, `get_prompt`). This server's own catalog is 14 marimo tools
-  (probed 2026-09-10) with **no** standard wrappers, so the docs' "14 tools"
-  counts the marimo surface while the gateway figure counts its own additions
-  too — the two numbers are different sets, and the gateway's list is expected
-  to read 18 when it next re-registers (not re-measured). And
+  `list_prompts`, `get_prompt`). This server's own catalog was 14 marimo tools
+  when probed 2026-09-10 (15 now that `restart_kernel` landed) with **no**
+  standard wrappers, so the docs' "15 tools" counts the marimo surface while the
+  gateway figure counts its own additions too — the two numbers are different
+  sets, and the gateway's list is expected to read 19 when it next re-registers
+  (not re-measured). And
   `docs/harness-integration/hermes-agent.md` was written and passed a
   zero-context regression gate. Also answered T7's open question: FastMCP ctx
   state (auto-bind) **survives** across stdio calls.
@@ -413,7 +414,8 @@ One line each, with the pointer that holds the detail. Ordered by item id.
 - **T15** ✅ *No bulk execution — `run_cell` now carries execution modes* —
   `run_cell(cell_id, mode="cell"|"descendants"|"all")`, default `"cell"`, with
   `cell_id` optional so existing callers are untouched and the advertised
-  14-tool surface stays fixed (no new tool). `cell_id` is resolved by cell **id
+  15-tool surface stays fixed (no new tool for bulk execution). `cell_id` is
+  resolved by cell **id
   or cell name**, exactly as `ctx.cells` resolves a key — the pre-modes tool
   forwarded the target straight to `ctx.run_cell`, so a caller that passed a
   name keeps working; `requested_cell_ids` always carries the resolved ID(s)
