@@ -1,6 +1,8 @@
 # Agenda (open): post-hunt verification round
 
-> **Status:** **Open — 1 task (`T-V1` check round); `T-V2` is resolved.**
+> **Status:** **Open — `T-V1` ran zero-context and is blocked by three
+> confirmed findings (`T-V3`–`T-V5`) plus one uncovered widget-key check;
+> `T-V2` is resolved.**
 > Opened 2026-09-11, right after
 > `docs/agenda-bug-hunt-1.md` closed with all 11 findings resolved.
 > Its one carried item, the `T13` widget residual, was fixed on 2026-09-11
@@ -50,21 +52,21 @@ messages:
 
 **Checks** (one line each: PASS/FAIL + the evidence payload):
 
-- [ ] §1 binding over stdio: `list_active_notebooks`, then an argument-less
+- [x] §1 binding over stdio: `list_active_notebooks`, then an argument-less
       `get_cell_map` → served, no "no active session bound". Include the
       session-per-request client shape — that is the case H11 fixed.
-- [ ] §1 binding over HTTP (`--transport http`, two clients): the second
+- [x] §1 binding over HTTP (`--transport http`, two clients): the second
       argument-less call is refused with `binding_ambiguous` and is never handed
       the first client's notebook.
-- [ ] §2/§3 + `live-safety`: after `get_cell_map` **only**, `edit_cell` returns
+- [x] §2/§3 + `live-safety`: after `get_cell_map` **only**, `edit_cell` returns
       `needs_read`; after `get_cell_data`, `ok`. No resource may still offer
       `get_cell_map` as a read or recovery step.
-- [ ] §3: a bogus `cell_id` is reported in `missing_cell_ids` for both
+- [x] §3: a bogus `cell_id` is reported in `missing_cell_ids` for both
       `get_cell_data` and `get_cell_outputs` — never an empty happy path.
-- [ ] §7 / limits: `get_dependency_graph` with `cell_id` or non-zero `depth`
+- [x] §7 / limits: `get_dependency_graph` with `cell_id` or non-zero `depth`
       refuses (`reason: unsupported_argument`, nothing read); `cell_name` is
       populated and agrees with `get_cell_map`'s name.
-- [ ] §6: a cell that merely prints `Error: 3 rows skipped` is **not** reported as
+- [x] §6: a cell that merely prints `Error: 3 rows skipped` is **not** reported as
       a console exception; a real traceback is reported, the flagged `cells[]`
       entry carries `console_exception_evidence` naming the matched marker and
       `console_stderr` carrying the matching events, and top-level console fields
@@ -84,6 +86,84 @@ messages:
 **Output:** one line per FAIL — item, observed payload, expected, and the doc
 sentence that misled (or the code that lies). A doc-only mismatch is still a
 finding for this round.
+
+### Zero-context run 2026-09-12 — incomplete: 6 PASS, 2 FAIL, 1 UNCOVERED
+
+A fresh validator read only `README.md`, all 14 exposed tool descriptions, and
+the three packaged resources, then drove a disposable marimo 0.24.0 session
+through stdio and HTTP. Raw evidence is under
+`.hermes/probes/tv1-zero-context-20260912-135409/`: `calls.jsonl` contains 73
+unique sequenced MCP calls; `report.md` is the validator's self-report; and
+`parent-verdict.json` is the independently executable re-derivation produced by
+`parent_rederive.py`.
+
+The parent re-derived every family from the raw payloads, corrected two
+aggregation errors in the self-report, and identified one coverage gap:
+
+- the named dependency refusal/name-agreement check passes, while the newly
+  observed graph-completeness contradiction belongs to the doc-surface sweep;
+- the doc-surface sweep fails when it finds contradictions; it cannot itself be
+  PASS;
+- the widget run used string options (`["beta"]`), so it did not distinguish a
+  numeric option value from its string key (`["4"]`, not `[4]`). That check is
+  UNCOVERED even though shape refusal, corrected apply, repeat no-op, rejection,
+  and both `on_change_failed` shapes all passed.
+
+Six boxes above are therefore checked. The widget-key check remains open as
+UNCOVERED; the unfiltered-variable and doc-surface checks remain open as FAIL.
+The run found the following three stable items. Per the verification-round rule,
+none was fixed during this pass.
+
+## T-V3 — dependency graph omits a notebook cell while claiming the full graph
+
+**Status: confirmed; open.** Calls 6/7 on the pristine notebook report 2 cells
+from `get_cell_map` but only 1 from `get_dependency_graph`; calls 64/65 repeat
+the mismatch at 8 versus 7 cells. In both cases the omitted id is `MJUe`
+(`import numpy as np`), which is also present in `get_cell_outputs` call 66.
+Argument refusals and the names of returned cells remain correct.
+
+The exposed tool description and both packaged resources say the tool always
+returns the **full** notebook graph. Source inspection locates the mechanism in
+`templates/dependency.py`: the payload iterates `ctx.graph.cells`, whose live
+contents omitted this valid notebook cell, rather than reconciling against
+`ctx.cells`.
+
+**Acceptance:** add a hermetic repro that fails before the fix; either return one
+entry for every live notebook cell (including dependency-isolated/import-only
+cells) or narrow every full-graph claim to the actual contract. Preserve the
+existing unsupported-argument refusal and cell-name agreement tests.
+
+## T-V4 — unfiltered variables include non-notebook shared globals
+
+**Status: confirmed; open.** Call 9, before any notebook cell ran or probe cell
+was created, returns exactly `input` and `spec_from_loader`. Neither is defined
+by the two notebook cells. Call 61 returns those same names mixed with the
+probe's notebook-defined values.
+
+The exposed description promises notebook session names with inspection
+scaffolding excluded. Source inspection locates the mechanism in
+`templates/variables.py`: the empty-name path enumerates shared `globals()` and
+removes only the five names in `_SCAFFOLD_NAMES`; it has no notebook-definition
+allowlist, so other injected globals survive.
+
+**Acceptance:** add a real-payload regression that fails before the fix and
+prove the unfiltered result contains notebook-defined public names only, while
+filtered lookup behavior and cell-private-name exclusion remain unchanged.
+
+## T-V5 — README omits the scoped process-global binding fallback
+
+**Status: confirmed documentation precision gap; open.** Calls 13–16 show four
+fresh MCP sessions making argument-less calls successfully against one
+persistent stdio server process. The packaged resources explain the
+process-global fallback and HTTP ambiguity boundary; README says a harness that
+“spawns or reconnects the server per call/turn loses” the binding and does not
+name the fallback. That wording conflates a fresh server process (binding lost)
+with a fresh MCP session on one persistent stdio process (binding retained).
+
+**Acceptance:** make README distinguish process restart/spawn from MCP-session
+churn, state that argument-less stdio calls survive fresh MCP sessions on one
+persistent process, and preserve the HTTP `binding_ambiguous` fail-closed rule.
+Lock the concise wording against the packaged resources.
 
 ## T13 — carried no longer: the residual is fixed
 
