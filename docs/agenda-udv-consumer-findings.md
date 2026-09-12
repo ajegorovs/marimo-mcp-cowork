@@ -1,6 +1,8 @@
 # Agenda (resolved): first-consumer integration findings (udv-echo-process)
 
-> **Status:** **Closed — no open items.** T3, the last one, was resolved by
+> **Status:** **Round 1 closed; Round 2 open** — T15–T22: added 2026-09-12,
+> extended the same day with T20–T22 from a third pass over that session
+> (§Round 2). T3, round 1's last item, was resolved by
 > review on 2026-09-10: the DSH list-argument mangling it reported does not
 > reproduce, and the defensive types it recorded as "no defensive type landed
 > here" had in fact landed in `8a44b8c` (tag v0.2.0) — the same day T3 was
@@ -45,6 +47,152 @@ server lifecycle.
 None. Every item from this integration is resolved — T3 was the last, and
 nothing here is waiting on an upstream harness fix. The log below keeps the
 record and the evidence pointer for each item.
+
+## Round 2 — open items (2026-09-12)
+
+A second working session on the same consumer — a live sidebar notebook, a
+throwaway probe, and a new example notebook in this repo — produced eight
+findings. T15–T18 are **capability gaps** (things the surface cannot do); T19 is
+a **recipe gotcha** (something it can do, that is easy to get wrong and cost real
+time here); T20–T22 are **reporting gaps** — the surface does the thing but
+cannot say so: a click it cannot confirm (T20), an output it restores without
+marking stale (T21), a session whose owner it does not name (T22). Evidence is
+from the consumer's session log; label conventions as above.
+
+| id | item | state |
+| --- | --- | --- |
+| T15 | No run-all / run-with-descendants, so an unreferenced cell never runs and its widgets never register | open |
+| T16 | A `mo.sidebar(...)` cell's content is unreadable (`visual_output: null`) | **revised 2026-09-12: no longer reproduces — see the T16 revision note** |
+| T17 | Session identity is unstable without an attached client; an invented id binds but is then "not found" | open |
+| T18 | A server with no session is invisible, and two headless `marimo edit` launches disagreed about having one | open |
+| T19 | Recipe: which session a browser or `/sse` stream ends up on, and why a page-vs-kernel divergence happens | open |
+| T20 | `set_ui_value` reports `applied: false / no_change: true` for a button whose `on_click` only sets state, though the click fired | open |
+| T21 | `get_cell_outputs` carries no staleness signal, so a RESTORED cell output reads as current | open |
+| T22 | A session's provenance is invisible (agent-materialized vs frontend-owned), so a forced takeover is undiscoverable | open |
+
+**T15 — no bulk execution.** `run_cell` runs a cell plus its *ancestors*, so a
+cell that nothing else depends on never runs and the widgets it defines are
+never registered: `set_ui_value` then fails with `unknown_variable` ("not a live
+kernel global"). Observed twice — a probe's button variable, and the buttons
+cell of a two-cell control block. A rollup tool (or a run-descendants flag) would
+remove it; without one, driving a notebook through MCP alone means running every
+cell in dependency order by hand, and on a `/sse`-created session (never
+instantiated) that is the *first* obstacle on every fresh session.
+
+**T16 — sidebar is a blind spot.** `get_cell_outputs` returns
+`visual_output: null` for a cell whose last expression is `mo.sidebar(...)` — the
+cell genuinely has no output area, but the consequence is that neither the
+sidebar's presence nor the widgets it hosts can be inspected through MCP.
+Verifying one currently means `marimo export html`, decoding the JSON-escaped
+payload, and searching only inside `<marimo-sidebar>` blocks — outside the tool
+surface entirely. Observed on a probe's sidebar cell and on both sidebar cells of
+the new example.
+
+**T16 revision (2026-09-12, second session).** The blanket claim no longer
+reproduces: `get_cell_outputs` returned a composed `mo.sidebar(...)` cell's whole
+block (heading, slider and button row, as rendered HTML) on the consumer's
+sidebar notebook, and likewise for its readout cell. What survives is a sharper
+ambiguity — the payload did not say whether that block came from the cell's
+*current* code or was restored from cache — filed as T21 below.
+
+**T17 — session identity churn.** With no client attached, the `session_id`
+advertised by `list_active_notebooks` changed between two consecutive calls
+(`s_hbp1e0` → `s_mrh0bo`), and a call against the listed id then failed with
+*"Session not found"*. Related: a session exists only while a client holds it —
+a browser tab dying took its session with it, and so did killing the `/sse`
+stream. Worse, `set_active_session` **accepts** an invented id (an
+`/sse?session_id=<uuid>` id of one's own choosing) and later calls fail with
+"not found", so the bind step reports success for a session that does not exist.
+`marimo edit` allows exactly **one** session per server, so the id to target is
+the one `/api/sessions` reports — never one invented by the caller.
+
+**T18 — discovering a server is not discovering a session.** `marimo run` (app
+mode) never appeared in `list_active_notebooks`; its server was counted in
+`servers_discovered` but not listed in `notebooks`, and nothing could be attached
+to it. That is the mechanism T1 already corrected — the tool enumerates
+*sessions*, and a fresh headless server has none — but it is worth stating as
+consumer guidance. One inconsistency is **unexplained**: two headless
+`marimo edit` launches behaved differently (one listed a session before any
+client connected; the other listed none until an `/sse` handshake). Both
+observations are consistent with "enumerate sessions"; what created the first
+session is not. Treat "launch in edit mode *and* materialize a session" as the
+safe rule.
+
+**T19 — recipe gotcha: which session does a client land on?** The working
+verification (the one that produced trustworthy numbers) targeted
+`s_na3rph` — the session the *frontend already held* — which is what T9-b's
+recipe implies. Doing it the other way round (materialize a session with an
+`/sse` handshake first, then attach a browser) produced divergent views: the page
+rendered a slider at `0` while the session MCP was reading reported `5`, so
+clicks moved one session's state while reads reported another's. With
+one-session-per-server the two clients *should* share a session, so the
+divergence is either a replacement on attach or a read-path difference — not
+diagnosed. Recorded because it silently invalidates a whole browser pass: the
+symptom is a click that appears to do nothing.
+
+**Also observed (same session, same recipe).** Restarting a marimo server to load
+a file edit rotates its per-process skew-protection token, and every page already
+open keeps sending the previous one — each request then 401s with
+`{"error": "Invalid server token"}` (`_server/api/middleware.py:161-172`) until
+the user hard-reloads. The consumer read this as "I am not authorised to change
+anything". Practical consequence for any agent-driven session: change a live
+notebook through the write tools (which serialize back to the file) and reserve
+restarts for what actually needs one, or announce the reload as part of the
+restart.
+
+**T20 — `set_ui_value` cannot report a click on a side-effect-only button.** A
+consumer notebook used step buttons (`±1`, coarse `±page`) whose handlers only
+write a `mo.state` dict, and every click came back `verified: true,
+applied: false, no_change: true, value_before: null, value_after: null` plus
+"the element already held this value" — while each click HAD fired and moved the
+value (`200 → 201 → 241 → 240`, confirmed via `get_variables` and a dependent
+readout cell). Cause, from the widget itself: `mo.ui.button`'s frontend value is a
+click counter and its element value is `on_click(counter)`
+(`_plugins/ui/_impl/input.py`, `class button`:
+`self._on_click = (lambda _: value) if on_click is None else on_click`,
+`initial_value=0`). A handler that returns `None` therefore leaves the element's
+own value unchanged, and the no_change branch reads that as "nothing happened".
+The verdict is correct about the ELEMENT and misleading about the INTERACTION: a
+caller cannot distinguish "click landed, side effect applied" from "click
+dropped". The `next_steps` hint ("if the interaction was meant to trigger a re-run
+of dependent cells, verify them with …") is the only reason this is diagnosable.
+Consider a distinct status when `element_type == button` and the read-back value
+is unchanged, or state in the payload that a no_change button report does not mean
+the handler did not run.
+
+**T21 — `get_cell_outputs` cannot say that an output is STALE or restored.** In
+the consumer's sidebar notebook, `edit_cell` removed a `mo.sidebar(...)` call from
+cell `Xref`; `get_cell_outputs(['Xref'])` then still returned a `<marimo-sidebar>`
+block holding `<h3>Time</h3>` and a slider — that cell's *previous* rendering —
+while `get_cell_map` listed the same cell as `runtime_state: "stale"`. The user
+saw the consequence: "on the sidebar i see two time slider entries, one with
+button set" (the restored block plus the newly composed one). `edit_cell` had
+reported `status: ok` and both kernel and file sources were correct, so the only
+wrong thing in the system was a payload the surface presented as current.
+Mechanism: `marimo edit` persists per-notebook session state to
+`notebooks/__marimo__/session/<notebook>.py.json` and restores each cell's output
+from it on load — which is also why every cell reports `has_output: true` on a
+freshly launched server where nothing has run. Re-running clears it (`run_cell`
+on `Xref` replaced the output with the new, empty one, and the cache rewrote
+itself), but nothing said so, and the wrong conclusion available to an agent is
+that its own edit failed. Requested: carry the cell's `runtime_state` in the
+outputs payload, or an explicit `output_stale: true`, or at minimum a line in the
+tool description that a reported output may be restored from a prior run.
+
+**T22 — a session's provenance is invisible, so a forced takeover is
+undiscoverable.** A fresh `marimo edit` server reports **0 sessions**, and the
+agent bridged that with the documented `/sse?session_id=…&file=…` handshake. That
+made the session the *agent's*: the consumer's page then had to **take over** and
+re-run the notebook before its widgets responded — "I had to press take over ->
+run the notebook for sliders to work". `list_active_notebooks` reports
+`session_id` and `active_connections: 1` but never *who* holds the session, so an
+agent cannot tell whether binding is safe (a page owns it, per the T9-b order) or
+whether it is about to displace a human. Requested: a provenance/owner field per
+session (which client holds it, or `agent_materialized: true`), or a stated rule
+that a session an agent had to materialize is one a human will have to take over.
+Same pass, one useful observation: after the agent's `/sse` stream was killed the
+session **survived** with `active_connections: 1` (the page) — a materialized
+session can outlive the stream that created it.
 
 ## Resolved log
 
