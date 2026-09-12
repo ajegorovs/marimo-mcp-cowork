@@ -250,12 +250,18 @@ CI-covered: the live suite boots kernels, not frontends.
   `T13` widget residual. Read it before re-running tests "to check" — that round
   exists because a green suite cannot see whether the docs still teach the old
   behaviour.
-- `docs/agenda-udv-consumer-findings.md` — **CLOSED** (fully resolved) agenda
-  for the first-consumer integration, T-ids kept stable. Every item is resolved
-  and has a one-line record + evidence pointer in its §Resolved log — read that
-  for the decision trail (T1 session-vs-server, T2 auto-bind, T3 harness list
-  args, T4 cross-Python evidence, T9/T12/T13 write surface and error channels,
-  T14 list-argument normalization), not to find open work.
+- `docs/agenda-udv-consumer-findings.md` — **Round 1 closed, Round 2 OPEN**
+  (2026-09-12): T15–T22 in its §Round 2 cover what the second and third consumer
+  passes found — no run-all execution, session-identity churn, app-mode
+  invisibility, the recipe gotcha that decides which session a browser lands on,
+  and three *reporting* gaps (a button click the surface cannot confirm, a
+  cache-restored output with no staleness marker, a session whose owner is not
+  named). T16's original "sidebar content unreadable" claim no longer reproduces
+  and is marked revised. Read §Round 2 before re-running a browser verification
+  pass. Its §Resolved log holds the round-1 decision trail
+  (T1 session-vs-server, T2 auto-bind, T3 harness list args, T4 cross-Python
+  evidence, T9/T12/T13 write surface and error channels, T14 list-argument
+  normalization), not open work.
 
 **Bootstrap / harness integration:**
 
