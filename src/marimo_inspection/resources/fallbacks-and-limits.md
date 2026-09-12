@@ -104,6 +104,21 @@ consulted only when that state has nothing bound.
   inherit another client's notebook and mutate the wrong one. Pass both
   arguments explicitly on such a client; they always win.
 
+### The bind validates before it writes
+
+`set_active_session` checks the id against **live** sessions before it binds
+anything, so `status: OK` means the binding can actually reach the session:
+
+- An explicit `server_url` is deterministic: that one server's
+  `GET /api/sessions` must report the exact id.
+- Without one, discovery must find the id on **exactly one** endpoint. More
+  than one endpoint reporting it is `reason: session_ambiguous` (which server
+  is meant is never guessed); none is `reason: session_not_found`.
+- A refusal reports `bound: false` and `state_changed: false` and leaves any
+  earlier binding untouched — a bind is never a guess and never half-written.
+  An empty id is `reason: invalid_session_id`; a live id with no MCP context
+  to bind it to is `reason: binding_context_unavailable`.
+
 See `workflow://marimo-inspect/co-work-loop` §1.
 
 ## Version pin

@@ -135,7 +135,7 @@ instead: cells created through the write tools *do* run, which is what makes the
 dependency, variables and widget regressions behavioral rather than structural
 (see the hermetic sections below).
 
-## What's tested (41 tests, 9 files in `tests/marimo_inspect/live/`)
+## What's tested (43 tests, 9 files in `tests/marimo_inspect/live/`)
 
 The directory holds 8 test modules plus the shared `conftest.py` harness
 (`MarimoServerManager` + fixtures). Counts are stable as of the run in
@@ -146,7 +146,7 @@ The directory holds 8 test modules plus the shared `conftest.py` harness
 | `conftest.py` | — | harness only: boots the session-scoped headless server, creates its session via the `/sse` handshake, and exposes the per-test `mutation_server` fixture |
 | `test_cell_map.py` | 5 | map reports the fixture's 6 cells incl. hidden setup (`def _double` preview) and the intentional error cell; preview truncated to 3 lines; truthfulness flags (`has_output`/`has_console_output`/`has_errors`) are bool or None, never faked |
 | `test_cell_data.py` | 4 | per-cell code round-trips (computed-value cell, error cell); count agrees with cell map |
-| `test_cell_outputs.py` | 3 | every cell listed with the documented output keys |
+| `test_cell_outputs.py` | 5 | every cell is listed with the documented output keys; `runtime_state` matches the cell map and `output_stale` marks a stale cell while preserving its prior rendering, then clears after a verified re-run (T21) |
 | `test_variables.py` | 4 | runs against a live kernel and returns the documented structure; **T-V4** — an unfiltered call reports executed notebook-defined **public** names only, excluding kernel-injected globals (`input`, `spec_from_loader`), the template's own scaffolding and private leading-underscore names, with the allowance derived from the notebook graph's cell definitions and exercised via `mutation_server` cells that actually execute (explicit filtered lookup of a public name is preserved; a private/absent name reports nothing); degrades gracefully without numpy/pandas (regression for the unguarded numpy import) |
 | `test_dependency.py` | 3 | template executes against a live kernel and returns the documented structure/types; **T-V3** — cell completeness: one dependency entry per live notebook cell with `set(cells ids) == set(get_cell_map ids)`, `cell_name` agreement for *every* cell, a real parent/child edge between a created import cell and its dependent, and a never-run fixture cell present with empty graph-derived lists (no invented edges, no dropped cells) — all through the real handlers against `mutation_server` |
 | `test_errors.py` | 5 | template returns consistent, typed error summary; stable across repeated runs — plus **console-channel regressions**: a UI-handler traceback marimo never records structurally is flagged through `console_stderr` (`has_console_exception: true`), and a `print()` lands in `get_cell_outputs.stdout` |
@@ -266,14 +266,14 @@ upgrade procedure (step 3) runs `uv run pytest -m live` before widening the
 ## Current status (verified 2026-09-12)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (380 tests collected in total):
+split (412 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 41 passed, 339 deselected
+=> 43 passed, 369 deselected
 
 uv run pytest -m "not live"
-=> 339 passed, 41 deselected
+=> 369 passed, 43 deselected
 ```
 
 (Elapsed times are machine-dependent and not part of the contract; the split and

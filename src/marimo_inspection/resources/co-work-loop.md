@@ -53,6 +53,12 @@ A requested `cell_id` that resolves to nothing (deleted or mistyped) is reported
 in `missing_cell_ids` — an id that matched no cell must never look like "nothing
 matched" while the write tools refuse the same id.
 
+Each `get_cell_outputs` row also carries the kernel's live `runtime_state` and a
+derived boolean `output_stale` (true exactly when the state is `"stale"`). A
+stale cell keeps its last rendering visible — including one restored from an
+earlier run — so that output is readable but is **not** proof the current source
+produced it. Run the cell before trusting it as current.
+
 **Read before edit.** `edit_cell` refuses to overwrite a cell you have not
 just read (see `workflow://marimo-inspect/live-safety`). Only `get_cell_data`
 records that baseline — a `get_cell_map` preview is not a source read.

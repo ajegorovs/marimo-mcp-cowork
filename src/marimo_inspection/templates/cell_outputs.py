@@ -102,9 +102,17 @@ async def get_cell_outputs():
 
             out = c.output
             console = c.console_outputs
+            # The kernel's live status — the same value get_cell_map reports.
+            # "stale" means the cell needs a re-run, and a rendered output it
+            # still exposes may be a RESTORED rendering from an earlier run:
+            # label it, never pass it off as current (and never erase it).
+            status = getattr(c, "status", None)
+            runtime_state = str(status) if status else None
 
             results.append({
                 "cell_id": str(c.id),
+                "runtime_state": runtime_state,
+                "output_stale": runtime_state == "stale",
                 "visual_output": _cell_output_to_dict(out) if out else None,
                 "visual_mimetype": str(getattr(out, "mimetype", None)) if out else None,
                 "stdout": [

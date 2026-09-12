@@ -247,6 +247,25 @@ class TestResourceContent:
         assert "unexecuted (or otherwise graph-unregistered)" not in text
         assert "typically one that has not executed" not in text
 
+    async def test_fallbacks_documents_validation_before_binding(self, mcp_server):
+        """A bind validates the exact live id first, or refuses cleanly.
+
+        ``set_active_session`` must not report success for an id no live
+        session reports: an explicit ``server_url`` is the deterministic path,
+        discovery must find a unique endpoint, and a refusal changes no state.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().split())
+
+        assert "set_active_session" in text
+        assert "before it binds anything" in text
+        assert "explicit `server_url` is deterministic" in text
+        assert "exactly one" in text
+        assert "session_ambiguous" in text
+        assert "bound: false" in text
+        assert "state_changed: false" in text
+
 
 # ---------------------------------------------------------------------------
 # Privacy

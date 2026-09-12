@@ -221,6 +221,17 @@ async def get_cell_outputs(
 ) -> dict:
     """Get cell execution outputs including visual display and console streams.
 
+    Every ``cells[]`` entry carries the kernel's live ``runtime_state`` (the
+    same value ``get_cell_map`` reports) and a derived boolean
+    ``output_stale``, true exactly when ``runtime_state`` is ``"stale"``.
+
+    A stale output is still worth reading — the cell's last rendering is kept,
+    including one RESTORED from a prior run — but it is not proof the current
+    source produced it: an ``edit_cell`` (or an upstream change) marks the cell
+    stale without erasing its output, and marimo also restores a cell's output
+    from its session cache on load. Run the cell before trusting its output as
+    current.
+
     A requested id that resolves to nothing (deleted or mistyped) is reported
     in ``missing_cell_ids`` rather than silently omitted — a cell with no
     output and a cell that does not exist must not look alike.
@@ -259,14 +270,28 @@ async def get_cell_outputs(
     stdout_text = "\n".join(result.stdout)
     try:
         data = json.loads(stdout_text)
+        cells = data.get("cells", [])
         response = {
             "session_id": session.session_id,
-            "cells": data.get("cells", []),
+            "cells": cells,
             "next_steps": [
                 "Review visual_output for displayed content",
                 "Check stdout/stderr for print statements and warnings",
             ],
         }
+        # A stale cell's output may be a RESTORED rendering from an earlier
+        # run (edit_cell keeps the last output; marimo restores it from its
+        # session cache on load). Name the cells that must be run before
+        # their output is trusted — the payload's per-row `output_stale`
+        # flag is the signal, this is the remedy.
+        stale_ids = [str(c.get("cell_id")) for c in cells if c.get("output_stale")]
+        if stale_ids:
+            response["next_steps"].append(
+                'Stale output (runtime_state: "stale") for cells: '
+                f"{', '.join(stale_ids)} — it may be restored from an earlier "
+                "run and not reflect the current source; run the cell before "
+                "trusting it"
+            )
         missing = data.get("missing_cell_ids") or []
         if missing:
             response["missing_cell_ids"] = missing

@@ -492,6 +492,109 @@ class TestGetCellOutputs:
             assert "cells" in result
             assert len(result["cells"]) == 1
 
+    async def test_description_warns_that_stale_output_may_be_restored(self):
+        """The public description names the stale signal and the remedy (T21).
+
+        A caller that never learns an output can be a RESTORED rendering from
+        an earlier run reads it as current — the reporting gap T21 records.
+        """
+        import inspect as _inspect
+
+        from marimo_inspection.tools.cells import get_cell_outputs
+
+        description = " ".join(
+            (_inspect.getdoc(get_cell_outputs) or "").lower().split()
+        )
+        assert "cells[]" in description
+        assert "runtime_state" in description
+        assert "output_stale" in description
+        # The remedy must be stated: run the cell before trusting it.
+        assert "stale" in description
+        assert "run the cell" in description
+
+    def test_resource_teaches_the_stale_output_rule(self):
+        """The packaged co-work loop carries the same stale-output rule.
+
+        The MCP resources are the runtime authority for the co-work loop; a
+        caller that only reads the resource must still learn that a reported
+        output can be restored and stale.
+        """
+        from marimo_inspection.resources import load_resource_text
+
+        text = " ".join(load_resource_text("co-work-loop.md").lower().split())
+        assert "runtime_state" in text
+        assert "output_stale" in text
+        assert "run the cell before trusting it as current" in text
+
+    async def test_stale_cells_are_flagged_in_next_steps(self):
+        """A stale row survives untouched and is called out in next_steps."""
+        import json
+
+        from marimo_inspection.tools.cells import get_cell_outputs
+
+        stale_row = {
+            "cell_id": "Xref",
+            "visual_output": {"channel": "output", "data": "restored"},
+            "visual_mimetype": "text/html",
+            "stdout": [],
+            "stderr": [],
+            "console_events": [],
+            "runtime_state": "stale",
+            "output_stale": True,
+        }
+        current_row = {
+            "cell_id": "BYtC",
+            "visual_output": None,
+            "visual_mimetype": None,
+            "stdout": [],
+            "stderr": [],
+            "console_events": [],
+            "runtime_state": "idle",
+            "output_stale": False,
+        }
+
+        with patch("marimo_inspection.tools.cells.MarimoClient") as mock_client_cls:
+            mock_instance = MagicMock()
+            mock_instance.resolve_session = AsyncMock(
+                return_value=MagicMock(session_id="abc123")
+            )
+            mock_execute_result = MagicMock()
+            mock_execute_result.status = "ok"
+            mock_execute_result.stdout = [
+                json.dumps(
+                    {
+                        "cells": [stale_row, current_row],
+                        "missing_cell_ids": ["gone"],
+                    }
+                )
+            ]
+            mock_instance.execute = AsyncMock(return_value=mock_execute_result)
+            mock_client_cls.return_value = mock_instance
+
+            result = await get_cell_outputs(
+                session_id="abc123",
+                server_url="http://127.0.0.1:8090",
+            )
+
+        # Row-level signals pass through unmodified...
+        by_id = {row["cell_id"]: row for row in result["cells"]}
+        assert by_id["Xref"]["output_stale"] is True
+        assert by_id["Xref"]["runtime_state"] == "stale"
+        assert by_id["Xref"]["visual_output"]["data"] == "restored"
+        assert by_id["BYtC"]["output_stale"] is False
+        # ...and the caller is told to run the stale cell before trusting it.
+        stale_hint = next(
+            (step for step in result["next_steps"] if "Xref" in step), None
+        )
+        assert stale_hint is not None, result["next_steps"]
+        assert "run the cell" in stale_hint.lower()
+        assert "restored" in stale_hint.lower()
+        # The current cell is never called out as stale.
+        assert all("BYtC" not in step for step in result["next_steps"])
+        # The existing missing-id contract is untouched.
+        assert result["missing_cell_ids"] == ["gone"]
+        assert result["next_steps"][0].startswith("These requested cell ids")
+
 
 # -------------------------------------------------------------------
 # get_variables tool tests
@@ -1084,12 +1187,58 @@ class TestToolErrorHandling:
 
 
 class TestSetActiveSession:
-    """Test the set_active_session tool handler."""
+    """Test the set_active_session tool handler.
+
+    T17 validation makes the handler query the target server's live sessions
+    before it binds anything, so these cases stub that query (the real-socket
+    validation regression lives in test_session_binding.py). Each case asserts
+    on what was *written*, since "no state on refusal" is the contract.
+    """
 
     async def test_binds_session(self):
-        """Binds a session_id and returns confirmation."""
-        from unittest.mock import AsyncMock, MagicMock
+        """Binds a session_id the server reports and returns confirmation."""
+        from marimo_inspection.tools.session import (
+            _SERVER_URL_KEY,
+            _SESSION_KEY,
+            set_active_session,
+        )
 
+        mock_ctx = MagicMock()
+        mock_ctx.set_state = AsyncMock()
+        mock_ctx.get_state = AsyncMock()
+        mock_ctx.info = AsyncMock()
+
+        with patch("marimo_inspection.tools.session.MarimoClient") as client_cls:
+            instance = MagicMock()
+            instance.close = AsyncMock()
+            instance.list_sessions = AsyncMock(
+                return_value=[
+                    MagicMock(session_id="abc123", file="/t.py", basename="t.py")
+                ]
+            )
+            client_cls.return_value = instance
+
+            result = await set_active_session(
+                session_id="abc123",
+                server_url="http://127.0.0.1:8090",
+                ctx=mock_ctx,
+            )
+
+        assert result["status"] == "OK"
+        assert result["active_session_id"] == "abc123"
+        assert result["active_server_url"] == "http://127.0.0.1:8090"
+        assert result["validated"] is True
+        written = {
+            call.args[0]: call.args[1] for call in mock_ctx.set_state.call_args_list
+        }
+        assert written == {
+            _SESSION_KEY: "abc123",
+            _SERVER_URL_KEY: "http://127.0.0.1:8090",
+        }
+        instance.close.assert_awaited_once()
+
+    async def test_refuses_a_session_id_the_server_does_not_report(self):
+        """An unreported id is refused and no binding state is written."""
         from marimo_inspection.tools.session import set_active_session
 
         mock_ctx = MagicMock()
@@ -1097,16 +1246,31 @@ class TestSetActiveSession:
         mock_ctx.get_state = AsyncMock()
         mock_ctx.info = AsyncMock()
 
-        result = await set_active_session(session_id="abc123", ctx=mock_ctx)
+        with patch("marimo_inspection.tools.session.MarimoClient") as client_cls:
+            instance = MagicMock()
+            instance.close = AsyncMock()
+            instance.list_sessions = AsyncMock(return_value=[])
+            client_cls.return_value = instance
 
-        assert result["status"] == "OK"
-        assert result["active_session_id"] == "abc123"
-        mock_ctx.set_state.assert_called_once()
+            result = await set_active_session(
+                session_id="invented",
+                server_url="http://127.0.0.1:8090",
+                ctx=mock_ctx,
+            )
+
+        assert result["status"] == "error"
+        assert result["reason"] == "session_not_found"
+        assert result["bound"] is False
+        mock_ctx.set_state.assert_not_called()
 
     async def test_requires_session_id(self):
-        """Returns error when session_id is empty."""
+        """Returns the structured invalid_session_id refusal when empty."""
         from marimo_inspection.tools.session import set_active_session
 
         result = await set_active_session(session_id="")
+        assert result["status"] == "error"
+        assert result["reason"] == "invalid_session_id"
+        assert result["bound"] is False
+        assert result["state_changed"] is False
         assert "error" in result
         assert "help" in result

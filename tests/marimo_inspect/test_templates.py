@@ -86,7 +86,7 @@ class _FakeCell:
         cell_id: str,
         code: str = "x = 1",
         name: str = "",
-        status: str = "idle",
+        status: str | None = "idle",
         output=None,
         console_outputs: list | None = None,
         errors: list | None = None,
@@ -578,6 +578,115 @@ class TestCellOutputsTemplate:
 
         assert [cell["cell_id"] for cell in data["cells"]] == ["7"]
         assert data["missing_cell_ids"] == ["gone"]
+
+    def test_template_reads_the_live_runtime_state(self):
+        """The generated code reads the kernel status and derives staleness."""
+        from marimo_inspection.templates.cell_outputs import (
+            build_cell_outputs_template,
+        )
+
+        code = build_cell_outputs_template([])
+        # The status is read from the live NotebookCell (same field the cell
+        # map reports), never hardcoded.
+        assert 'getattr(c, "status", None)' in code
+        assert '"runtime_state"' in code
+        assert '"output_stale"' in code
+        assert '"output_stale": False' not in code
+
+    async def test_idle_cell_output_is_current(self, monkeypatch):
+        """An idle cell is current: runtime_state idle, output_stale False."""
+        from marimo_inspection.templates.cell_outputs import (
+            build_cell_outputs_template,
+        )
+
+        data = await _exec_template(
+            build_cell_outputs_template([]),
+            SimpleNamespace(
+                cells={"7": _FakeCell("7", status="idle", output=_FakeConsoleEvent())}
+            ),
+            monkeypatch,
+            "get_cell_outputs",
+        )
+        cell = data["cells"][0]
+        assert cell["runtime_state"] == "idle"
+        assert cell["output_stale"] is False
+        assert cell["visual_output"] is not None
+
+    async def test_stale_cell_output_is_marked_not_hidden(self, monkeypatch):
+        """A stale cell keeps its restored output AND is marked stale (T21)."""
+        from marimo_inspection.templates.cell_outputs import (
+            build_cell_outputs_template,
+        )
+
+        data = await _exec_template(
+            build_cell_outputs_template([]),
+            SimpleNamespace(
+                cells={
+                    "7": _FakeCell(
+                        "7",
+                        status="stale",
+                        output=_FakeConsoleEvent(),
+                        console_outputs=[
+                            _FakeEnumChannelEvent(CellChannel.STDOUT, "prior print")
+                        ],
+                    )
+                }
+            ),
+            monkeypatch,
+            "get_cell_outputs",
+        )
+        cell = data["cells"][0]
+        assert cell["runtime_state"] == "stale"
+        assert cell["output_stale"] is True
+        # Neither the visual nor the console output is erased — it stays
+        # readable, it just cannot masquerade as current.
+        assert cell["visual_output"] is not None
+        assert [e["channel"] for e in cell["stdout"]] == ["stdout"]
+
+    async def test_output_stale_is_true_exactly_when_state_is_stale(self, monkeypatch):
+        """output_stale is derived: true for stale, false for every other state."""
+        from marimo_inspection.templates.cell_outputs import (
+            build_cell_outputs_template,
+        )
+
+        states = (
+            "idle",
+            "stale",
+            "exception",
+            "cancelled",
+            "interrupted",
+            "marimo-error",
+            "disabled",
+            "queued",
+            "running",
+        )
+        data = await _exec_template(
+            build_cell_outputs_template([]),
+            SimpleNamespace(cells={s: _FakeCell(s, status=s) for s in states}),
+            monkeypatch,
+            "get_cell_outputs",
+        )
+        by_id = {cell["cell_id"]: cell for cell in data["cells"]}
+        assert set(by_id) == set(states)
+        for state, cell in by_id.items():
+            assert cell["runtime_state"] == state
+            assert cell["output_stale"] is (state == "stale"), cell
+
+    async def test_absent_runtime_state_is_not_reported_as_stale(self, monkeypatch):
+        """An unreadable/absent status yields None, never a stale verdict."""
+        from marimo_inspection.templates.cell_outputs import (
+            build_cell_outputs_template,
+        )
+
+        data = await _exec_template(
+            build_cell_outputs_template([]),
+            SimpleNamespace(cells={"7": _FakeCell("7", status=None)}),
+            monkeypatch,
+            "get_cell_outputs",
+        )
+        cell = data["cells"][0]
+        assert cell["runtime_state"] is None
+        assert cell["output_stale"] is False
 
 
 class TestVariablesTemplate:

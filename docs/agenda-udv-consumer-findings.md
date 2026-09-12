@@ -63,11 +63,11 @@ from the consumer's session log; label conventions as above.
 | --- | --- | --- |
 | T15 | No run-all / run-with-descendants, so an unreferenced cell never runs and its widgets never register | open |
 | T16 | A `mo.sidebar(...)` cell's content is unreadable (`visual_output: null`) | **revised 2026-09-12: no longer reproduces — see the T16 revision note** |
-| T17 | Session identity is unstable without an attached client; an invented id binds but is then "not found" | open |
+| T17 | Session identity is unstable without an attached client; an invented id binds but is then "not found" | **resolved — validation-before-bind; see Resolved log** |
 | T18 | A server with no session is invisible, and two headless `marimo edit` launches disagreed about having one | open |
 | T19 | Recipe: which session a browser or `/sse` stream ends up on, and why a page-vs-kernel divergence happens | open |
 | T20 | `set_ui_value` reports `applied: false / no_change: true` for a button whose `on_click` only sets state, though the click fired | open |
-| T21 | `get_cell_outputs` carries no staleness signal, so a RESTORED cell output reads as current | open |
+| T21 | `get_cell_outputs` carries no staleness signal, so a RESTORED cell output reads as current | **resolved — row-level state and stale flag; see Resolved log** |
 | T22 | A session's provenance is invisible (agent-materialized vs frontend-owned), so a forced takeover is undiscoverable | open |
 
 **T15 — no bulk execution.** `run_cell` runs a cell plus its *ancestors*, so a
@@ -400,6 +400,30 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   `tests/marimo_inspect/test_list_args.py` (15 shape cases plus one
   handler-level case per list-typed tool); the JSON-array assertions fail
   against the pre-fix helper.
+- **T17** ✅ *A nonexistent session can no longer be bound* —
+  `set_active_session` now validates the exact ID against live
+  `GET /api/sessions` data before changing MCP-session state or the scoped
+  process-global fallback. An explicit `server_url` checks only that endpoint;
+  without one, healthy registry servers are searched and exactly one matching
+  endpoint is required. Zero matches, ambiguous matches, query failures, an
+  empty ID, or a missing injectable binding context all fail closed with a
+  machine-readable reason and `bound: false` / `state_changed: false`.
+  Successful discovery also reports partial endpoint failures instead of
+  hiding the validation limit. Covered by real HTTP stubs, subprocess
+  stdio/HTTP isolation regressions, and a real marimo-kernel probe preserved in
+  `.hermes/probes/t17-prefix/`; the packaged fallback reference teaches the
+  validation-before-write rule.
+- **T21** ✅ *Stale or restored output is explicitly labelled* — every
+  `get_cell_outputs().cells[]` row now carries the kernel's `runtime_state`
+  (the same value exposed by `get_cell_map`) and `output_stale`, true exactly
+  when that state is `stale`. The previous rendering remains available, but
+  the tool description, `next_steps`, and packaged co-work loop tell callers
+  to run the cell before trusting it as current. The real-kernel regression
+  proves run → edit-without-run → re-run transitions from `idle/false` to
+  `stale/true` while preserving the prior rendering, then back to
+  `idle/false` with the new rendering. The headless `/sse` harness does not
+  restore created cells from marimo's on-disk session cache, so that narrower
+  restart flavour was probed and recorded but not claimed as CI coverage.
 
 ## Measured state (2026-09-10, after T4 + T6 + T9 + T9-b + T10 + T11 + T12 + T13 + T3 + T14)
 
