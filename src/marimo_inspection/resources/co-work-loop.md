@@ -67,8 +67,72 @@ records that baseline — a `get_cell_map` preview is not a source read.
 
 - `create_cell` — add a cell (visible by default, `hide_code=False`).
 - `edit_cell` — change a cell's source; returns the post-edit `code_hash`.
-- `run_cell` — execute a cell.
+- `run_cell` — execute a cell, a cell with its descendants, or the whole
+  notebook (see below).
 - `delete_cell` — only after checking the dependency graph (step below).
+
+### `run_cell` modes
+
+`run_cell(cell_id, mode=...)` says what the tool **queues** — not everything the
+kernel ends up running. `cell_id` is a cell **id or cell name**, resolved the way
+`ctx.cells` resolves a key; `requested_cell_ids` always carries the resolved
+IDs, `cell_id` echoes what you passed, and `resolved_cell_id` reports the
+resolution:
+
+| mode | queues | requires |
+| --- | --- | --- |
+| `mode="cell"` (default) | exactly the target cell | `cell_id` (id or name) |
+| `mode="descendants"` | the target cell **plus** its `ctx.graph` descendants | `cell_id` (id or name), and the target must be registered in the kernel graph |
+| `mode="all"` | **every** document cell in the notebook, in one code-mode context | an **empty** `cell_id` |
+
+- `mode="all"` is the run-all fix: it executes cells that nothing else depends
+  on, so their widgets finally register (an unreferenced widget leaf is
+  unreachable from `set_ui_value` until its cell has run). It is a **full
+  re-run** — already-idle cells and deliberately un-run cells run again.
+- `mode="descendants"` **never silently degrades**. A fresh, un-instantiated
+  session has an empty kernel graph, so a target that is not registered returns
+  `status: error`, `reason: graph_unpopulated` and runs *nothing*; call
+  `mode="all"` (which registers the document) and retry. On a populated graph
+  in autorun mode the kernel already re-runs descendants, so this mode is
+  explicit intent rather than new coverage.
+- Passing both `mode="all"` and a `cell_id` is refused with
+  `reason: cell_id_not_allowed` — never accepted-and-ignored.
+
+**What the kernel adds.** Whatever the mode, marimo still runs cells outside
+`requested_cell_ids`: still-uninstantiated **ancestors** of the targets, and (in
+autorun mode) registered **descendants**. The relative order of independent
+cells is **unspecified** — `requested_cell_ids` is a set of targets, never an
+execution order.
+
+**What the response reports.** Every id or name is validated by a plan/read
+before anything is queued, so an unknown one aborts with
+`reason: unknown_cell_ids` and nothing runs. After the run a separate report
+reads each target's terminal state (marimo discards the run payload when any
+target raises, and the in-context snapshot is frozen):
+
+- `cells[]` — per requested target: `runtime_state`, `output_stale`, `known`,
+  and the structured `errors` (`[{kind, message}]`) with `errors_readable`.
+  `errors` is `null` when the post-run channel could not be read — treat that as
+  UNKNOWN, never as "no errors".
+- `succeeded_cell_ids` — targets that ended `idle` **with a readable, empty
+  `errors`**.
+- `failed_cell_ids` — targets that ended `exception`, `marimo-error`,
+  `cancelled` or `interrupted`. It covers the **requested targets only**: the
+  kernel may also run cells outside `requested_cell_ids`, and their failure
+  surfaces through the run payload's `error`/`execution_error` + `stderr`, not
+  here.
+- `not_run_cell_ids` — everything else (stale, disabled, unknown), including an
+  `idle` target whose `errors` channel was unreadable — those also appear in
+  `unverified_cell_ids` and are never counted as succeeded.
+- `counts` and `status`: `ok` **only** when every requested target is idle,
+  `partial` when any target failed or did not finish, and `error` for
+  validation/planning/reporting failures — `unknown_cell_ids`,
+  `graph_unpopulated`, `cell_id_not_allowed`, `invalid_mode`,
+  `cell_id_required`, `planning_failed`, `reporting_failed`. A failure always
+  carries a top-level `error` string beside the structured `status`/`reason`.
+- `execution_error` + `stderr` — present when the run call itself failed (a
+  target raised), so a failed batch is never reported as a plain success; the
+  same failure also sets the top-level `error`.
 
 ## 5. Interact
 
@@ -148,18 +212,20 @@ nothing. Each flagged `cells[]` entry names the evidence it found in
 entry's `console_stderr` events instead of assuming a UI-handler traceback.
 
 **A failed `run_cell` reports through its own payload, and `get_errors`'
-structured channel can be silent about it.** `run_cell` returns `{"error":
-"Execution failed", "stderr": <traceback>}` while `get_errors` reads marimo's
-*structured* records — which are not written for one failure class: a cell that
-references a name marimo resolves as another cell's **cell-private** variable
-(a leading-underscore name, see §5). That cell ends `status: "exception"` with
-an empty `cell.errors`, so `get_errors` reports `has_errors: false` and counts
-no structured error for it — but its traceback is still visible: in the run
-payload, and in that cell's `console_stderr` entry under the console channel.
-Ordinary runtime failures (`1/0`, or a name that exists nowhere) are recorded in
-both channels. So never use `get_errors`' structured counts alone as the
-post-run check — read the run payload first, and use `get_errors` (structured
-*and* console) for the notebook-wide picture.
+structured channel can be silent about it.** A run in which a target raises
+returns `status: "partial"` with the kernel traceback in `execution_error` /
+`stderr` and that target in `failed_cell_ids` (`cells[].runtime_state` names the
+outcome, e.g. `exception`, or `cancelled` for a cell the kernel never got to),
+while `get_errors` reads marimo's *structured* records — which are not written
+for one failure class: a cell that references a name marimo resolves as another
+cell's **cell-private** variable (a leading-underscore name, see §5). That cell
+ends `status: "exception"` with an empty `cell.errors`, so `get_errors` reports
+`has_errors: false` and counts no structured error for it — but its traceback is
+still visible: in the run payload, and in that cell's `console_stderr` entry
+under the console channel. Ordinary runtime failures (`1/0`, or a name that
+exists nowhere) are recorded in both channels. So never use `get_errors`'
+structured counts alone as the post-run check — read the run payload first, and
+use `get_errors` (structured *and* console) for the notebook-wide picture.
 
 ## 7. Lint
 

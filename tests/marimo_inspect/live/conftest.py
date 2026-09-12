@@ -233,7 +233,7 @@ class MarimoServerManager:
             self._state_dir = None
 
 
-# ─── Session-Scoped Fixtures ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# ─── Session-Scoped Fixtures ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture(scope="session")
@@ -339,6 +339,52 @@ async def mutation_server(tmp_path):
     assert NOTEBOOK_PATH.read_bytes() == original_bytes, (
         "Hermeticity violation: notebooks/test_marimo.py changed under the "
         "mutation suite. Run `git status` and restore it."
+    )
+
+
+@pytest.fixture(scope="function")
+async def notebook_server(tmp_path):
+    """Factory: boot an isolated headless server on a PURPOSE-BUILT notebook.
+
+    Returns an async ``_boot(source, name="notebook.py")`` that writes ``source``
+    into ``tmp_path``, starts a fresh ``MarimoServerManager`` on it and creates
+    its session via the ``/sse`` handshake — the same never-instantiated session
+    the shared and mutation fixtures use, but on a cell set the caller controls.
+    Use it when a test needs a deterministic document (e.g. a bulk-run notebook
+    without the repo fixture's deliberate error cell) instead of mutating a copy
+    of ``notebooks/test_marimo.py``.
+
+    Teardown stops every server it started and re-checks that the repo fixture
+    ``notebooks/test_marimo.py`` is byte-identical to what it was at boot (the
+    same hermeticity gate ``mutation_server`` applies). The check runs only when
+    setup + the test body succeeded, so it can never mask a real failure.
+    """
+    managers: list[MarimoServerManager] = []
+    original_bytes = NOTEBOOK_PATH.read_bytes()
+
+    async def _boot(source: str, name: str = "notebook.py"):
+        notebook = tmp_path / name
+        notebook.write_text(source)
+        manager = MarimoServerManager()
+        await manager.start(str(notebook))
+        await manager.create_session()
+        managers.append(manager)
+        return manager, manager.server_url, manager.session_id, notebook
+
+    try:
+        yield _boot
+    except Exception:
+        for manager in managers:
+            manager.dump_logs()
+        raise
+    finally:
+        for manager in managers:
+            await manager.stop()
+
+    # Only reached when setup + the test body succeeded (see docstring).
+    assert NOTEBOOK_PATH.read_bytes() == original_bytes, (
+        "Hermeticity violation: notebooks/test_marimo.py changed under the "
+        "notebook_server factory. Run `git status` and restore it."
     )
 
 

@@ -221,8 +221,10 @@ async def test_set_ui_value_cannot_address_a_cell_private_widget(mutation_server
         assert "not a live kernel global" in result["message"], result
 
         # And a dependent cell cannot see the name either: it is cell-private,
-        # not merely hidden from the tool. The run fails with a NameError and
-        # run_cell surfaces the kernel's traceback.
+        # not merely hidden from the tool. The run fails with a NameError, and
+        # run_cell reports it truthfully: the run call carries the kernel's
+        # traceback in `execution_error`/`stderr` (T15) while the per-cell
+        # report names the failing cell and its terminal state.
         reader = await create_cell(
             "private_readback = int(_private_slider.value) + 100",
             session_id=session_id,
@@ -232,8 +234,14 @@ async def test_set_ui_value_cannot_address_a_cell_private_widget(mutation_server
         run = await run_cell(
             reader["cell_id"], session_id=session_id, server_url=server_url
         )
-        assert "error" in run, run
+        assert run["status"] == "partial", run
+        assert run["execution_error"], run
         assert "_private_slider" in run.get("stderr", ""), run
+        assert run["failed_cell_ids"] == [reader["cell_id"]], run
+        failed_row = next(
+            row for row in run["cells"] if row["cell_id"] == reader["cell_id"]
+        )
+        assert failed_row["runtime_state"] == "exception", failed_row
 
         # The STRUCTURED channel stays silent about this failure class: the
         # cell ends `exception` with an EMPTY `cell.errors`, so `has_errors` is

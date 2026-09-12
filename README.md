@@ -89,6 +89,48 @@ returns the post-edit `code_hash`. `check_fresh=False` is an explicit force
 escape hatch, **not** the recovery path. A missing cell id returns a clear
 error before anything is mutated.
 
+### Running cells — and running the whole notebook
+
+`run_cell(cell_id, mode=...)` queues what the `mode` names, and reports what
+each target actually did. `cell_id` is a cell **id or cell name** (resolved the
+way `ctx.cells` resolves a key — a name that worked before the modes existed
+still works): `requested_cell_ids` always carries the resolved IDs, `cell_id`
+echoes your input, and `resolved_cell_id` reports the resolution.
+
+| mode | queues | needs |
+| --- | --- | --- |
+| `"cell"` (default) | just that cell | `cell_id` |
+| `"descendants"` | that cell + its kernel-graph descendants | `cell_id`, registered in the kernel graph |
+| `"all"` | every document cell, in one code-mode context | an **empty** `cell_id` |
+
+`mode="all"` is how an unreferenced cell (and the widgets it defines) finally
+runs on a fresh session: nothing else ever pulls it in, so `set_ui_value` on its
+widget returns `unknown_variable` until then. It is a **full re-run** — already
+idle cells run again. `mode="descendants"` refuses rather than degrades: a
+target the kernel graph has not registered (every document cell, on a fresh
+un-instantiated session) returns `status: error`, `reason: graph_unpopulated`
+and runs nothing. Passing `mode="all"` together with a `cell_id` is refused
+(`reason: cell_id_not_allowed`).
+
+The kernel may additionally run cells outside `requested_cell_ids` — stale
+ancestors, and registered descendants in autorun mode — and the relative order of
+independent cells is unspecified; `requested_cell_ids` is a set of targets, never
+an execution order. The response is per requested target: `cells[].runtime_state`
+and `cells[].errors` (with `errors_readable`; `errors` is `null` when the
+post-run error channel could not be read, and such a target is reported
+`not_run`/unverified, **never** `succeeded`), plus `succeeded_cell_ids` (`idle`
+with a readable, empty `errors`), `failed_cell_ids`
+(`exception`/`marimo-error`/`cancelled`/`interrupted` — it covers the requested
+targets only) and `not_run_cell_ids` / `unverified_cell_ids` (everything else,
+e.g. stale/disabled/unknown). `status` is `ok` only when every requested target
+is idle, `partial` when any failed or did not finish, and `error` for
+validation/planning/reporting failures (`cell_id_required`, `invalid_mode`,
+`cell_id_not_allowed`, `unknown_cell_ids`, `graph_unpopulated`,
+`planning_failed`, `reporting_failed`). Every failure — and a run whose batch
+call itself failed (`execution_error` + `stderr`) — carries a top-level `error`
+string alongside the structured `status`/`reason`, so a caller that checked the
+old `{"error": ...}` payload still sees the failure.
+
 ### New cells are visible by default
 
 `create_cell` defaults to `hide_code=False`, so a new cell's code shows in the

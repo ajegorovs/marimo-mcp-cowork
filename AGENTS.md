@@ -232,12 +232,14 @@ frontends.
   zero-context agent. Read its final-gate section and evidence pointers before
   re-running the round — a green suite alone cannot show whether the docs still
   teach the old behaviour.
-- `docs/agenda-udv-consumer-findings.md` — **Round 1 closed, Round 2 OPEN**:
-  consumer-pass findings. §Round 2 is the open work (no run-all execution,
-  session-identity churn, app-mode invisibility, the recipe gotcha that decides
-  which session a browser lands on, and three *reporting* gaps) — read it
-  before re-running a browser verification pass. §Resolved log holds the closed
-  round-1 decision trail, not open work.
+- `docs/agenda-udv-consumer-findings.md` — **Round 1 closed, Round 2 open
+  (T15/T17/T21 resolved)**: consumer-pass findings. §Round 2's open work is T18
+  (a server with no session is invisible), T19 (the recipe gotcha that decides
+  which session a browser or `/sse` stream lands on), T20 (`set_ui_value`
+  cannot confirm a click on a side-effect-only button) and T22 (session
+  provenance is invisible) — read it before re-running a browser verification
+  pass. The T15 prose is historical (execution modes shipped) and T16/T17/T21
+  are closed too. §Resolved log holds the closed decision trail, not open work.
 - `docs/agenda-example-notebooks.md` — **OPEN** agenda: what `examples/` is
   (its contract against `notebooks/`) and where it gets wired so it cannot rot.
   Read before adding or moving an example notebook.

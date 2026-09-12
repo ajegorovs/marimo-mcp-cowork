@@ -1,8 +1,8 @@
 # How we run live kernel tests
 
 > Updated: 2026-09-12 — verified against the current working tree (live suite
-> green, incl. the hermetic mutation, widget, T-V3 dependency-completeness and
-> T-V4 notebook-only-variables regressions; see
+> green, incl. the hermetic mutation, widget, run-mode (T15), T-V3
+> dependency-completeness and T-V4 notebook-only-variables regressions; see
 > [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
 > is, the commands, the boot mechanics, and its *actual* status today.
@@ -95,8 +95,8 @@ All orchestration lives in `tests/marimo_inspect/live/conftest.py`
 3. **One session per server.** marimo edit mode allows exactly one session per
    server; a second connection replaces the first. So tests share the single
    session rather than creating fresh ones per test — EXCEPT the hermetic
-   mutation regressions, which boot one additional isolated server per test
-   (see below).
+   mutation, widget and run-mode regressions, which boot one additional isolated
+   server per test (see below).
 
 4. **`live_client`** (function-scoped) — a **fresh** `MarimoClient` per
    test (function scope avoids SSE/connection-pool reuse problems), closed
@@ -135,15 +135,15 @@ instead: cells created through the write tools *do* run, which is what makes the
 dependency, variables and widget regressions behavioral rather than structural
 (see the hermetic sections below).
 
-## What's tested (43 tests, 9 files in `tests/marimo_inspect/live/`)
+## What's tested (48 tests, 10 files in `tests/marimo_inspect/live/`)
 
-The directory holds 8 test modules plus the shared `conftest.py` harness
+The directory holds 9 test modules plus the shared `conftest.py` harness
 (`MarimoServerManager` + fixtures). Counts are stable as of the run in
 [Current status](#current-status).
 
 | File | Tests | Asserts |
 | --- | --- | --- |
-| `conftest.py` | — | harness only: boots the session-scoped headless server, creates its session via the `/sse` handshake, and exposes the per-test `mutation_server` fixture |
+| `conftest.py` | — | harness only: boots the session-scoped headless server, creates its session via the `/sse` handshake, and exposes the per-test `mutation_server` and `notebook_server` fixtures |
 | `test_cell_map.py` | 5 | map reports the fixture's 6 cells incl. hidden setup (`def _double` preview) and the intentional error cell; preview truncated to 3 lines; truthfulness flags (`has_output`/`has_console_output`/`has_errors`) are bool or None, never faked |
 | `test_cell_data.py` | 4 | per-cell code round-trips (computed-value cell, error cell); count agrees with cell map |
 | `test_cell_outputs.py` | 5 | every cell is listed with the documented output keys; `runtime_state` matches the cell map and `output_stale` marks a stale cell while preserving its prior rendering, then clears after a verified re-run (T21) |
@@ -151,6 +151,7 @@ The directory holds 8 test modules plus the shared `conftest.py` harness
 | `test_dependency.py` | 3 | template executes against a live kernel and returns the documented structure/types; **T-V3** — cell completeness: one dependency entry per live notebook cell with `set(cells ids) == set(get_cell_map ids)`, `cell_name` agreement for *every* cell, a real parent/child edge between a created import cell and its dependent, and a never-run fixture cell present with empty graph-derived lists (no invented edges, no dropped cells) — all through the real handlers against `mutation_server` |
 | `test_errors.py` | 5 | template returns consistent, typed error summary; stable across repeated runs — plus **console-channel regressions**: a UI-handler traceback marimo never records structurally is flagged through `console_stderr` (`has_console_exception: true`), and a `print()` lands in `get_cell_outputs.stdout` |
 | `test_mutation.py` | 8 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, external-conflict→re-read→recover, and the guard-scope invariants — an unrelated write neither disarms the guard nor blesses a never-read cell, a `get_cell_map` preview records no read baseline, an insert/delete leaves every other cell's `code_hash` unchanged, and `get_cell_map` still reports `changes_since_last` — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
+| `test_run_cell_modes.py` | 5 | **hermetic run-mode regressions**: `mode="all"` on a fresh `/sse` session runs every document cell and registers an unreferenced widget leaf (unreachable via `set_ui_value` before); `mode="descendants"` refuses `graph_unpopulated` on an unregistered target (nothing runs) and resolves target + descendants once `mode="all"` populated the graph; a mixed batch reports `exception` and `cancelled` per cell while the run call itself errored; unknown ids/names and `all` + non-empty `cell_id` abort before anything runs, and the default `mode="cell"` stays single-target; a cell NAME resolves like a cell id (pre-modes compat) for `cell` and `descendants`, with the resolved id reported — see [Hermetic run-mode regressions](#hermetic-run-mode-regressions) below |
 | `test_ui.py` | 9 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; a dropdown built from numeric options stores the number and is addressed by its STRING transport key — sending scalar `4` is refused with `did_you_mean: ["4"]` (never `[4]`, which the kernel itself rejects), and applying `["4"]` moves the element to the numeric 4 (`value_after: 4`, confirmed by a dependent read `4 * 2 == 8`); missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
@@ -263,17 +264,74 @@ version — see [marimo-version-support.md](marimo-version-support.md). That doc
 upgrade procedure (step 3) runs `uv run pytest -m live` before widening the
 `<0.25` bound.
 
+## Hermetic run-mode regressions
+
+`test_run_cell_modes.py` pins the `run_cell` execution modes (T15) through the
+**real handler** against a real 0.24 kernel. It uses the `notebook_server`
+factory: a **purpose-built** notebook is written into `tmp_path` and mounted on
+its own disposable server, because the repo fixture carries a deliberate
+`ValueError` cell and a whole-notebook run on it could never be all-idle. The
+factory applies the same hermeticity gate as `mutation_server` (teardown asserts
+`notebooks/test_marimo.py` is byte-identical to what it was at boot).
+
+The purpose-built documents hold a root (`seed = 1`), its descendant
+(`doubled = seed * 2`) and an **unreferenced** widget leaf
+(`mode_slider = mo.ui.slider(...)`, nothing depends on it); the failure document
+adds a cell that raises `NameError` and a dependent that reads its name.
+
+- **`mode="all"` is the run-all fix.** On a fresh, never-instantiated `/sse`
+  session, `set_ui_value("mode_slider", …)` returns `unknown_variable` (the
+  consumer's T15 symptom) — nothing has run the leaf. One `run_cell(mode="all")`
+  queues every document cell, returns `status: ok` with all three in
+  `succeeded_cell_ids` and `failed_cell_ids`/`not_run_cell_ids` empty, and the
+  widget is then **registered and drivable** (`verified`/`applied`, 3 → 7). No
+  widget-specific code: registration follows execution.
+- **`mode="descendants"` refuses rather than degrades.** On the same fresh
+  session the kernel graph is empty, so both the root and the widget leaf are
+  refused with `reason: graph_unpopulated` and *nothing runs* (every cell is
+  still `stale`). After `mode="all"` has registered the document, the same call
+  succeeds and queues exactly `{root, descendant}` — the unrelated leaf is not a
+  descendant and is not queued.
+- **A mixed failure is reported per cell.** The failure document's batch returns
+  `status: partial` with `execution_error` + the kernel traceback in `stderr`
+  (marimo discards the run payload when a target raises), yet `cells[]` still
+  gives the truthful terminal state of every target: the two healthy cells are
+  `succeeded`, the raising cell is `failed` with `runtime_state: "exception"` and
+  a structured `runtime` error naming the `NameError`, and the dependent that
+  never executed is `failed` with a `cancelled`/`interrupted` state. A single
+  batch-level verdict could not express that.
+- **Validation aborts before any run.** An unknown id returns
+  `reason: unknown_cell_ids`, and `mode="all"` with a non-empty `cell_id` returns
+  `reason: cell_id_not_allowed` — after both, every cell is still `stale`. The
+  default `mode="cell"` remains single-target: the root runs, the independent
+  widget leaf does not.
+- **A cell NAME resolves like a cell id (pre-modes compat).** `run_cell` used to
+  forward its target straight to `ctx.run_cell`, which accepts an id **or a
+  name**, so a name still works after the modes landed: an unknown name is
+  refused before anything runs (`reason: unknown_cell_ids`, nothing stale
+  cleared), and a created named cell runs from its name alone — the payload
+  echoes the name (`cell_id`) and reports the resolved id (`resolved_cell_id`,
+  `requested_cell_ids`), so `mode="cell"` and `mode="descendants"` both queue
+  the resolved id (queuing the name would raise at queue time).
+
+Non-live coverage of the same contract lives in `tests/marimo_inspect/`
+(`test_mutation.py` handler cases, `TestRunCellTemplates` in `test_templates.py`
+for the plan/run/report templates, `test_server.py` for the advertised
+three-literal `mode` schema, and `test_resources.py` for the packaged
+co-work/live-safety/fallbacks guidance). The pre-fix failure evidence for both
+tiers is preserved in `.hermes/probes/t15-prefix/`.
+
 ## Current status (verified 2026-09-12)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (412 tests collected in total):
+split (454 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 43 passed, 369 deselected
+=> 48 passed, 406 deselected
 
 uv run pytest -m "not live"
-=> 369 passed, 43 deselected
+=> 406 passed, 48 deselected
 ```
 
 (Elapsed times are machine-dependent and not part of the contract; the split and
@@ -284,6 +342,13 @@ The widget regressions alone (they boot one isolated server per test):
 ```text
 uv run pytest tests/marimo_inspect/live/test_ui.py -m live
 => 9 passed
+```
+
+The run-mode regressions alone (one purpose-built notebook per test):
+
+```text
+uv run pytest tests/marimo_inspect/live/test_run_cell_modes.py -m live
+=> 5 passed
 ```
 
 The mutation regressions alone:

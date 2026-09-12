@@ -59,6 +59,34 @@ def create_server(
         before editing it — a `get_cell_map` preview does NOT record the read
         baseline, so the first edit of a cell needs one `get_cell_data`.
 
+        `run_cell(cell_id, mode=...)` takes `cell_id` as a cell ID **or cell
+        name** (resolved like `ctx.cells`; `requested_cell_ids` always carries
+        the resolved IDs, and `resolved_cell_id` reports the resolution).
+        `mode="cell"` (default) queues just the target; `"descendants"` queues
+        the target plus its kernel-graph descendants and refuses
+        `reason: graph_unpopulated` (running nothing) when the target is not
+        registered — e.g. on a fresh session, whose graph is empty; `"all"`
+        queues every document cell in the notebook and requires `cell_id` to be
+        empty (`reason: cell_id_not_allowed` otherwise), so an unreferenced cell
+        and its widgets finally execute. Whatever the mode, the kernel may
+        additionally run stale ancestors and autorun descendants outside the
+        requested set, and the relative order of independent cells is
+        unspecified. The response is per requested target
+        (`cells[].runtime_state` / `.errors` / `.errors_readable`,
+        `succeeded_cell_ids`, `failed_cell_ids`, `not_run_cell_ids`,
+        `unverified_cell_ids`, `counts`): `succeeded` means `idle` with a
+        readable, empty `errors` (`cells[].errors` is `null` when the channel
+        could not be read — such a target is reported `not_run`/unverified,
+        never succeeded), and `failed_cell_ids` covers the requested targets
+        only. `status` is `ok` only when every requested target is idle,
+        `partial` when any target failed or did not finish, and `error` for
+        validation/planning/reporting failures (`cell_id_required`,
+        `invalid_mode`, `cell_id_not_allowed`, `unknown_cell_ids`,
+        `graph_unpopulated`, `planning_failed`, `reporting_failed`), each
+        carrying a top-level `error` string plus the structured
+        `status`/`reason`; a failing run reports `error`/`execution_error` +
+        `stderr`.
+
         Widget interaction: `set_ui_value` sets a live UI element's value by
         its variable name. Value shapes are per widget and are never coerced
         (`dropdown` takes its option key inside a one-element list); a

@@ -1,14 +1,17 @@
 # Agenda (resolved): first-consumer integration findings (udv-echo-process)
 
-> **Status:** **Round 1 closed; Round 2 open** — T15–T22: added 2026-09-12,
-> extended the same day with T20–T22 from a third pass over that session
-> (§Round 2). T3, round 1's last item, was resolved by
-> review on 2026-09-10: the DSH list-argument mangling it reported does not
-> reproduce, and the defensive types it recorded as "no defensive type landed
-> here" had in fact landed in `8a44b8c` (tag v0.2.0) — the same day T3 was
-> filed. That review did surface one real provider-side defect, recorded and
-> fixed as T14. T3 was the only item the harness ever owned, so nothing here is
-> waiting on an upstream fix.
+> **Status:** **Round 1 closed; Round 2 open (T15/T17/T21 since resolved)** —
+> T15–T22: added 2026-09-12, extended the same day with T20–T22 from a third
+> pass over that session (§Round 2). Round 2's T15 (execution modes), T17
+> (validation-before-bind) and T21 (row-level staleness) are closed — the
+> per-item state column and the Resolved log carry the decision trail; the
+> prose below records each finding as it was filed, not as it stands today.
+> T3, round 1's last item, was resolved by review on 2026-09-10: the DSH
+> list-argument mangling it reported does not reproduce, and the defensive types
+> it recorded as "no defensive type landed here" had in fact landed in `8a44b8c`
+> (tag v0.2.0) — the same day T3 was filed. That review did surface one real
+> provider-side defect, recorded and fixed as T14. T3 was the only item the
+> harness ever owned, so nothing here is waiting on an upstream fix.
 > **Created:** 2026-09-07 · **Condensed to open items only:** 2026-09-10 ·
 > **T4 + T6 + T9-b + T10 + T11 + T12 + T13 closed:** 2026-09-10 ·
 > **T3 + T14 closed (agenda fully resolved):** 2026-09-10.
@@ -48,20 +51,23 @@ None. Every item from this integration is resolved — T3 was the last, and
 nothing here is waiting on an upstream harness fix. The log below keeps the
 record and the evidence pointer for each item.
 
-## Round 2 — open items (2026-09-12)
+## Round 2 — findings (2026-09-12)
 
 A second working session on the same consumer — a live sidebar notebook, a
 throwaway probe, and a new example notebook in this repo — produced eight
-findings. T15–T18 are **capability gaps** (things the surface cannot do); T19 is
-a **recipe gotcha** (something it can do, that is easy to get wrong and cost real
-time here); T20–T22 are **reporting gaps** — the surface does the thing but
-cannot say so: a click it cannot confirm (T20), an output it restores without
-marking stale (T21), a session whose owner it does not name (T22). Evidence is
-from the consumer's session log; label conventions as above.
+findings, recorded below **as they were filed**. T15–T18 were **capability
+gaps** (things the surface could not do); T19 is a **recipe gotcha** (something
+it can do, that is easy to get wrong and cost real time here); T20–T22 were
+**reporting gaps** — the surface does the thing but cannot say so: a click it
+cannot confirm (T20), an output it restores without marking stale (T21), a
+session whose owner it does not name (T22). Evidence is from the consumer's
+session log; label conventions as above. The per-item state column and the
+Resolved log are the current truth — each resolved item states its fix and the
+test that pins it.
 
 | id | item | state |
 | --- | --- | --- |
-| T15 | No run-all / run-with-descendants, so an unreferenced cell never runs and its widgets never register | open |
+| T15 | No run-all / run-with-descendants, so an unreferenced cell never runs and its widgets never register | **resolved — `run_cell` execution modes; see Resolved log** |
 | T16 | A `mo.sidebar(...)` cell's content is unreadable (`visual_output: null`) | **revised 2026-09-12: no longer reproduces — see the T16 revision note** |
 | T17 | Session identity is unstable without an attached client; an invented id binds but is then "not found" | **resolved — validation-before-bind; see Resolved log** |
 | T18 | A server with no session is invisible, and two headless `marimo edit` launches disagreed about having one | open |
@@ -70,14 +76,18 @@ from the consumer's session log; label conventions as above.
 | T21 | `get_cell_outputs` carries no staleness signal, so a RESTORED cell output reads as current | **resolved — row-level state and stale flag; see Resolved log** |
 | T22 | A session's provenance is invisible (agent-materialized vs frontend-owned), so a forced takeover is undiscoverable | open |
 
-**T15 — no bulk execution.** `run_cell` runs a cell plus its *ancestors*, so a
-cell that nothing else depends on never runs and the widgets it defines are
-never registered: `set_ui_value` then fails with `unknown_variable` ("not a live
-kernel global"). Observed twice — a probe's button variable, and the buttons
-cell of a two-cell control block. A rollup tool (or a run-descendants flag) would
-remove it; without one, driving a notebook through MCP alone means running every
-cell in dependency order by hand, and on a `/sse`-created session (never
-instantiated) that is the *first* obstacle on every fresh session.
+**T15 — no bulk execution (as filed 2026-09-12; RESOLVED — see the Resolved
+log).** `run_cell` ran a cell plus its *ancestors*, so a cell that nothing else
+depends on never ran and the widgets it defined were never registered:
+`set_ui_value` then failed with `unknown_variable` ("not a live kernel global").
+Observed twice — a probe's button variable, and the buttons cell of a two-cell
+control block. A rollup tool (or a run-descendants flag) was the recorded ask;
+without one, driving a notebook through MCP alone meant running every cell in
+dependency order by hand, and on a `/sse`-created session (never instantiated)
+that was the *first* obstacle on every fresh session. **Resolution:** `run_cell`
+gained the `mode` execution modes (default `mode="cell"` unchanged, so existing
+callers — including those passing a cell **name** — are untouched); the T15
+entry in the Resolved log below holds the contract and the tests that pin it.
 
 **T16 — sidebar is a blind spot.** `get_cell_outputs` returns
 `visual_output: null` for a cell whose last expression is `mo.sidebar(...)` — the
@@ -400,6 +410,55 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   `tests/marimo_inspect/test_list_args.py` (15 shape cases plus one
   handler-level case per list-typed tool); the JSON-array assertions fail
   against the pre-fix helper.
+- **T15** ✅ *No bulk execution — `run_cell` now carries execution modes* —
+  `run_cell(cell_id, mode="cell"|"descendants"|"all")`, default `"cell"`, with
+  `cell_id` optional so existing callers are untouched and the advertised
+  14-tool surface stays fixed (no new tool). `cell_id` is resolved by cell **id
+  or cell name**, exactly as `ctx.cells` resolves a key — the pre-modes tool
+  forwarded the target straight to `ctx.run_cell`, so a caller that passed a
+  name keeps working; `requested_cell_ids` always carries the resolved ID(s)
+  (never the name), with `cell_id` echoing the input and `resolved_cell_id`
+  reporting the resolution. `mode="all"` queues every document
+  cell in one code-mode context, so an unreferenced cell — and the widgets it
+  defines — finally executes (the consumer's `unknown_variable` symptom);
+  `mode="descendants"` adds the target's kernel-graph descendants and, on a
+  fresh non-instantiated session whose graph is empty, refuses with
+  `reason: graph_unpopulated` and runs **nothing** instead of silently
+  degrading to one cell; `mode="all"` with a non-empty `cell_id` is refused
+  (`reason: cell_id_not_allowed`), never accepted-and-ignored. The operation is
+  three calls — a plan/read that validates every id or name before anything is
+  queued (an unknown one aborts with `reason: unknown_cell_ids` and nothing
+  runs), the single context that queues the batch (marimo schedules it), and a
+  separate post-run report (marimo discards the run payload when a target
+  raises, and the in-context snapshot is frozen) — so the response is per
+  requested target: `cells[].runtime_state`, structured `errors` and
+  `errors_readable` (`errors` is `null` when the channel could not be read —
+  such a target is reported **not run/unverified**, never succeeded),
+  `succeeded_cell_ids` (idle **with a readable, empty `errors`**),
+  `failed_cell_ids` (`exception`/`marimo-error`/`cancelled`/`interrupted`; the
+  requested targets **only**), `not_run_cell_ids` (everything else, incl.
+  stale/disabled/unknown), `unverified_cell_ids`, `counts` and `status: ok`
+  **only** when every requested target is idle (`partial` otherwise, `error` for
+  validation/planning/reporting failures — `cell_id_required`, `invalid_mode`,
+  `cell_id_not_allowed`, `unknown_cell_ids`, `graph_unpopulated`,
+  `planning_failed`, `reporting_failed`), plus `execution_error` / `stderr`
+  when the run call itself failed. Every failure keeps the pre-modes top-level
+  `error` string beside the structured `status`/`reason`, so a caller written
+  against the old `{"error": ...}` payload still sees it, and `error` is also
+  set (with `execution_error`/`stderr`) when a run's batch call failed. The
+  payload and the packaged resources state that the kernel may additionally run
+  stale ancestors and autorun descendants outside the requested set and that
+  independent ordering is unspecified. Pinned live by
+  `tests/marimo_inspect/live/test_run_cell_modes.py` (a purpose-built notebook
+  on the new hermetic `notebook_server` factory: all-mode on a fresh session +
+  widget registration, the empty-graph refusal then resolution, per-cell
+  exception/cancelled reporting under a failing run, abort-before-run
+  validation, and running a target by **cell name** — cell and descendants —
+  with an unknown name still refused) and non-live by the `run_cell` handler,
+  template, server-schema and packaged-resource tests (incl. name resolution,
+  the legacy `error` key on every failure path, and the unreadable-errors
+  channel); the pre-fix failures of both tiers are preserved in
+  `.hermes/probes/t15-prefix/`.
 - **T17** ✅ *A nonexistent session can no longer be bound* —
   `set_active_session` now validates the exact ID against live
   `GET /api/sessions` data before changing MCP-session state or the scoped

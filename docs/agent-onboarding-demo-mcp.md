@@ -265,6 +265,9 @@ session auto-ran on open — Steps 4-5 handle both.
 ### Step 4 — Run starter cells via MCP
 **Mutate:** call `run_cell(cell_id, server_url)` for every stale cell id from
 the `get_cell_map` result. (The ids may be anything; run each stale one.)
+`run_cell(mode="all")` does the same in one call — it queues every document
+cell — and the response's `succeeded_cell_ids` / `failed_cell_ids` /
+`not_run_cell_ids` say exactly which cells ran.
 
 ### Step 5 — Verify imports ran via MCP
 **Call:** `get_cell_map(session_id, server_url)`
@@ -346,8 +349,12 @@ value next to the control. This is required for the demo to be interactive.
 
 **Dependency-order caveat:** run newly created cells in dependency order. If a
 downstream cell references a name from a not-yet-run cell, `run_cell` of the
-upstream cell can return `"error": "Execution failed"` carrying a `NameError`
-from the still-stale downstream cell (marimo re-runs dependents automatically).
+upstream cell comes back `status: "partial"` with the `NameError` in
+`execution_error`/`stderr` (marimo re-runs dependents automatically, which is how
+the stale downstream cell got executed). `failed_cell_ids` and `cells[]` cover
+only the requested targets: a dependent the kernel ran on its own, outside
+`requested_cell_ids`, appears solely through `execution_error`/`stderr` — never
+in `failed_cell_ids`.
 That is not a failure of your cell — run the remaining cells to resolve it.
 For this demo, create the picker + slider cells first, then run both, before
 creating any cell that reads `f_pick`/`start_s`/`span_s`.
@@ -471,7 +478,7 @@ Both reads and writes go through MCP tools — no inline Python needed.
 | `lint_notebook(session_id, server_url)` | Lint diagnostics | `uv run marimo check` |
 | `create_cell(source, ...)` | Write a new cell | `execute-code.sh` (fallback only) |
 | `edit_cell(cell_id, source, ...)` | Update a cell (staleness guard) | `execute-code.sh` (fallback only) |
-| `run_cell(cell_id)` | Execute a cell | `execute-code.sh` (fallback only) |
+| `run_cell(cell_id, mode=...)` | Execute one cell (`"cell"`), a cell plus its descendants (`"descendants"`), or every document cell (`"all"`) | `execute-code.sh` (fallback only) |
 | `delete_cell(cell_id)` | Remove a cell | `execute-code.sh` (fallback only) |
 | `set_active_session(session_id)` | Rebind the active session explicitly | passing `session_id` on every call |
 | `set_ui_value(variable_name, value)` | Set a live widget value (accepts no source code) | manual UI interaction |

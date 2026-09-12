@@ -11,6 +11,14 @@ cell's live source hash against the agent's last full-source READ BASELINE
 read, the edit is REFUSED and the agent is told to re-read — impossible silent
 stomps during simultaneous co-work. This mirrors Hermes' file-edit guard
 (`check_stale`).
+
+`run_cell` carries an execution `mode` (`cell` | `descendants` | `all`) and is
+deliberately a **three-call** operation: a plan/read that validates every target
+before anything is queued, the single code-mode context that queues them (so
+marimo's own scheduler orders them), and a separate post-run report — marimo
+discards the run payload when any target raises and the in-context snapshot is
+frozen. The response reports per-cell terminal states, never a single
+batch-level verdict (T15).
 """
 
 from __future__ import annotations
@@ -18,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
+from typing import Literal
 
 from fastmcp import Context
 
@@ -29,6 +38,28 @@ from marimo_inspection.tools.change_tracking import (
 from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
 
 logger = logging.getLogger(__name__)
+
+#: Accepted `run_cell` modes. `cell` is the default (single-target, backward
+#: compatible); `descendants` adds the target's kernel-graph descendants; `all`
+#: queues every document cell.
+_RUN_MODES: tuple[str, ...] = ("cell", "descendants", "all")
+
+#: Runtime states that mean the target did NOT finish cleanly. Everything else
+#: that is not `idle` (stale, disabled, queued, running, unknown) is `not_run`.
+_RUN_FAILED_STATES = frozenset(
+    {"exception", "marimo-error", "cancelled", "interrupted"}
+)
+
+#: The kernel is the scheduler: it adds cells the caller did not name, and its
+#: tie-breaking among independent cells is not a contract. Said plainly in the
+#: payload so no caller reads `requested_cell_ids` as an execution order.
+_KERNEL_SCHEDULING_NOTE = (
+    "marimo schedules the queued cells itself: it may additionally run still-"
+    "uninstantiated ancestors of the targets and, in autorun mode, registered "
+    "descendants that are NOT in requested_cell_ids, and the relative order of "
+    "independent cells is unspecified. requested_cell_ids is the set of targets, "
+    "never an execution order."
+)
 
 
 async def _get_client(
@@ -326,45 +357,339 @@ async def edit_cell(
 
 
 async def run_cell(
-    cell_id: str,
+    cell_id: str = "",
+    mode: Literal["cell", "descendants", "all"] = "cell",
     *,
     session_id: str = "",
     server_url: str = "",
     ctx: Context | None = None,
 ) -> dict:
-    """Run (execute) an existing cell.
+    """Run cells: one cell, a cell plus its kernel-graph descendants, or ALL cells.
+
+    `mode` selects what the tool QUEUES — not everything the kernel ends up
+    running:
+
+    - `mode="cell"` (default) — that cell only. The kernel may additionally run
+      still-uninstantiated *ancestors* of it (never chosen by this tool).
+    - `mode="descendants"` — the cell plus its `ctx.graph` descendants. This
+      needs the target to be **registered in the kernel graph**: on a fresh,
+      un-instantiated session the graph is empty, so it returns `status: error`,
+      `reason: graph_unpopulated` and runs NOTHING (never a silent single-cell
+      run). Use `mode="all"` to register the document first.
+    - `mode="all"` — every document cell in the notebook, queued in one
+      code-mode context so marimo's own scheduler orders them. `cell_id` must be
+      empty; passing both is refused (`reason: cell_id_not_allowed`) rather than
+      ignored. This is a full re-run: it re-runs cells that are already idle and
+      cells that were deliberately left un-run.
+
+    Whatever the mode, the kernel may also run cells outside
+    `requested_cell_ids` (stale ancestors, autorun descendants), and the
+    relative order of independent cells is unspecified.
+
+    The target is resolved by cell **id or cell name**, exactly as `ctx.cells`
+    resolves a key — so a name that reached the pre-modes `run_cell` still
+    works. `requested_cell_ids` always carries the resolved ID(s), never the
+    name you passed; `cell_id` echoes your input and `resolved_cell_id` reports
+    the resolution.
+
+    Every id is validated by a plan/read call BEFORE anything is queued: marimo
+    raises at queue time on an unknown id and discards the whole batch, so an
+    unknown id or name aborts with `status: error` and nothing runs. After the
+    run a separate report call reads each target's terminal state (the run
+    payload is discarded by marimo when any target raises, and the in-context
+    snapshot is frozen), so the response is per-cell: `cells[]` carries
+    `runtime_state`, `output_stale`, `known`, structured `errors` and
+    `errors_readable` (`errors` is `null` when the channel could not be read);
+    `succeeded_cell_ids` are `idle` with a
+    readable, empty `errors`; `failed_cell_ids` are
+    `exception`/`marimo-error`/`cancelled`/`interrupted`; and
+    `not_run_cell_ids` is everything else (stale, disabled, unknown, or idle
+    with an unreadable `errors` channel — those also appear in
+    `unverified_cell_ids`). `failed_cell_ids` covers the requested targets
+    only. `status` is `ok` only when every requested target is idle, `partial`
+    otherwise, and `error` for a validation failure (`cell_id_required`,
+    `invalid_mode`, `cell_id_not_allowed`), a planning failure
+    (`planning_failed`), a reporting failure (`reporting_failed`),
+    `unknown_cell_ids` or `graph_unpopulated`. Every failure carries a
+    top-level `error` string **and** the structured `status`/`reason` fields,
+    so a caller written against the pre-modes `{"error": ...}` contract still
+    sees the failure.
 
     Args:
-        cell_id: Target cell id.
+        cell_id: Target cell id **or cell name**. Required for
+            `cell`/`descendants`; for `all` it must be empty.
+        mode: Execution mode: "cell", "descendants", or "all".
         session_id: Session ID; omit only when the active-session binding holds
             for this call (see `list_active_notebooks`).
         server_url: Server URL override.
 
     Returns:
-        Dict with status.
+        Dict with `status`, `mode`, `requested_cell_ids`, per-cell outcomes,
+        `succeeded_cell_ids` / `failed_cell_ids` / `not_run_cell_ids`, `counts`,
+        and `execution_error` + `stderr` when the run call itself failed.
     """
-    if not cell_id:
-        return {"error": "cell_id is required", "status": "error"}
+    if mode not in _RUN_MODES:
+        message = (
+            f"mode must be one of {list(_RUN_MODES)}; got {mode!r}. Nothing was run."
+        )
+        return {
+            "status": "error",
+            "reason": "invalid_mode",
+            "mode": mode,
+            "error": message,
+            "message": message,
+        }
+    if mode == "all":
+        if cell_id:
+            message = (
+                "mode='all' plans every document cell, so cell_id must be "
+                f"empty (got {cell_id!r}). Nothing was run."
+            )
+            return {
+                "status": "error",
+                "reason": "cell_id_not_allowed",
+                "mode": mode,
+                "cell_id": cell_id,
+                "error": message,
+                "message": message,
+            }
+    elif not cell_id:
+        return {
+            "status": "error",
+            "reason": "cell_id_required",
+            "mode": mode,
+            # The pre-modes literal, so an old `error` check still hits.
+            "error": "cell_id is required",
+            "message": f"mode={mode!r} requires cell_id. Nothing was run.",
+        }
 
     sid = await resolve_session_id(session_id, ctx)
     client = await _get_client(server_url, ctx)
     session = await client.resolve_session(session_id=sid)
     sid = session.session_id
     if ctx:
-        await ctx.info(f"Running cell {cell_id} in session {sid}...")
+        await ctx.info(f"Running cells (mode={mode}) in session {sid}...")
 
-    from marimo_inspection.templates.mutation import build_run_cell_template
+    from marimo_inspection.templates.mutation import (
+        build_cell_status_template,
+        build_run_cells_template,
+        build_run_plan_template,
+    )
 
-    data = await _execute_json(client, sid, build_run_cell_template(cell_id))
-    if "error" in data:
-        return data
+    # 1. PLAN — validate every id/name and resolve the target set before queueing.
+    plan = await _execute_json(client, sid, build_run_plan_template(cell_id, mode))
+    if "error" in plan:
+        message = "Run planning failed; nothing was executed."
+        return {
+            "status": "error",
+            "reason": "planning_failed",
+            "mode": mode,
+            "session_id": sid,
+            "error": plan.get("error") or message,
+            "execution_error": plan.get("error"),
+            "stderr": plan.get("stderr", ""),
+            "message": message,
+        }
+    reason = plan.get("reason")
+    resolved = plan.get("resolved_cell_id")
+    if reason == "unknown_cell_ids":
+        unknown = plan.get("unknown_cell_ids") or ([cell_id] if cell_id else [])
+        return {
+            "status": "error",
+            "reason": "unknown_cell_ids",
+            "mode": mode,
+            "session_id": sid,
+            "cell_id": cell_id,
+            "resolved_cell_id": None,
+            "unknown_cell_ids": unknown,
+            "error": (
+                f"Unknown cell id or name(s) {unknown}: the whole batch is "
+                "refused and nothing was run. Use get_cell_map for the live "
+                "ids and names."
+            ),
+            "message": (
+                f"Unknown cell id or name(s) {unknown}: the whole batch is "
+                "refused and nothing was run. Use get_cell_map for the live "
+                "ids and names."
+            ),
+        }
+    if reason == "graph_unpopulated":
+        # `resolved` is the actual cell id behind a name or id target.
+        target_id = str(resolved) if resolved else cell_id
+        message = (
+            f"Cell {target_id!r} is not registered in the kernel dependency "
+            "graph, so its descendants cannot be computed (a fresh, "
+            "un-instantiated session has an empty graph). Nothing was run. "
+            "Call run_cell with mode='all' to queue every document cell "
+            "(which registers them), then retry mode='descendants'."
+        )
+        return {
+            "status": "error",
+            "reason": "graph_unpopulated",
+            "mode": mode,
+            "session_id": sid,
+            "cell_id": cell_id,
+            "resolved_cell_id": target_id,
+            "requested_cell_ids": [target_id],
+            "error": message,
+            "message": message,
+            "next_steps": [
+                (
+                    "Call run_cell with mode='all' to queue every document cell "
+                    "(which registers them), then retry mode='descendants'."
+                ),
+            ],
+        }
+    requested = [str(c) for c in plan.get("requested_cell_ids", [])]
+    if not requested:
+        return {
+            "status": "ok",
+            "mode": mode,
+            "session_id": sid,
+            "requested_cell_ids": [],
+            "cells": [],
+            "succeeded_cell_ids": [],
+            "failed_cell_ids": [],
+            "not_run_cell_ids": [],
+            "unverified_cell_ids": [],
+            "counts": {"requested": 0, "succeeded": 0, "failed": 0, "not_run": 0},
+            "message": "No document cells to run.",
+            "note": _KERNEL_SCHEDULING_NOTE,
+        }
 
-    return {
-        "status": "ok",
-        "cell_id": cell_id,
-        "session_id": sid,
-        "next_steps": ["Use get_errors/get_cell_outputs to check the run."],
+    # 2. RUN — one code-mode context for the whole batch, so marimo schedules.
+    run = await _execute_json(client, sid, build_run_cells_template(requested))
+    execution_error = run.get("error") if "error" in run else None
+    execution_stderr = run.get("stderr", "") if "error" in run else ""
+
+    # 3. REPORT — a SEPARATE call: marimo discards the run payload when any
+    #    target raises, and the in-context snapshot is frozen.
+    report = await _execute_json(client, sid, build_cell_status_template(requested))
+    if "error" in report:
+        message = (
+            "The cells were queued but their post-run state could not be "
+            "read back, so the outcome is unverified."
+        )
+        response = {
+            "status": "error",
+            "reason": "reporting_failed",
+            "mode": mode,
+            "session_id": sid,
+            "requested_cell_ids": requested,
+            "error": execution_error or report.get("error") or message,
+            "execution_error": execution_error or report.get("error"),
+            "stderr": execution_stderr or report.get("stderr", ""),
+            "message": message,
+        }
+        if mode != "all":
+            response["cell_id"] = cell_id
+            response["resolved_cell_id"] = resolved
+        return response
+
+    rows = {str(row["cell_id"]): row for row in (report.get("rows") or [])}
+    cells: list[dict] = []
+    succeeded: list[str] = []
+    failed: list[str] = []
+    not_run: list[str] = []
+    unverified: list[str] = []
+    for target in requested:
+        row = rows.get(target) or {
+            "cell_id": target,
+            "runtime_state": None,
+            "known": False,
+            "output_stale": False,
+            "errors": None,
+        }
+        state = row.get("runtime_state")
+        errors = row.get("errors")
+        # A `null` errors channel is UNREADABLE, never "empty": an idle target
+        # whose errors could not be read is never called succeeded, it is
+        # reported as not run / unverified.
+        errors_readable = errors is not None
+        if state in _RUN_FAILED_STATES or (state == "idle" and errors):
+            failed.append(target)
+        elif state == "idle" and errors_readable:
+            succeeded.append(target)
+        else:
+            not_run.append(target)
+            if state == "idle":
+                unverified.append(target)
+        cells.append(
+            {
+                "cell_id": target,
+                "runtime_state": state,
+                "output_stale": state == "stale",
+                "known": bool(row.get("known", False)),
+                "errors": errors,
+                "errors_readable": errors_readable,
+            }
+        )
+
+    counts = {
+        "requested": len(requested),
+        "succeeded": len(succeeded),
+        "failed": len(failed),
+        "not_run": len(not_run),
     }
+    status = "ok" if not failed and not not_run and not execution_error else "partial"
+
+    response = {
+        "status": status,
+        "mode": mode,
+        "session_id": sid,
+        "requested_cell_ids": requested,
+        "cells": cells,
+        "succeeded_cell_ids": succeeded,
+        "failed_cell_ids": failed,
+        "not_run_cell_ids": not_run,
+        "unverified_cell_ids": unverified,
+        "counts": counts,
+        "note": _KERNEL_SCHEDULING_NOTE,
+    }
+    if mode != "all":
+        # Backward-compatible single-target fields: `cell_id` echoes the input
+        # (id or name), `resolved_cell_id` is the id it resolved to.
+        response["cell_id"] = cell_id
+        response["resolved_cell_id"] = resolved
+    if execution_error:
+        # Backward-compatible: a failing run keeps the top-level `error` key a
+        # caller written against the pre-modes contract checks.
+        response["error"] = execution_error
+        response["execution_error"] = execution_error
+        response["stderr"] = execution_stderr
+    if status == "ok":
+        response["next_steps"] = [
+            (
+                "All requested cells are idle. Use get_cell_outputs/get_variables "
+                "to verify the results."
+            ),
+        ]
+    else:
+        next_steps = []
+        if failed:
+            next_steps.append(
+                f"Read the failed cells' errors ({', '.join(failed)}) with "
+                "get_errors / get_cell_outputs, fix them, then re-run."
+            )
+        if unverified:
+            next_steps.append(
+                "The post-run errors channel was unreadable for "
+                f"{', '.join(unverified)}, so their outcome is UNVERIFIED, "
+                "not succeeded — re-read them with get_cell_map/get_errors."
+            )
+        elif not_run:
+            next_steps.append(
+                f"These requested cells did not finish: {', '.join(not_run)}. "
+                "Check their runtime_state and the stderr above."
+            )
+        if not next_steps:  # execution_error with every target idle
+            next_steps.append(
+                "The batch reported a failure outside requested_cell_ids (the "
+                "kernel also runs ancestors and autorun descendants) — inspect "
+                "the stderr above."
+            )
+        response["next_steps"] = next_steps
+    return response
 
 
 async def delete_cell(

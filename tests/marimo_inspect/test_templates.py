@@ -148,18 +148,26 @@ class _FakeGraph:
         cycles=(),
     ):
         self.cells = dict(cells or {})
-        self.parents = {
-            cid: set(ps) for cid, ps in (parents or {}).items()
-        }
-        self.children = {
-            cid: set(cs) for cid, cs in (children or {}).items()
-        }
+        self.parents = {cid: set(ps) for cid, ps in (parents or {}).items()}
+        self.children = {cid: set(cs) for cid, cs in (children or {}).items()}
         self.definitions = dict(definitions or {})
         self._multiply_defined = set(multiply_defined)
         self.cycles = list(cycles)
 
     def get_multiply_defined(self):
         return self._multiply_defined
+
+    def descendants(self, cell_id):
+        """Transitive descendants via ``children`` — the API the run plan uses."""
+        out: set[str] = set()
+        stack = list(self.children.get(cell_id, set()))
+        while stack:
+            cid = stack.pop()
+            if cid in out:
+                continue
+            out.add(cid)
+            stack.extend(self.children.get(cid, set()))
+        return out
 
 
 class _FakeCellError:
@@ -746,9 +754,7 @@ class TestVariablesTemplate:
 
         data = await _exec_template(
             build_variables_template([]),
-            SimpleNamespace(
-                graph=SimpleNamespace(definitions={"my_var": {"0"}})
-            ),
+            SimpleNamespace(graph=SimpleNamespace(definitions={"my_var": {"0"}})),
             monkeypatch,
             "get_variables",
             namespace_extra={"my_var": 7, "input": object()},
@@ -1010,6 +1016,307 @@ class TestDependencyGraphTemplate:
 
         assert isinstance(TEMPLATE_DEPENDENCY_GRAPH, str)
         assert len(TEMPLATE_DEPENDENCY_GRAPH) > 0
+
+
+class TestRunCellTemplates:
+    """Run planning / queueing / reporting templates (T15 execution modes).
+
+    The three-step split is forced by marimo's behavior: the plan must validate
+    every id before anything is queued, the run queues all targets in ONE
+    code-mode context (so the kernel schedules them), and the report must be a
+    separate call because marimo discards the run payload when a target raises
+    and the in-context snapshot is frozen.
+    """
+
+    async def test_plan_all_enumerates_every_document_cell(self, monkeypatch):
+        """mode='all' plans `ctx.cells` in document order, graph or not."""
+        from marimo_inspection.templates.mutation import build_run_plan_template
+
+        data = await _exec_template(
+            build_run_plan_template("", "all"),
+            SimpleNamespace(
+                cells=[_FakeCell("A"), _FakeCell("B"), _FakeCell("C")],
+                # A fresh session's graph is EMPTY — mode='all' must not care.
+                graph=_FakeGraph(),
+            ),
+            monkeypatch,
+            "_run",
+        )
+
+        assert data["status"] == "ok"
+        assert data["mode"] == "all"
+        assert data["requested_cell_ids"] == ["A", "B", "C"]
+        assert data["document_cell_ids"] == ["A", "B", "C"]
+        assert data["graph_cell_ids"] == []
+        assert data["unknown_cell_ids"] == []
+        assert data["reason"] is None
+
+    async def test_plan_cell_reports_an_unknown_id_instead_of_queueing_it(
+        self, monkeypatch
+    ):
+        """An id no document cell matches is reported, never planned."""
+        from marimo_inspection.templates.mutation import build_run_plan_template
+
+        data = await _exec_template(
+            build_run_plan_template("ghost", "cell"),
+            SimpleNamespace(cells=[_FakeCell("A")], graph=_FakeGraph()),
+            monkeypatch,
+            "_run",
+        )
+
+        assert data["status"] == "error"
+        assert data["reason"] == "unknown_cell_ids"
+        assert data["unknown_cell_ids"] == ["ghost"]
+        assert data["requested_cell_ids"] == []
+
+    async def test_plan_cell_queues_exactly_the_target(self, monkeypatch):
+        from marimo_inspection.templates.mutation import build_run_plan_template
+
+        data = await _exec_template(
+            build_run_plan_template("A", "cell"),
+            SimpleNamespace(cells=[_FakeCell("A"), _FakeCell("B")], graph=_FakeGraph()),
+            monkeypatch,
+            "_run",
+        )
+
+        assert data["status"] == "ok"
+        assert data["requested_cell_ids"] == ["A"]
+
+    async def test_plan_cell_resolves_a_cell_name_to_its_id(self, monkeypatch):
+        """A NAME is resolved like ``ctx.cells`` does; the ID is what is queued.
+
+        The pre-modes ``run_cell`` forwarded the target to ``ctx.run_cell``,
+        which accepts a cell id or a cell name, so a name must keep working.
+        """
+        from marimo_inspection.templates.mutation import build_run_plan_template
+
+        data = await _exec_template(
+            build_run_plan_template("my_root", "cell"),
+            SimpleNamespace(
+                cells=[
+                    _FakeCell("A", name="my_root"),
+                    _FakeCell("B", name="other"),
+                ],
+                graph=_FakeGraph(),
+            ),
+            monkeypatch,
+            "_run",
+        )
+
+        assert data["status"] == "ok"
+        assert data["cell_id"] == "my_root"
+        assert data["resolved_cell_id"] == "A"
+        assert data["requested_cell_ids"] == ["A"]
+        assert data["unknown_cell_ids"] == []
+
+    async def test_plan_descendants_resolves_a_cell_name(self, monkeypatch):
+        """descendants works by NAME too: resolved target + its descendants."""
+        from marimo_inspection.templates.mutation import build_run_plan_template
+
+        data = await _exec_template(
+            build_run_plan_template("my_root", "descendants"),
+            SimpleNamespace(
+                cells=[
+                    _FakeCell("A", name="my_root"),
+                    _FakeCell("B", name="leaf"),
+                ],
+                graph=_FakeGraph(
+                    cells={
+                        "A": _FakeGraphCell(defs={"seed"}),
+                        "B": _FakeGraphCell(defs={"doubled"}, refs={"seed"}),
+                    },
+                    parents={"B": {"A"}},
+                    children={"A": {"B"}},
+                ),
+            ),
+            monkeypatch,
+            "_run",
+        )
+
+        assert data["status"] == "ok"
+        assert data["resolved_cell_id"] == "A"
+        assert set(data["requested_cell_ids"]) == {"A", "B"}
+
+    async def test_plan_reports_an_unknown_name(self, monkeypatch):
+        """An unknown NAME is refused exactly like an unknown id."""
+        from marimo_inspection.templates.mutation import build_run_plan_template
+
+        data = await _exec_template(
+            build_run_plan_template("no_such_name", "cell"),
+            SimpleNamespace(cells=[_FakeCell("A", name="my_root")], graph=_FakeGraph()),
+            monkeypatch,
+            "_run",
+        )
+
+        assert data["status"] == "error"
+        assert data["reason"] == "unknown_cell_ids"
+        assert data["unknown_cell_ids"] == ["no_such_name"]
+        assert data["requested_cell_ids"] == []
+
+    async def test_plan_descendants_refuses_an_unregistered_target(self, monkeypatch):
+        """No graph entry ⇒ graph_unpopulated, nothing planned (T15)."""
+        from marimo_inspection.templates.mutation import build_run_plan_template
+
+        data = await _exec_template(
+            build_run_plan_template("A", "descendants"),
+            SimpleNamespace(
+                cells=[_FakeCell("A"), _FakeCell("B")],
+                graph=_FakeGraph(),  # fresh session: nothing registered
+            ),
+            monkeypatch,
+            "_run",
+        )
+
+        assert data["status"] == "error"
+        assert data["reason"] == "graph_unpopulated"
+        assert data["requested_cell_ids"] == []
+        assert data["unknown_cell_ids"] == []
+
+    async def test_plan_descendants_adds_the_graph_descendants_to_the_target(
+        self, monkeypatch
+    ):
+        """A registered target plans target + transitive descendants."""
+        from marimo_inspection.templates.mutation import build_run_plan_template
+
+        data = await _exec_template(
+            build_run_plan_template("A", "descendants"),
+            SimpleNamespace(
+                cells=[_FakeCell("A"), _FakeCell("B"), _FakeCell("C")],
+                graph=_FakeGraph(
+                    cells={
+                        "A": _FakeGraphCell(defs={"seed"}),
+                        "B": _FakeGraphCell(defs={"doubled"}, refs={"seed"}),
+                        "C": _FakeGraphCell(defs={"tripled"}, refs={"doubled"}),
+                    },
+                    parents={"B": {"A"}, "C": {"B"}},
+                    children={"A": {"B"}, "B": {"C"}},
+                ),
+            ),
+            monkeypatch,
+            "_run",
+        )
+
+        assert data["status"] == "ok"
+        assert data["requested_cell_ids"][0] == "A"
+        assert set(data["requested_cell_ids"]) == {"A", "B", "C"}
+        # No duplicates when a graph reports the target among its descendants.
+        assert len(data["requested_cell_ids"]) == len(set(data["requested_cell_ids"]))
+
+    def test_run_template_queues_every_id_in_one_context(self):
+        """All targets share ONE code-mode context, so the kernel schedules them."""
+        from marimo_inspection.templates.mutation import build_run_cells_template
+
+        code = build_run_cells_template(["A", "B", "C"])
+        # The queueing happens in ONE context: assert on the _run body, since
+        # the shared preamble defines its own (unused) helper context.
+        body = code.split("async def _run():", 1)[1]
+        assert body.count("cm.get_context()") == 1
+        assert '["A", "B", "C"]' in code
+        # One `ctx.run_cell` call site inside a loop over the planned ids.
+        assert body.count("ctx.run_cell(") == 1
+        assert "for t in targets:" in body
+        assert "json.dumps" in code
+
+    async def test_report_reads_terminal_state_and_structured_errors(self, monkeypatch):
+        """The report is the truthful source: state + error kind/message per cell."""
+        from marimo_inspection.templates.mutation import build_cell_status_template
+
+        data = await _exec_template(
+            build_cell_status_template(["A", "gone"]),
+            SimpleNamespace(
+                cells=[
+                    _FakeCell(
+                        "A",
+                        status="exception",
+                        errors=[_FakeCellError(kind="runtime", msg="NameError: boom")],
+                    )
+                ]
+            ),
+            monkeypatch,
+            "_run",
+        )
+
+        rows = {row["cell_id"]: row for row in data["rows"]}
+        assert rows["A"]["known"] is True
+        assert rows["A"]["runtime_state"] == "exception"
+        assert rows["A"]["output_stale"] is False
+        assert rows["A"]["errors"] == [
+            {"kind": "runtime", "message": "NameError: boom"}
+        ]
+        # An id that no longer resolves is reported unknown, not invented —
+        # and its errors channel is null (unreadable), never asserted empty.
+        assert rows["gone"]["known"] is False
+        assert rows["gone"]["runtime_state"] is None
+        assert rows["gone"]["errors"] is None
+
+    async def test_report_marks_a_stale_cell(self, monkeypatch):
+        """A cell that never ran reports stale (derived output_stale)."""
+        from marimo_inspection.templates.mutation import build_cell_status_template
+
+        data = await _exec_template(
+            build_cell_status_template(["A"]),
+            SimpleNamespace(cells=[_FakeCell("A", status="stale")]),
+            monkeypatch,
+            "_run",
+        )
+
+        row = data["rows"][0]
+        assert row["runtime_state"] == "stale"
+        assert row["output_stale"] is True
+
+    async def test_report_null_errors_channel_is_unreadable_not_empty(
+        self, monkeypatch
+    ):
+        """An unreadable errors channel reports `null`, never `[]`.
+
+        A `[]` would assert "no errors" — an unreadable channel must not claim
+        that (the handler then reports the target as not run / unverified).
+        """
+        from marimo_inspection.templates.mutation import build_cell_status_template
+
+        class _NullErrorsCell:
+            """Errors field is readable but yields None (no channel data)."""
+
+            id = "NULL"
+            code = "x = 1"
+            name = ""
+            status = "idle"
+
+            @property
+            def errors(self):
+                return None
+
+        data = await _exec_template(
+            build_cell_status_template(["NULL", "BROKEN"]),
+            SimpleNamespace(cells=[_NullErrorsCell(), _UnreadableCell()]),
+            monkeypatch,
+            "_run",
+        )
+
+        rows = {row["cell_id"]: row for row in data["rows"]}
+        assert rows["NULL"]["runtime_state"] == "idle"
+        assert rows["NULL"]["errors"] is None
+        # A private field that RAISES is equally unreadable.
+        assert rows["BROKEN"]["errors"] is None
+
+    def test_run_templates_are_valid_python(self):
+        """The generated snippets parse."""
+        import ast
+
+        from marimo_inspection.templates.mutation import (
+            build_cell_status_template,
+            build_run_cells_template,
+            build_run_plan_template,
+        )
+
+        for code in (
+            build_run_plan_template("C1", "cell"),
+            build_run_plan_template("", "all"),
+            build_run_plan_template("C1", "descendants"),
+            build_run_cells_template(["C1", "C2"]),
+            build_cell_status_template(["C1"]),
+        ):
+            ast.parse(code)  # must not raise
 
 
 class TestErrorsTemplate:

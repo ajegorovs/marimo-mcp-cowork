@@ -215,6 +215,82 @@ class TestResourceContent:
         assert "escape hatch" in text
         assert "never the normal recovery" in text
 
+    async def test_co_work_loop_documents_run_cell_modes(self, mcp_server):
+        """T15: the loop teaches the three modes and the kernel's own additions.
+
+        A caller must be able to learn, from the packaged loop alone: what each
+        mode queues, that ``mode="all"`` needs an empty ``cell_id``
+        (``cell_id_not_allowed`` otherwise), that ``descendants`` refuses
+        ``graph_unpopulated`` on an unregistered target instead of silently
+        running one cell, how per-cell outcomes are reported
+        (``not_run_cell_ids``), and that the kernel may run extra cells in an
+        unspecified order.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(CO_WORK_URI))
+        text = " ".join(raw.lower().split())
+
+        assert 'mode="cell"' in text
+        assert 'mode="descendants"' in text
+        assert 'mode="all"' in text
+        assert "graph_unpopulated" in text
+        assert "cell_id_not_allowed" in text
+        assert "not_run_cell_ids" in text
+        assert "ancestors" in text
+        assert "unspecified" in text
+        # The compat contract: names resolve, failures stay structured, an
+        # unreadable errors channel is never reported as success, and
+        # failed_cell_ids covers the requested targets only.
+        assert "id or cell name" in text
+        assert "unverified_cell_ids" in text
+        assert "planning_failed" in text
+        assert "reporting_failed" in text
+        assert "null" in text
+        assert "requested targets only" in text
+
+    async def test_live_safety_documents_the_bulk_run_blast_radius(self, mcp_server):
+        """T15: a bulk run's blast radius and the empty-graph refusal are stated.
+
+        ``mode="all"`` is the one mode that executes cells the caller never
+        asked about (every document cell, including already-idle and
+        deliberately un-run ones), and the kernel adds stale ancestors and
+        autorun descendants to any run. The live-safety resource is where a
+        co-worker checks that before calling it.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(LIVE_SAFETY_URI))
+        text = " ".join(raw.lower().split())
+
+        assert 'mode="all"' in text
+        assert "every document cell" in text
+        assert "already idle" in text
+        assert "graph_unpopulated" in text
+        assert "ancestors" in text
+        assert "unspecified" in text
+        # The per-cell outcome lists cover the requested targets only.
+        assert "requested targets only" in text
+
+    async def test_fallbacks_documents_that_bulk_run_is_a_mode_not_a_tool(
+        self, mcp_server
+    ):
+        """T15: bulk execution stays on the fixed 14-tool surface.
+
+        There is no separate run-all tool; the packaged reference must say the
+        capability lives in ``run_cell(mode="all")`` and that ``descendants``
+        depends on kernel-graph registration.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().split())
+
+        assert 'mode="all"' in text
+        assert "14-tool" in text
+        assert "graph_unpopulated" in text
+        # Names resolve, and a null errors channel is a stated limit.
+        assert "id or cell name" in text
+        assert "errors_readable" in text
+        assert "unverified_cell_ids" in text
+
     async def test_fallbacks_documents_one_main_output_limit(self, mcp_server):
         async with Client(transport=mcp_server) as client:
             text = _resource_text(await client.read_resource(FALLBACKS_URI)).lower()

@@ -1,5 +1,6 @@
 """Tests for the notebook mutation tools (create/edit/run/delete)."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -99,10 +100,10 @@ def test_edit_cell_template_builds():
 def test_run_delete_templates_build():
     from marimo_inspection.templates.mutation import (
         build_delete_cell_template,
-        build_run_cell_template,
+        build_run_cells_template,
     )
 
-    assert "ctx.run_cell" in build_run_cell_template("C1")
+    assert "ctx.run_cell" in build_run_cells_template(["C1"])
     assert "ctx.delete_cell" in build_delete_cell_template("C1")
 
 
@@ -111,17 +112,21 @@ def test_templates_are_valid_python():
 
     from marimo_inspection.templates.mutation import (
         build_cell_hashes_template,
+        build_cell_status_template,
         build_create_cell_template,
         build_delete_cell_template,
         build_edit_cell_template,
-        build_run_cell_template,
+        build_run_cells_template,
+        build_run_plan_template,
     )
 
     for code in [
         build_cell_hashes_template(),
         build_create_cell_template("x=1"),
         build_edit_cell_template("C1", "y=2"),
-        build_run_cell_template("C1"),
+        build_run_cells_template(["C1"]),
+        build_run_plan_template("C1", "cell"),
+        build_cell_status_template(["C1"]),
         build_delete_cell_template("C1"),
     ]:
         ast.parse(code)  # must not raise
@@ -485,15 +490,599 @@ async def test_create_cell_warns_on_refresh_error():
         tracker.clear_session("test-session-1")
 
 
-async def test_run_cell_ok():
+# ── run_cell execution modes (T15) ───────────────────────────────────────
+
+
+def _run_client(*results):
+    """Mock client whose ``execute`` returns the given results in order.
+
+    `run_cell` now makes three calls: the plan/read, the run itself, and the
+    separate post-run report.
+    """
+    instance = MagicMock(
+        resolve_session=AsyncMock(
+            return_value=MagicMock(session_id="test-session-1", basename="test.py")
+        ),
+        execute=AsyncMock(side_effect=list(results)),
+    )
+    patcher = patch("marimo_inspection.tools.mutation.MarimoClient")
+    patcher.start().return_value = instance
+
+    class _R:
+        def __init__(self, inst):
+            self.instance = inst
+            self._patcher = patcher
+
+        def stop(self):
+            self._patcher.stop()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.stop()
+
+    return _R(instance)
+
+
+def _plan_result(
+    requested=(), *, mode="cell", reason=None, unknown=(), resolved=None, target=None
+):
+    """A plan payload as the plan template emits it.
+
+    ``target`` is the input the caller passed (id or name); ``resolved`` is the
+    cell id the plan resolved it to — the two differ when a NAME was passed.
+    """
+    return _Result(
+        [
+            json.dumps(
+                {
+                    "status": "error" if reason else "ok",
+                    "mode": mode,
+                    "cell_id": target,
+                    "resolved_cell_id": resolved,
+                    "reason": reason,
+                    "requested_cell_ids": list(requested),
+                    "document_cell_ids": list(requested),
+                    "graph_cell_ids": [],
+                    "unknown_cell_ids": list(unknown),
+                }
+            )
+        ]
+    )
+
+
+def _status_row(cell_id, state, errors=None, *, unreadable=False):
+    """A report row; ``unreadable=True`` emits the null-errors channel."""
+    return {
+        "cell_id": cell_id,
+        "runtime_state": state,
+        "known": True,
+        "output_stale": state == "stale",
+        "errors": None if unreadable else list(errors or []),
+    }
+
+
+def _report_result(rows):
+    return _Result([json.dumps({"rows": rows})])
+
+
+def _executed(client):
+    """The snippets passed to ``execute``, in call order."""
+    return [call[0][1] for call in client.instance.execute.call_args_list]
+
+
+async def test_run_cell_default_mode_plans_runs_and_reports():
+    """mode='cell' (default): plan → run → separate report, one call each."""
     from marimo_inspection.tools import mutation
 
-    mock_cls = _mock_client(['{"status": "ok", "cell_id": "C1"}'])
+    mock = _run_client(
+        _plan_result(["X1"], mode="cell"),
+        _Result(['{"status": "ok", "queued": ["X1"]}']),
+        _report_result([_status_row("X1", "idle")]),
+    )
     try:
-        result = await mutation.run_cell("C1", server_url="u", session_id="s")
-        assert result["status"] == "ok"
+        result = await mutation.run_cell("X1", server_url="u", session_id="s1")
+        assert result["status"] == "ok", result
+        assert result["mode"] == "cell", result
+        # Backward-compatible single-cell field.
+        assert result["cell_id"] == "X1", result
+        assert result["requested_cell_ids"] == ["X1"], result
+        assert result["succeeded_cell_ids"] == ["X1"], result
+        assert result["failed_cell_ids"] == [], result
+        assert result["not_run_cell_ids"] == [], result
+        assert result["counts"] == {
+            "requested": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "not_run": 0,
+        }, result
+        assert result["cells"] == [
+            {
+                "cell_id": "X1",
+                "runtime_state": "idle",
+                "output_stale": False,
+                "known": True,
+                "errors": [],
+                "errors_readable": True,
+            }
+        ], result
+        assert "ancestors" in result["note"], result
+        assert "unspecified" in result["note"], result
+
+        snippets = _executed(mock)
+        assert len(snippets) == 3, snippets
+        assert 'mode = "cell"' in snippets[0], snippets[0]
+        assert "ctx.run_cell" in snippets[1], snippets[1]
+        assert "runtime_state" in snippets[2], snippets[2]
     finally:
-        mock_cls.stop()
+        mock.stop()
+
+
+async def test_run_cell_all_rejects_a_nonempty_cell_id_without_calling_anything():
+    """mode='all' + cell_id is a caller error, refused (never ignored)."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client()
+    try:
+        result = await mutation.run_cell(
+            "X1", mode="all", server_url="u", session_id="s1"
+        )
+        assert result["status"] == "error", result
+        assert result["reason"] == "cell_id_not_allowed", result
+        assert "must be empty" in result["message"], result
+        # Refused BEFORE any session/client work, let alone execution.
+        assert mock.instance.execute.call_count == 0
+        assert mock.instance.resolve_session.call_count == 0
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_requires_cell_id_for_cell_and_descendants_modes():
+    from marimo_inspection.tools import mutation
+
+    for mode in ("cell", "descendants"):
+        result = await mutation.run_cell("", mode=mode, server_url="u", session_id="s1")
+        assert result["status"] == "error", result
+        assert result["reason"] == "cell_id_required", result
+        assert result["mode"] == mode, result
+
+
+async def test_run_cell_rejects_an_unknown_mode():
+    from marimo_inspection.tools import mutation
+
+    result = await mutation.run_cell(
+        "X1", mode="bogus", server_url="u", session_id="s1"
+    )
+    assert result["status"] == "error", result
+    assert result["reason"] == "invalid_mode", result
+
+
+async def test_run_cell_unknown_id_aborts_before_any_run():
+    """One unknown id must abort the plan — marimo would discard the batch."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(_plan_result(reason="unknown_cell_ids", unknown=["ghost"]))
+    try:
+        result = await mutation.run_cell("ghost", server_url="u", session_id="s1")
+        assert result["status"] == "error", result
+        assert result["reason"] == "unknown_cell_ids", result
+        assert result["unknown_cell_ids"] == ["ghost"], result
+        # Only the plan ran; no `ctx.run_cell` was ever queued.
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_descendants_refuses_when_the_graph_is_unpopulated():
+    """No silent degradation: graph_unpopulated points at mode='all'."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(_plan_result(reason="graph_unpopulated"))
+    try:
+        result = await mutation.run_cell(
+            "X1", mode="descendants", server_url="u", session_id="s1"
+        )
+        assert result["status"] == "error", result
+        assert result["reason"] == "graph_unpopulated", result
+        assert result["cell_id"] == "X1", result
+        assert result["requested_cell_ids"] == ["X1"], result
+        assert "mode='all'" in result["message"], result
+        assert any("mode='all'" in step for step in result["next_steps"]), result
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_all_plans_every_document_cell_and_queues_it_once():
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(["A", "B", "C"], mode="all"),
+        _Result(['{"status": "ok", "queued": ["A", "B", "C"]}']),
+        _report_result([_status_row(c, "idle") for c in ("A", "B", "C")]),
+    )
+    try:
+        result = await mutation.run_cell(mode="all", server_url="u", session_id="s1")
+        assert result["status"] == "ok", result
+        assert result["mode"] == "all", result
+        assert set(result["requested_cell_ids"]) == {"A", "B", "C"}, result
+        assert set(result["succeeded_cell_ids"]) == {"A", "B", "C"}, result
+        # No single-cell compat field in a batch mode.
+        assert "cell_id" not in result, result
+        run_snippet = _executed(mock)[1]
+        body = run_snippet.split("async def _run():", 1)[1]
+        assert '"A", "B", "C"' in run_snippet, run_snippet
+        assert body.count("ctx.run_cell(") == 1, run_snippet
+        # Every target is queued inside ONE code-mode context.
+        assert body.count("cm.get_context()") == 1, run_snippet
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_partial_reports_per_cell_failures_and_non_runs():
+    """A mixed batch: exception + cancelled fail, stale is not_run, idle succeeds.
+
+    The run call itself fails (marimo discards the payload when a target
+    raises), so the post-run report is the only truthful source — and the
+    response must still name every requested target individually.
+    """
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(["A", "B", "C", "D"], mode="all"),
+        _Result(
+            ["Traceback (most recent call last):", "NameError: boom"],
+            status="error",
+            stderr=["Traceback (most recent call last):\n", "NameError: boom\n"],
+        ),
+        _report_result(
+            [
+                _status_row("A", "idle"),
+                _status_row(
+                    "B",
+                    "exception",
+                    [{"kind": "runtime", "message": "NameError: boom"}],
+                ),
+                _status_row("C", "cancelled"),
+                _status_row("D", "stale"),
+            ]
+        ),
+    )
+    try:
+        result = await mutation.run_cell(mode="all", server_url="u", session_id="s1")
+        assert result["status"] == "partial", result
+        assert result["execution_error"] == "Execution failed", result
+        assert "NameError: boom" in result["stderr"], result
+        assert result["succeeded_cell_ids"] == ["A"], result
+        assert result["failed_cell_ids"] == ["B", "C"], result
+        assert result["not_run_cell_ids"] == ["D"], result
+        assert result["counts"] == {
+            "requested": 4,
+            "succeeded": 1,
+            "failed": 2,
+            "not_run": 1,
+        }, result
+        rows = {cell["cell_id"]: cell for cell in result["cells"]}
+        assert rows["B"]["runtime_state"] == "exception", rows["B"]
+        assert rows["B"]["errors"] == [
+            {"kind": "runtime", "message": "NameError: boom"}
+        ], rows["B"]
+        assert rows["C"]["runtime_state"] == "cancelled", rows["C"]
+        assert rows["D"]["runtime_state"] == "stale", rows["D"]
+        assert rows["D"]["output_stale"] is True, rows["D"]
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_marimo_error_and_interrupted_are_failures():
+    """The full failed-state set is honoured; anything else is not_run."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(["A", "B", "C", "D"], mode="all"),
+        _Result(['{"status": "ok", "queued": ["A", "B", "C", "D"]}']),
+        _report_result(
+            [
+                _status_row(
+                    "A", "marimo-error", [{"kind": "marimo", "message": "cyc"}]
+                ),
+                _status_row("B", "interrupted"),
+                _status_row("C", "disabled"),
+                _status_row("D", "running"),
+            ]
+        ),
+    )
+    try:
+        result = await mutation.run_cell(mode="all", server_url="u", session_id="s1")
+        assert result["status"] == "partial", result
+        assert result["failed_cell_ids"] == ["A", "B"], result
+        assert result["not_run_cell_ids"] == ["C", "D"], result
+        assert result["succeeded_cell_ids"] == [], result
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_execution_error_with_all_idle_is_still_partial():
+    """A failing run whose requested targets are all idle is not 'ok'.
+
+    The kernel can run cells outside the requested set (stale ancestors,
+    autorun descendants); if the batch reported a failure, the verdict must not
+    be an unqualified success.
+    """
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(["A"], mode="cell"),
+        _Result(["boom"], status="error", stderr=["RuntimeError: ancestor\n"]),
+        _report_result([_status_row("A", "idle")]),
+    )
+    try:
+        result = await mutation.run_cell("A", server_url="u", session_id="s1")
+        assert result["status"] == "partial", result
+        assert result["execution_error"] == "Execution failed", result
+        assert result["succeeded_cell_ids"] == ["A"], result
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_planning_failure_is_an_error_and_runs_nothing():
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _Result(["down"], status="error", stderr=["Connection refused\n"])
+    )
+    try:
+        result = await mutation.run_cell("A", server_url="u", session_id="s1")
+        assert result["status"] == "error", result
+        assert result["reason"] == "planning_failed", result
+        assert "Connection refused" in result["stderr"], result
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_reporting_failure_is_an_error_not_a_false_ok():
+    """If the post-run report cannot be read, the run is unverifiable."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(["A"], mode="cell"),
+        _Result(['{"status": "ok", "queued": ["A"]}']),
+        _Result(["down"], status="error", stderr=["Kernel died\n"]),
+    )
+    try:
+        result = await mutation.run_cell("A", server_url="u", session_id="s1")
+        assert result["status"] == "error", result
+        assert result["reason"] == "reporting_failed", result
+        assert result["requested_cell_ids"] == ["A"], result
+        assert "Kernel died" in result["stderr"], result
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_all_on_an_empty_notebook_is_a_truthful_ok():
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(_plan_result([], mode="all"))
+    try:
+        result = await mutation.run_cell(mode="all", server_url="u", session_id="s1")
+        assert result["status"] == "ok", result
+        assert result["requested_cell_ids"] == [], result
+        assert result["counts"] == {
+            "requested": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "not_run": 0,
+        }, result
+        # Nothing to queue: no run call was made.
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_resolves_a_cell_name_to_the_live_id():
+    """A cell NAME works like it did before the modes: requested holds the ID.
+
+    The pre-modes `run_cell` forwarded the target straight to `ctx.run_cell`,
+    which resolves an id or a name — so a caller passing a name must keep
+    working. The payload echoes the name it was given and reports the resolved
+    id, and the RUN queues the resolved id, never the name.
+    """
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(["X1"], mode="cell", target="named_cell", resolved="X1"),
+        _Result(['{"status": "ok", "queued": ["X1"]}']),
+        _report_result([_status_row("X1", "idle")]),
+    )
+    try:
+        result = await mutation.run_cell("named_cell", server_url="u", session_id="s1")
+        assert result["status"] == "ok", result
+        assert result["cell_id"] == "named_cell", result
+        assert result["resolved_cell_id"] == "X1", result
+        assert result["requested_cell_ids"] == ["X1"], result
+        assert result["succeeded_cell_ids"] == ["X1"], result
+
+        run_snippet = _executed(mock)[1]
+        assert '"X1"' in run_snippet, run_snippet
+        assert "named_cell" not in run_snippet, run_snippet
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_unknown_name_refuses_before_any_run():
+    """An unknown NAME is refused like an unknown id — nothing is queued."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(
+            reason="unknown_cell_ids", unknown=["no_such_name"], target="no_such_name"
+        )
+    )
+    try:
+        result = await mutation.run_cell(
+            "no_such_name", server_url="u", session_id="s1"
+        )
+        assert result["status"] == "error", result
+        assert result["reason"] == "unknown_cell_ids", result
+        assert result["unknown_cell_ids"] == ["no_such_name"], result
+        assert result["error"], result
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_descendants_by_name_names_the_resolved_id():
+    """descendants-by-name refuses on an empty graph but reports the real id."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(reason="graph_unpopulated", target="named_cell", resolved="X1")
+    )
+    try:
+        result = await mutation.run_cell(
+            "named_cell", mode="descendants", server_url="u", session_id="s1"
+        )
+        assert result["status"] == "error", result
+        assert result["reason"] == "graph_unpopulated", result
+        assert result["cell_id"] == "named_cell", result
+        assert result["resolved_cell_id"] == "X1", result
+        assert result["requested_cell_ids"] == ["X1"], result
+        assert result["error"], result
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_validation_failures_keep_the_legacy_error_key():
+    """Validation refusals keep top-level `error` beside `status`/`reason`.
+
+    The pre-modes `run_cell` reported failures as `{"error": ...}`; a caller
+    written against that must still see the failure after the modes landed.
+    """
+    from marimo_inspection.tools import mutation
+
+    missing = await mutation.run_cell("", mode="cell", server_url="u", session_id="s1")
+    assert missing["status"] == "error", missing
+    assert missing["error"] == "cell_id is required", missing
+
+    invalid = await mutation.run_cell(
+        "X1",
+        mode="bogus",
+        server_url="u",
+        session_id="s1",  # type: ignore[arg-type]
+    )
+    assert invalid["status"] == "error", invalid
+    assert invalid["reason"] == "invalid_mode", invalid
+    assert invalid["error"], invalid
+
+    both = await mutation.run_cell("X1", mode="all", server_url="u", session_id="s1")
+    assert both["status"] == "error", both
+    assert both["reason"] == "cell_id_not_allowed", both
+    assert both["error"], both
+
+
+async def test_run_cell_planning_reporting_and_run_failures_keep_the_error_key():
+    from marimo_inspection.tools import mutation
+
+    # Planning failure — the plan call itself failed, nothing was queued.
+    mock = _run_client(
+        _Result(["down"], status="error", stderr=["Connection refused\n"])
+    )
+    try:
+        result = await mutation.run_cell("A", server_url="u", session_id="s1")
+        assert result["status"] == "error", result
+        assert result["reason"] == "planning_failed", result
+        assert result["error"], result
+    finally:
+        mock.stop()
+
+    # Reporting failure — queued, but the post-run state is unreadable.
+    mock = _run_client(
+        _plan_result(["A"], mode="cell"),
+        _Result(['{"status": "ok", "queued": ["A"]}']),
+        _Result(["down"], status="error", stderr=["Kernel died\n"]),
+    )
+    try:
+        result = await mutation.run_cell("A", server_url="u", session_id="s1")
+        assert result["status"] == "error", result
+        assert result["reason"] == "reporting_failed", result
+        assert result["error"], result
+    finally:
+        mock.stop()
+
+    # Partial run — the batch call failed, so `error` mirrors `execution_error`.
+    mock = _run_client(
+        _plan_result(["A"], mode="cell"),
+        _Result(["boom"], status="error", stderr=["RuntimeError: ancestor\n"]),
+        _report_result([_status_row("A", "idle")]),
+    )
+    try:
+        result = await mutation.run_cell("A", server_url="u", session_id="s1")
+        assert result["status"] == "partial", result
+        assert result["execution_error"] == "Execution failed", result
+        assert result["error"] == result["execution_error"], result
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_unreadable_errors_channel_is_never_success():
+    """A null errors channel is UNREADABLE: that target is not `succeeded`.
+
+    `succeeded` requires `idle` AND a readable, empty `errors`; an unreadable
+    channel makes the outcome unverified, so the target lands in
+    `not_run_cell_ids` / `unverified_cell_ids` with a truthful next step.
+    """
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(["A", "B"], mode="all"),
+        _Result(['{"status": "ok", "queued": ["A", "B"]}']),
+        _report_result(
+            [
+                _status_row("A", "idle", unreadable=True),
+                _status_row("B", "idle"),
+            ]
+        ),
+    )
+    try:
+        result = await mutation.run_cell(mode="all", server_url="u", session_id="s1")
+        assert result["status"] == "partial", result
+        assert result["succeeded_cell_ids"] == ["B"], result
+        assert result["failed_cell_ids"] == [], result
+        assert result["not_run_cell_ids"] == ["A"], result
+        assert result["unverified_cell_ids"] == ["A"], result
+        assert result["counts"]["not_run"] == 1, result
+        row = next(c for c in result["cells"] if c["cell_id"] == "A")
+        assert row["runtime_state"] == "idle", row
+        assert row["errors"] is None, row
+        assert row["errors_readable"] is False, row
+        assert any("UNVERIFIED" in step for step in result["next_steps"]), result
+    finally:
+        mock.stop()
+
+
+async def test_run_cell_report_row_missing_is_unverified_not_succeeded():
+    """A target the report omits has no readable channel: not succeeded."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _plan_result(["A"], mode="cell"),
+        _Result(['{"status": "ok", "queued": ["A"]}']),
+        _report_result([]),  # the report produced no row for the target
+    )
+    try:
+        result = await mutation.run_cell("A", server_url="u", session_id="s1")
+        assert result["status"] == "partial", result
+        assert result["succeeded_cell_ids"] == [], result
+        assert result["not_run_cell_ids"] == ["A"], result
+        # The state is unknown, not idle, so it is not the idle-unreadable case.
+        assert result["unverified_cell_ids"] == [], result
+        row = result["cells"][0]
+        assert row["errors"] is None and row["errors_readable"] is False, row
+        assert row["known"] is False, row
+    finally:
+        mock.stop()
 
 
 async def test_delete_cell_ok():

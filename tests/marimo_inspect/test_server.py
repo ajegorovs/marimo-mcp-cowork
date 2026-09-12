@@ -281,6 +281,64 @@ class TestToolRegistration:
             assert "session_id" in props
             assert "server_url" in props
 
+    async def test_run_cell_mode_schema_is_backward_compatible(self, mcp_server):
+        """T15: run_cell keeps optional args and offers the three-literal mode.
+
+        The signature extension must not break an existing caller that passes
+        only ``cell_id`` — both ``cell_id`` and ``mode`` stay optional — and the
+        advertised schema must enumerate exactly the three accepted modes.
+        """
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            run_tool = next(t for t in tools if t.name == "run_cell")
+            schema = run_tool.input_schema
+            props = schema.get("properties", {})
+
+            assert "cell_id" in props, schema
+            assert "mode" in props, schema
+            # Backward compatibility: nothing is newly required.
+            assert not set(schema.get("required", [])) - {"session_id", "server_url"}, (
+                schema
+            )
+
+            mode = props["mode"]
+            accepted: list[str] = []
+            for branch in (mode, *mode.get("anyOf", []), *mode.get("oneOf", [])):
+                accepted.extend(branch.get("enum", []))
+            assert sorted(set(accepted)) == ["all", "cell", "descendants"], mode
+            # The default keeps single-cell execution.
+            assert mode.get("default") == "cell", mode
+
+    async def test_run_cell_description_names_the_modes_and_the_kernel_note(
+        self, mcp_server
+    ):
+        """The exposed description teaches the modes and what the kernel adds.
+
+        The consumer-visible description must name ``mode``, ``all`` and
+        ``descendants``, say that ``mode='all'`` re-runs every document cell and
+        requires an empty ``cell_id``, that ``descendants`` needs a registered
+        target, and that the kernel may additionally run stale ancestors and
+        autorun descendants in an unspecified order.
+        """
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            run_tool = next(t for t in tools if t.name == "run_cell")
+            description = " ".join((run_tool.description or "").lower().split())
+
+            assert "mode" in description
+            assert "descendants" in description
+            assert '"all"' in description or "'all'" in description
+            assert "empty" in description
+            assert "ancestors" in description
+            assert "unspecified" in description
+            # The compat contract: names resolve, and failures keep a
+            # structured status/reason plus the legacy top-level `error`.
+            assert "id or cell name" in description
+            assert "planning_failed" in description
+            assert "reporting_failed" in description
+            assert "unverified" in description
+            assert "errors_readable" in description
+
 
 # -------------------------------------------------------------------
 # CLI entry point tests (no transport started)

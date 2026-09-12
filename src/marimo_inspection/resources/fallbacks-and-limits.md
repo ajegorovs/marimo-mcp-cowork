@@ -43,6 +43,29 @@ a client asks for it. Until the cells have run there are no committed widget
 values, so `get_cell_outputs` and `get_errors` report an empty execution state —
 accurately, not as a bug.
 
+## Bulk execution is a `run_cell` mode, not a tool
+
+The advertised 14-tool surface is fixed: there is no separate run-all tool.
+Bulk execution lives in `run_cell(mode="all")`, which queues every document cell
+and is the way to execute an unreferenced cell (and register the widgets it
+defines) on a fresh, never-instantiated session. `run_cell`'s `cell_id` is a
+cell **id or cell name**, resolved the way `ctx.cells` resolves a key, and every
+failure keeps a top-level `error` string beside the structured
+`status`/`reason`.
+
+`run_cell(mode="descendants")` is the narrower option: it needs the target
+**registered in the kernel dependency graph**. A fresh session has an empty
+graph, so an unregistered target returns `reason: graph_unpopulated` and runs
+nothing — that refusal is deliberate (a silent single-cell run would look like
+success). See `workflow://marimo-inspect/co-work-loop` §4 for the full mode and
+response contract.
+
+A `run_cell` `cells[]` row's `errors` is `null` (`errors_readable: false`) when
+the post-run error channel could not be read — a private-API/read failure, not
+"no errors". That is a stated limit, not a silent success: such a target is
+reported in `not_run_cell_ids` / `unverified_cell_ids` and is **never** counted
+in `succeeded_cell_ids`.
+
 `get_variables` reports **nothing** until a notebook cell has defined and
 executed a name, and even then an unfiltered call lists only that notebook's
 executed **public** names: kernel-injected globals (e.g. `input`), the
@@ -64,7 +87,8 @@ what runs the cells, and its controls only hold values from then on. A session
 created with the `/sse` handshake is not instantiated: `/api/kernel/instantiate`
 is token-gated and not exposed under `--no-token`. Without a browser, the write
 tools are the route — cells created or run by `create_cell` / `run_cell` do
-execute, together with their dependents.
+execute, together with their dependents, and `run_cell(mode="all")` executes the
+whole document (see "Bulk execution is a `run_cell` mode, not a tool" above).
 
 ## Script escape hatch
 

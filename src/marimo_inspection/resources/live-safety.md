@@ -9,6 +9,32 @@ These tools act on a **live kernel**. Treat every write as production.
 `edit_cell` and `run_cell` mutate the session the server is attached to. The
 `.py` file on disk is reconciled by marimo separately. There is no undo.
 
+## `mode="all"` re-runs every document cell
+
+`run_cell(mode="all")` queues **every document cell** in the notebook — not only
+the stale ones: cells that are **already idle** re-run, and cells that
+were deliberately left un-run (an unreferenced widget leaf, a scratch cell) run
+for the first time. It needs an **empty** `cell_id`; passing both is refused with
+`reason: cell_id_not_allowed` rather than ignored.
+
+The other modes add cells too. Whatever the mode, the kernel may run cells
+outside the requested set: still-uninstantiated **ancestors** of the targets,
+and — in autorun mode — registered **descendants**. Treat any run as a fresh
+execution of that cell's dependency neighbourhood, and remember that the
+relative order of independent cells is **unspecified**.
+
+On a fresh session the kernel dependency graph is empty, so
+`mode="descendants"` cannot resolve a target: it returns `status: error`,
+`reason: graph_unpopulated` and runs **nothing** (never a silent single-cell
+run). Call `mode="all"` first — it registers the document — then retry.
+
+Selective work avoids this blast radius: `mode="cell"` (default) queues one
+cell, and after a run `cells[].runtime_state`, `failed_cell_ids` and
+`not_run_cell_ids` tell you exactly which targets finished. Those lists cover
+the **requested targets only** — a cell the kernel ran on its own (a stale
+ancestor or an autorun descendant, outside `requested_cell_ids`) surfaces
+through the run payload's `error`/`execution_error` + `stderr` instead.
+
 ## Read before edit
 
 `edit_cell` defaults to `check_fresh=True`: it requires that you read that
