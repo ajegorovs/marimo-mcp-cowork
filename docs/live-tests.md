@@ -4,7 +4,8 @@
 > green, incl. the hermetic mutation, widget, run-mode (T15), kernel-restart
 > (Wave 3), T-V3 dependency-completeness, T-V4 notebook-only-variables, T18
 > server-vs-session discovery, T20 button-click and T22
-> session-census-field-limit regressions; see
+> session-census-field-limit regressions, and the example-notebook smoke +
+> interaction regressions; see
 > [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
 > is, the commands, the boot mechanics, and its *actual* status today.
@@ -138,9 +139,9 @@ instead: cells created through the write tools *do* run, which is what makes the
 dependency, variables and widget regressions behavioral rather than structural
 (see the hermetic sections below).
 
-## What's tested (62 tests, 13 files in `tests/marimo_inspect/live/`)
+## What's tested (68 tests, 14 files in `tests/marimo_inspect/live/`)
 
-The directory holds 12 test modules plus the shared `conftest.py` harness
+The directory holds 13 test modules plus the shared `conftest.py` harness
 (`MarimoServerManager` + fixtures, including the sessionless `bare_server`
 factory). Counts are stable as of the run in
 [Current status](#current-status).
@@ -160,6 +161,7 @@ factory). Counts are stable as of the run in
 | `test_sessions.py` | 3 | **T22** — a raw `GET /api/sessions` census on a hermetic server publishes only `filename`/`path` per session (no creator, owner, creation time, or per-session client count), which is exactly why `list_active_notebooks` reports `provenance`/`owner` as `"unknown"` and `attached_client_count: null`; the **real handler** is then called against that server and pins `session_count`/`total_notebooks`/`active_connections` (deprecated alias) = 1, `attached_client_count: null`, `result_row_count` = 1; and `/api/status/connections.active` is measured to have main-consumer semantics — 1 while the session's main `/sse` stream is open, 0 after it is closed/orphaned — and is never reported as a client count |
 | `test_discovery.py` | 2 | **T18 server-vs-session discovery**: a freshly launched headless edit server is discoverable (census 200, empty) yet reports **zero** sessions — a launch creates no session, only a client connect does; one `/sse` connect materializes exactly one session, and closing that stream leaves it listed as an orphan with `/api/status/connections.active` 0 (no default TTL reaps it); a `marimo run` server registers in the same registry under `--no-token` but its `/api/sessions` census is **401** (the endpoint requires edit scope), so `discover_servers` returns nothing and the discovery path's `servers_discovered` is 0 — only an explicit `server_url` reaches it, as one connection-failure sentinel (`session_count` 0, `servers_discovered` 1, `result_row_count` 1) |
 | `test_ui.py` | 15 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; a dropdown built from numeric options stores the number and is addressed by its STRING transport key — sending scalar `4` is refused with `did_you_mean: ["4"]` (never `[4]`, which the kernel itself rejects), and applying `["4"]` moves the element to the numeric 4 (`value_after: 4`, confirmed by a dependent read `4 * 2 == 8`); **T20** — a side-effect-only `button` click is reported from the frontend click counter (0 → 1, `handler_invoked: true`) with the `mo.state` side effect confirmed by an independent read, the `0` counter sentinel reports `handler_invoked: false` and clicks nothing, a repeated nonzero counter reports `handler_invoked: null` while the runtime *did* run the handler again, a raising `on_click` returns `reason: on_click_failed` acknowledging the partial side effect it applied before raising, and `run_button` carries the same counter evidence; missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
+| `test_examples.py` | 6 | **example-notebook gate**: a discovery guard (an empty `examples/` tree fails the run rather than making the smoke vacuous), then the parametrized smoke over the **discovered** tracked `examples/**/*.py` tree — each example is copied into `tmp_path`, booted on its own headless server via the `notebook_server` factory and run whole through the REAL `run_cell(mode="all")` handler: `status: ok`, no failed/not-run/unverified target, every cell `idle` with a readable empty error channel, and the repo file byte-identical afterwards; plus one interaction regression per shipped example — the step buttons move the ONE shared `mo.state` index through repeated advancing counters (0→1→2→3, backward to 0, clamped there, then the coarse quarter-axis steps 11/22/33/44 and clamped at `LAST = 47`) with `step_slider` read back equal to `index` at every step, and a cascade parent change rebuilds the child (new options, selection reset to the first entry, `result` re-derived; a group-a-only option on the group-b child is refused `value_not_applied`; switching back resets the child again, pinning that the shipped example has NO per-parent memory) — and the live verification of the T-E6 per-parent-memory recipe as a test-local notebook (child restored per parent, no-memory-yet fallback) — see [Example smoke and interaction regressions](#example-smoke-and-interaction-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
 do **not** need a kernel, so they live in the fast path (`tests/marimo_inspect/`).
@@ -422,21 +424,94 @@ TTL reaping (a configured `--session-ttl` closing an orphan) is deliberately
 recorded in the resolved T18 entry, while the default-TTL orphan above is the
 behaviour the contract rests on.
 
+## Example smoke and interaction regressions
+
+`test_examples.py` is the gate for the consumer-facing `examples/` tree — the
+usage patterns documented in `examples/README.md` that run on `marimo` alone.
+They are explicitly **not** fixtures, and nothing here imports them as Python
+modules: they are booted as notebooks, from a `tmp_path` copy, and each test
+asserts the repo file is byte-identical afterwards.
+
+The static half is the full notebook check, which covers both trees:
+
+```bash
+uv run marimo check notebooks examples
+```
+
+The live half discovers the tracked `examples/**/*.py` tree (from the git index,
+so an untracked scratch file cannot join the gate; a filesystem walk is the
+fallback outside a checkout) and parametrizes over it — a new example is covered
+the moment it is committed, with no test edit. Each example is written into
+`tmp_path` and mounted on its own disposable server by the existing
+`notebook_server` factory, then executed whole through the **real**
+`run_cell(mode="all")` handler. The pass condition is `status: ok` with
+`failed_cell_ids` / `not_run_cell_ids` / `unverified_cell_ids` all empty and
+every requested cell `idle` with a readable, empty error channel. A discovery
+guard test fails when the tree is empty, so the gate can never pass vacuously.
+
+Two interaction regressions drive the shipped patterns' live controls through
+the real `set_ui_value` handler, reading the outcome back with
+`get_variables` — proving the reactivity each example documents, not just that
+its cells parse:
+
+- **Step buttons over one shared state.** In
+  `patterns/slider_with_step_buttons.py` every button writes the ONE
+  `mo.state` set by `set_index`; the slider's own cell re-runs and re-seeds
+  itself from `get_index()`, and the downstream `index` cell re-derives
+  `int(step_slider.value)`. The test clicks `step_fwd` on repeated **advancing**
+  counters (the frontend counter is the value `set_ui_value` carries, so the
+  counters must keep advancing for `handler_invoked: true`), walks back down
+  with `step_back`, asserts the clamp at `0`, then uses `step_far_fwd` /
+  `step_far_back` for the coarse `LAST // 4` jump — `0 → 11 → 0`, then
+  `11 → 22 → 33 → 44 → 47 → 47` (clamped at `LAST`), asserting that `index`
+  **and** `step_slider` move together at every step. `LAST = 47` and
+  `coarse = 11` are asserted from the notebook's own variables first, so the
+  arithmetic cannot drift from the file.
+- **A cascade parent change rebuilds the child.** In
+  `patterns/cascading_sidebar_controls.py` the child reads the parent's value,
+  so changing `parent_picker` re-runs its cell: the test moves the parent
+  `group-a → group-b` (verified `value_before`/`value_after`), asserts the child
+  is rebuilt with `group-b`'s options (it resets to `delta`, and a
+  group-a-only option is now refused by the kernel as `value_not_applied`),
+  picks one of the new options and re-reads `result`, then switches back and
+  asserts the child resets to `alpha` again — which is also the honest
+  statement that the shipped example has **no** per-parent memory.
+
+The per-parent-memory variant is deliberately not a third example (agenda
+T-E6): it ships as a recipe in `examples/README.md`, and the same test module
+boots an implementation of that recipe — the same cell structure with renamed
+locals — as a **test-local** notebook, asserting the child is restored per
+parent, with the first-option fallback for a parent that has no memory yet. So
+the recipe is a verified claim rather than prose.
+
+Frontend *rendering* is still not covered here — this suite boots kernels, not
+browsers. It proves every example cell executes cleanly in a real 0.24.x kernel
+and that its documented reactivity happens in-kernel; the visual check stays
+manual (see the widget section above).
+
 ## Current status (verified 2026-09-13)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (548 tests collected in total):
+split (554 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 62 passed, 486 deselected
+=> 68 passed, 486 deselected
 
 uv run pytest -m "not live"
-=> 486 passed, 62 deselected
+=> 486 passed, 68 deselected
 ```
 
 (Elapsed times are machine-dependent and not part of the contract; the split and
 the counts are. Re-derive them with `--collect-only` after adding tests.)
+
+The example-notebook gate alone (one isolated server per example/interaction
+test):
+
+```text
+uv run pytest tests/marimo_inspect/live/test_examples.py -m live
+=> 6 passed
+```
 
 The widget regressions alone (they boot one isolated server per test):
 

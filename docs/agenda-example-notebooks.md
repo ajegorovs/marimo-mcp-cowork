@@ -1,12 +1,14 @@
-# Agenda (open issue): example notebooks — review, and tie them into the repo
+# Agenda (closed): example notebooks — contract, and how they are verified
 
-> **Status:** **Open — a first example exists, the wiring does not.** One pattern
-> example landed under `examples/patterns/`; what `examples/` *is* (its contract
-> against `notebooks/`) and where it gets wired so it cannot rot are undecided.
-> **Created:** 2026-09-12
+> **Status:** **Closed 2026-09-13.** The `examples/` contract, its docs wiring and
+> its automated gate are settled: `examples/` holds consumer-facing marimo usage
+> patterns that run on `marimo` alone, are never imported by tests, are covered
+> statically by `uv run marimo check notebooks examples`, and are booted and
+> driven live by `tests/marimo_inspect/live/test_examples.py`.
+> **Created:** 2026-09-12 · **Closed:** 2026-09-13
 > **Related:** [`examples/README.md`](../examples/README.md),
-> [`project-status.md`](project-status.md), `notebooks/`,
-> `docs/agent-onboarding-demo-mcp.md`, `docs/marimo-version-support.md`.
+> [`project-status.md`](project-status.md), [`live-tests.md`](live-tests.md),
+> `notebooks/`, `docs/marimo-version-support.md`.
 
 ## The question
 
@@ -16,53 +18,87 @@ I make X behave like this in marimo?" — have no home in that definition: they 
 not fixtures, no test boots them, and they are exactly the artifact a consumer
 would want to read.
 
-A first example now exists
-(`examples/patterns/cascading_sidebar_controls.py`), so the open question is
-structural rather than "should we have examples at all":
+Two examples landed under `examples/patterns/` while the wiring was open, so the
+question was structural rather than "should we have examples at all":
 
 1. What is the contract for `examples/` versus `notebooks/`?
 2. Where does `examples/` get referenced so it is discoverable and checked?
 
-## What makes this worth a doc rather than a commit
+## What made this worth a doc rather than a commit
 
-- **Unchecked trees rot.** `AGENTS.md` §Common commands and the README
-  Development section both run `uv run marimo check notebooks`. A new
-  `examples/` tree is outside every existing check, so nothing notices when a
-  marimo bump invalidates an example.
-- **The examples carry claims, not just code.** The first one asserts marimo
-  behaviour (single-assignment rule, the creating-cell `.value` refusal,
-  multi-`mo.sidebar` stacking, `full_width` on a sidebar control, multiple
-  renders of one element sharing state). Claims about a version-pinned
-  dependency belong under the same scrutiny as the rest of the tree — see
-  `docs/marimo-version-support.md`.
+- **Unchecked trees rot.** `AGENTS.md` §Common commands and the README ran
+  `uv run marimo check notebooks`. A new `examples/` tree was outside every
+  existing check, so nothing would notice when a marimo bump invalidated an
+  example.
+- **The examples carry claims, not just code.** They assert marimo behaviour
+  (single-assignment rule, the creating-cell `.value` refusal, multi-`mo.sidebar`
+  stacking, `full_width` on a sidebar control, multiple renders of one element
+  sharing state, and the state-setter cell-skip rule). Claims about a
+  version-pinned dependency belong under the same scrutiny as the rest of the
+  tree — see `docs/marimo-version-support.md`.
 - **Frontends are still not CI-covered here.** The live suite boots kernels, not
   browsers, so "the example renders correctly" is a manual check no matter where
   the example lives. That is a known repo-wide gap, not something `examples/`
   introduces.
 
-## Items
+## Items — all closed
 
-| id | item | state |
-| --- | --- | --- |
-| T-E1 | Decide the `examples/` vs `notebooks/` contract and write it in `examples/README.md` and the consumer-facing README (examples = no consumer deps, not imported by tests, not fixtures). | open |
-| T-E2 | Extend the check command to `uv run marimo check notebooks examples` in the README Development section and canonical test documentation; decide whether CI runs it. | open |
-| T-E3 | Keep `examples/` discoverable from `docs/project-status.md` and the README without adding mutable status to `AGENTS.md`. | open |
-| T-E4 | Review `patterns/cascading_sidebar_controls.py` for placement and naming: is `examples/patterns/` the right shape, and does the pattern name read as a pattern? | open |
-| T-E5 | Decide whether examples are *executed* anywhere (a smoke run that proves the cells run) or lint-only (`marimo check`), given the kernel-vs-frontend split above. | open |
-| T-E6 | Decide the fate of the per-parent memory variant (a `mo.state`-seeded child control) — currently only described in the notes of T-E4's example, not shipped as its own example. | open |
-| T-E7 | Settle the ruff/format policy for `examples/`. Applied 2026-09-12: added `examples/` to `[tool.ruff] exclude` next to `notebooks/` (see §Resolved log). Confirm the exclusion is preferred over per-file suppressions. | applied, confirm |
+| id | item | state | resolution |
+| --- | --- | --- | --- |
+| T-E1 | Decide the `examples/` vs `notebooks/` contract and write it in `examples/README.md` and the consumer-facing README. | **closed** | `examples/` = consumer-facing usage patterns that run on `marimo` alone, carry no consumer deps, are **not fixtures**, and are never imported by tests or the package; `notebooks/` = fixtures by *purpose*. Written in `examples/README.md` and in the new `README.md` §Examples. |
+| T-E2 | Extend the check command to `uv run marimo check notebooks examples` in the README Development section and canonical test documentation; decide whether CI runs it. | **closed** | The combined command is `uv run marimo check notebooks examples`, documented in `README.md` §Examples, `examples/README.md` and `docs/live-tests.md`. **No CI is added** — this repo has no CI at all (no workflow files), and adding one is a separate workstream, not part of the examples contract; the command is what CI would run when it exists. `AGENTS.md` retains its narrower, valid fixture-only `marimo check notebooks` command. |
+| T-E3 | Keep `examples/` discoverable from `docs/project-status.md` and the README without adding mutable status to `AGENTS.md`. | **closed** | `README.md` §Examples (stable, consumer-facing), the `examples/` entry in `docs/project-status.md`, and this agenda. No example state, count or date was added to `AGENTS.md`. |
+| T-E4 | Review `patterns/cascading_sidebar_controls.py` for placement and naming. | **closed** | `examples/patterns/` is the right shape and stays the **only** bucket; both names read as patterns (`cascading_sidebar_controls`, `slider_with_step_buttons`). `examples/` stays flat: a new bucket is justified only by a genuinely different *kind* of artifact, not by a second pattern. |
+| T-E5 | Decide whether examples are executed anywhere or lint-only. | **closed** | **Executed.** Static `uv run marimo check notebooks examples` plus a live smoke that discovers the tracked `examples/**/*.py` tree, boots each example as a notebook on its own headless server (tmp copy via the existing `notebook_server` factory) and runs the whole document through the real `run_cell(mode="all")` handler — `status: ok` with no failed/not-run/unverified target. Frontend *rendering* remains manual/out of scope (kernels, not browsers). |
+| T-E6 | Decide the fate of the per-parent memory variant. | **closed** | **No third example.** The variant is one control's `value=`/`on_change=`, not a different pattern, so it ships as a concise recipe in `examples/README.md` §Per-parent memory — and, because it is still a claim, it is verified live: `tests/marimo_inspect/live/test_examples.py` boots an implementation of that recipe (the same cell structure, renamed locals) as a test-local notebook and asserts the child is restored per parent (with the no-memory-yet fallback). |
+| T-E7 | Settle the ruff/format policy for `examples/`. | **closed (confirmed)** | The blanket `examples/` (and `notebooks/`) exclusion in `[tool.ruff]` is kept — it is preferred over per-file suppressions, because marimo's generated cell shape (bare trailing expression, closing `return`) trips `B018`/`PLR1711` by design in *every* notebook file. `pyproject.toml` needed no change. **Correction to the earlier record:** the repo-wide `uv run ruff format --check .` was claimed clean; it is **not** — two unrelated, pre-existing files would be reformatted (`tests/marimo_inspect/live/test_dependency.py`, `tests/marimo_inspect/test_lifecycle.py`). `uv run ruff check .` *is* clean. Neither file belongs to this agenda and neither was touched. |
 
-## Open decisions
+## Decisions
 
-- **Fixture boundary.** Does a notebook that a live test happens to be able to
-  boot belong in `notebooks/`, even if it reads like an example? The current
-  split is by *purpose*, not by capability — worth confirming that is the intent.
-- **Audience.** Are these examples for a consumer that read the README and wants
-  a working starting point, or for an agent that needs a canonical snippet? The
-  first example targets both, which is a decision that has not been made
-  explicitly.
-- **Growth.** If a second and third example arrive, does `examples/` stay flat
-  with `patterns/` as the only bucket, or does it mirror the package layout?
+- **The boundary is by purpose, not by capability.** A notebook that a live
+  test *can* boot is still an example if its purpose is to show a consumer a
+  pattern; bootability does not make it a fixture. The smoke gate boots examples
+  *as notebooks from a tmp copy* and never imports them — so `examples/` stays
+  out of the package's import graph while no longer being outside every gate.
+- **Audience: both.** The examples serve a consumer who read the README and
+  wants a working starting point, and an agent that needs a canonical snippet.
+  Both audiences read the same files; the notes stay in the notebook markdown
+  and `examples/README.md`.
+- **Growth: stay flat.** `patterns/` remains the only bucket. A second bucket is
+  added only when the artifact is a different kind (e.g. an end-to-end recipe
+  that needs data), never per pattern.
+- **Static is the full notebook check, live is the gate.** `uv run marimo check
+  notebooks examples` is the command a contributor runs; the live smoke is what
+  actually proves the examples still execute on the pinned marimo. Neither
+  covers frontend rendering, which stays a manual browser check.
+- **CI is out of scope and absent.** This repo has no CI; the examples gate is
+  a local command pair (documented above), not a pipeline. Adding CI — and with
+  it wiring `marimo check` and the live tier — is a separate workstream.
+
+## Verification (the closure evidence)
+
+Run on the final tree, 2026-09-13:
+
+```text
+uv run marimo check notebooks examples                      -> exit 0
+uv run pytest tests/marimo_inspect/live/test_examples.py -m live -> 6 passed
+uv run pytest -m live                                       -> 68 passed, 486 deselected
+uv run pytest -m "not live"                                 -> 486 passed, 68 deselected
+uv run ruff check .                                         -> All checks passed!
+uv run ruff format --check .  -> 2 files would be reformatted, 94 files already formatted
+                                 (both pre-existing and unrelated to examples/)
+```
+
+`tests/marimo_inspect/live/test_examples.py` holds: a discovery guard (an empty
+`examples/` tree fails rather than making the smoke vacuous), the parametrized
+smoke over the discovered tracked `examples/**/*.py` tree, one interaction
+regression per shipped example (step buttons → the one shared `mo.state` index
+under repeated advancing counters, backward and clamped, with the slider
+re-seeded from the state; cascade parent change → the child rebuilt with the new
+options and the result re-derived), and the live verification of the T-E6
+per-parent-memory recipe. Each test copies its notebook to `tmp_path` and
+asserts the repo file is byte-identical afterwards, so `examples/` is never the
+mounted document.
 
 ## Resolved log
 
@@ -72,15 +108,14 @@ structural rather than "should we have examples at all":
   by running the notebook headless and driving the live controls in a browser
   (cascade re-derives the child's options; parent change rebuilds the child;
   the creating-cell `.value` access raises; two `mo.sidebar` calls stack).
-  Remaining wiring is T-E1…T-E6.
 - 2026-09-12 — **T-E7 applied.** Adding `examples/` turned the repo-wide
   `uv run ruff check .` red: marimo's generated cell shape (a bare trailing
   expression used as the cell's output, plus the closing `return`) trips `B018`
   and `PLR1711` *by design*, and the hand-aligned trailing comment is not
   `ruff format`-stable. `examples/` is therefore excluded in `[tool.ruff]`,
   matching the existing `notebooks/` rationale. Verified after the change:
-  `uv run ruff check .` → all checks passed, `uv run ruff format --check .` →
-  88 files already formatted, `uv run marimo check examples` → exit 0.
+  `uv run ruff check .` → all checks passed, `uv run marimo check examples` →
+  exit 0.
 - 2026-09-12 — a second pattern landed:
   `examples/patterns/slider_with_step_buttons.py` (+ a row in
   `examples/README.md`) — a slider paired with `±1` and coarse step buttons over
@@ -99,6 +134,19 @@ structural rather than "should we have examples at all":
   through this repo's own tool surface, against the live session the frontend
   held: `+1` → `profile = 1`; `−1` → `0`; a coarse step down from 0 clamped at
   `0`; a coarse step up → `11` (`LAST // 4`, `LAST = 47`), with
-  `step_slider.value` read back tracking every step. Static gates: `marimo check
-  examples/patterns/slider_with_step_buttons.py` → exit 0, `ruff check .` /
-  `ruff format --check .` → clean (88 files, `examples/` excluded as in T-E7).
+  `step_slider.value` read back tracking every step.
+- 2026-09-13 — **T-E1…T-E7 closed.** The contract landed in
+  `examples/README.md` and `README.md` §Examples; the full notebook check
+  extended to `uv run marimo check notebooks examples`; and the examples moved
+  from "nothing boots them" to a real gate. Added
+  `tests/marimo_inspect/live/test_examples.py` (6 live tests): discovery guard,
+  parametrized smoke over the tracked `examples/**/*.py` tree (tmp copy →
+  `notebook_server` → real `run_cell(mode="all")`, `status: ok`, no
+  failed/not-run/unverified target), a slider step-button interaction regression
+  (the shared index walks 0→1→2→3, back to 0, clamps there, then the coarse
+  quarter-axis steps to 11/22/33/44 and clamp at 47, with `step_slider` read
+  back equal to `index` at every step), a cascade regression (parent → child
+  options/selection/result re-derived; a stale option is rejected by the kernel
+  as `value_not_applied`; switching back resets the child, i.e. the example
+  ships no per-parent memory), and the T-E6 recipe verified as a test-local
+  notebook. Counts and the full command list are in §Verification.

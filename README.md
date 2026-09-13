@@ -322,6 +322,30 @@ provider against a consumer project. It is not a consumer-installation mode:
 replace the consumer's pinned dependency temporarily, resync, test, then
 restore the pinned version. Do not commit a machine-local dependency source.
 
+## Examples
+
+[`examples/`](examples/) holds consumer-facing **marimo usage patterns**:
+notebooks that run on `marimo` alone, with none of this package's code or
+dependencies. They are patterns to copy, not fixtures — nothing under
+`examples/` is imported by tests and the package never needs them.
+
+| Example | Pattern |
+| --- | --- |
+| [`patterns/cascading_sidebar_controls.py`](examples/patterns/cascading_sidebar_controls.py) | Two dependent controls (the child's options come from the parent's value) hosted in the sidebar. |
+| [`patterns/slider_with_step_buttons.py`](examples/patterns/slider_with_step_buttons.py) | A slider paired with step buttons over one shared `mo.state`, slicing a 2-D `f(x, y)` into 1-D profiles. |
+
+Check them statically (the full notebook check covers both trees):
+
+```bash
+uv run marimo check notebooks examples
+```
+
+Each example is also booted on a real kernel and executed whole by the live
+suite (`tests/marimo_inspect/live/test_examples.py`, run with `-m live`), which
+additionally drives their live controls. See
+[`examples/README.md`](examples/README.md) for the pattern notes and the
+verification split.
+
 ## Requirements
 
 - Python 3.12+
