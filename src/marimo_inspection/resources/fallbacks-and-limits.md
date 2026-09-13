@@ -19,7 +19,14 @@ missing from `get_cell_outputs`, inspect the cell's variables instead.
 `set_ui_value` expects a widget-specific JSON value shape; a shape the element
 cannot accept is refused before anything is applied, and the element's own value
 is read back before the call returns (see
-`workflow://marimo-inspect/co-work-loop` §5 for the per-widget shapes). The call
+`workflow://marimo-inspect/co-work-loop` §5 for the per-widget shapes). A
+`dropdown` takes exactly one option key inside a one-element list: any list
+whose length is not exactly one is refused (`value_shape_mismatch`) rather than
+applied, since marimo clears a dropdown to `None` for an empty list and its own
+declaration forbids that. `did_you_mean` carries a replacement only when one can
+be inferred; for an empty or multi-element dropdown list no single key can be,
+so the field is absent and the message names the element's option keys. A
+`multiselect` is unchanged — it takes any number of keys, `[]` included. The call
 does **not** verify arbitrary downstream effects: in autorun mode the kernel
 re-runs the dependent cells as part of the update, while in lazy mode it only
 marks them stale — confirm those effects with `get_variables` or
@@ -89,9 +96,16 @@ skew protection is off or the rotation could not be measured;
 token was observed to rotate. The token and its fingerprint are never exposed in
 a payload. A POST the endpoint refuses 401 is reported with
 `reason: skew_token_unavailable` and states whether a token was read and tried;
-if the endpoint returns 403 it is `reason: edit_required` (the endpoint is
-served in `edit` mode only). If the session census itself is refused with 401
-the call fails up front with `reason: auth_required`, and **nothing is closed**.
+a literal 403 from the endpoint is `reason: edit_required` — kept defensively,
+because pinned marimo 0.24.0 serves an API 403 as `401 {"detail":"Authorization
+header required"}` rather than the 403. If the session census itself is refused
+with 401/403 the call fails up front — **nothing is closed** — with the refusal
+**classified by a read-scope probe**, never guessed from the denial:
+`reason: edit_scope_required` when `GET /api/version` answers 200 (a `marimo
+run` server: the census needs `edit` mode and authenticating would not help),
+`reason: auth_required` when that probe is denied with the same auth body, and
+`reason: session_census_denied` when the probes cannot tell the two apart. Each
+carries `read_scope_status_code`/`page_kind` as its evidence.
 
 A restart is **never reported as success over a sessionless server**. The tool
 refuses up front when the id is not live (`reason: session_not_found`, nothing
@@ -127,7 +141,11 @@ failure keeps a top-level `error` string beside the structured
 **registered in the kernel dependency graph**. A fresh session has an empty
 graph, so an unregistered target returns `reason: graph_unpopulated` and runs
 nothing — that refusal is deliberate (a silent single-cell run would look like
-success). See `workflow://marimo-inspect/co-work-loop` §4 for the full mode and
+success). Passing `mode="all"` together with a non-empty `cell_id` is
+`reason: cell_id_not_allowed`. `mode` itself is a literal enum in the published
+schema, so an out-of-enum value is rejected by the framework (`literal_error`)
+before the handler runs and has no structured reason. See
+`workflow://marimo-inspect/co-work-loop` §4 for the full mode and
 response contract.
 
 A `run_cell` `cells[]` row's `errors` is `null` (`errors_readable: false`) when
@@ -150,7 +168,13 @@ empty for a cell the kernel dependency graph has not registered — registration
 is the sole condition, not execution status — no edge is invented, and no cell
 is dropped.
 
-An in-process lint (`lint_notebook`, `marimo check`) executes nothing either.
+An in-process lint (`lint_notebook`, `marimo check`) executes nothing either,
+and it reports **source-file positions**, not live cells: each diagnostic
+carries `filename`, `line`, `column` and `cell_index` — the flagged cell's
+positional index in the parsed document. `cell_index` is not a live `cell_id`
+(those come from `get_cell_map`); piping one into `get_cell_data`/`edit_cell`
+is refused, so navigate by `line`/`column`/`filename` and resolve the live id
+separately.
 
 A **browser** client instantiates the session by opening the notebook, which is
 what runs the cells, and its controls only hold values from then on. A session
@@ -214,6 +238,11 @@ anything, so `status: OK` means the binding can actually reach the session:
   earlier binding untouched — a bind is never a guess and never half-written.
   An empty id is `reason: invalid_session_id`; a live id with no MCP context
   to bind it to is `reason: binding_context_unavailable`.
+- A census the server denies with 401/403 is classified the same way the
+  targeting tools classify it — `reason: edit_scope_required` (readable
+  read-scope endpoint: the run-mode case), `reason: auth_required` (read-scope
+  probe denied with the same auth body), or `reason: session_census_denied`
+  (probes undecided) — and nothing is bound.
 
 See `workflow://marimo-inspect/co-work-loop` §1.
 
@@ -225,8 +254,14 @@ Every cell/session-targeting tool (`get_cell_map`, `get_cell_data`,
 `set_ui_value`) resolves its target through one shared step, so a target
 problem comes back as a structured refusal instead of a raw exception:
 `status: error` with `target_resolved: false`, `operation_ran: false`,
-`state_changed: false`, and **no read or write operation runs on a refusal**
-(the refusal is built before any scratchpad or mutation call).
+`state_changed: false`, and **no mutation is dispatched on a refusal** — a
+session-target refusal is built before any call at all, and a cell/anchor
+target is checked against a read-only validation of the live cells before the
+write scratchpad is generated, so nothing is queued and nothing is written.
+Two target classes share that envelope: the *session* reasons below, and the
+*cell/anchor* references (`delete_cell`'s `cell_id`, `create_cell`'s
+`after`/`before` anchor, `edit_cell`'s `cell_id`) that are validated against
+the live cell set.
 
 | `reason` | meaning |
 | --- | --- |
@@ -235,6 +270,25 @@ problem comes back as a structured refusal instead of a raw exception:
 | `session_not_found` | The requested id is not live on the selected server, and the census was **read**: `available_sessions` is that **same** server's truthful census — never another server's and never an invented id — and `available_sessions_readable` is `true`. |
 | `server_unreachable` | The session census could not be reached (transport failure). |
 | `server_query_failed` | The census answered with a non-auth HTTP error (HTTP `500` included) or an **unreadable** body (truncated JSON, invalid UTF-8, a non-object body). |
+| `edit_scope_required` | The census was denied for lack of **edit scope** while a read-scope endpoint (`GET /api/version`) answered `200`: the server is reachable and readable, but the census needs `edit` mode. A `marimo run` server is the typical case; authenticating cannot fix it. |
+| `auth_required` | The read-scope endpoint is denied with the **same** auth body as the census, so the server requires marimo auth even for reads. This is the one case authentication can fix. |
+| `session_census_denied` | The census was denied and the read-scope probes could not tell an auth gate from a missing edit scope: the cause is reported as **undetermined** rather than guessed. |
+| `unknown_cell_ids` | The named **cell or anchor** is not a live cell — it matched neither a cell id nor a cell name. `cell_id` echoes the reference (`create_cell` echoes `anchor` + `anchor_cell_id` instead), `unknown_cell_ids` lists it, and nothing was created/edited/deleted. The raw marimo `KeyError` traceback is never returned. |
+| `conflicting_anchors` | `create_cell` received **both** `before` and `after` (input validation, before any session work or scratchpad). |
+| `target_validation_failed` | The read-only live-cell validation needed to check the reference itself failed, so it could not be checked and nothing was dispatched. |
+
+**A denied census cannot classify itself.** Pinned marimo 0.24.0 serves an API
+403 as `401 {"detail":"Authorization header required"}` and deliberately strips
+`WWW-Authenticate`, so a run-mode scope denial and a true auth gate are the same
+bytes at the denied endpoint — and neither the header nor a response byte count
+may be used to tell them apart. The reason therefore comes from a **read-scope
+probe**: `edit_scope_required` when `GET /api/version` answers 200,
+`auth_required` when that probe is denied with the same body, and the semantic
+page markers of `GET /` (the `<marimo-server-token>` app-shell element vs a
+`/auth/login` form or redirect) when the probe is unavailable or ambiguous. All
+three refusals carry `read_scope_status_code` and `page_kind` as their evidence,
+and a denied census is never readable: `available_sessions` stays empty with
+`available_sessions_readable: false`.
 
 An explicit `session_id`/`server_url` pair that does not exist on the selected
 server is `session_not_found` plus that server's real `available_sessions`,
@@ -244,7 +298,7 @@ census that was successfully read: an unreadable census is
 `available_sessions_readable: false` marks an empty `available_sessions` as
 "could not be read" rather than "no sessions live there".
 `restart_kernel` and `list_active_notebooks` speak their own refusal
-vocabularies.
+vocabularies — `restart_kernel` shares the three access reasons above.
 
 ### Binding is not ownership, and the counts are scoped
 
@@ -297,7 +351,9 @@ in the same registry an edit server uses, but `GET /api/sessions` requires
 drops it. It is never counted by a discovery-based `servers_discovered`; only an
 explicit `server_url` pointed at one answers, with a single connection-failure
 **sentinel** row (`session_count` 0, `servers_discovered` 1, `result_row_count`
-1) — a row, not a session.
+1) — a row, not a session — and a target-resolution or `restart_kernel` call
+against it is refused `reason: edit_scope_required`, because its read-scope
+endpoints answer 200 (so the denial is scope, not auth).
 
 ## Version pin
 

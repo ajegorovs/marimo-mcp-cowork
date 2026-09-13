@@ -422,6 +422,12 @@ class TestToolRegistration:
         The signature extension must not break an existing caller that passes
         only ``cell_id`` — both ``cell_id`` and ``mode`` stay optional — and the
         advertised schema must enumerate exactly the three accepted modes.
+
+        F2: because the enum is exhaustive, FastMCP rejects an out-of-enum value
+        (``literal_error``) **before** the handler runs, so the documented
+        ``invalid_mode`` reason was unreachable on the MCP surface. The
+        published description must therefore not promise it — the defensive
+        branch in the handler is for direct Python callers only.
         """
         async with Client(transport=mcp_server) as client:
             tools = await client.list_tools()
@@ -443,6 +449,15 @@ class TestToolRegistration:
             assert sorted(set(accepted)) == ["all", "cell", "descendants"], mode
             # The default keeps single-cell execution.
             assert mode.get("default") == "cell", mode
+
+            # F2: the schema is the only validator the MCP caller meets, and it
+            # is exhaustive — so no reachable validation refusal mentions
+            # `invalid_mode`.
+            description = " ".join((run_tool.description or "").lower().split())
+            assert "invalid_mode" not in description, description
+            # The reachable validation reasons stay in the description.
+            assert "cell_id_not_allowed" in description, description
+            assert "cell_id_required" in description, description
 
     async def test_run_cell_description_names_the_modes_and_the_kernel_note(
         self, mcp_server

@@ -20,20 +20,29 @@ def normalize_list_arg(value: str | list[str] | None) -> list[str]:
     Accepted forms:
 
     - ``None`` (the caller omitted the filter) -> ``[]``, meaning "all";
+    - an empty or whitespace-only string -> ``[]``, the same "all": a blank
+      string is this surface's own "not provided" convention (``session_id``
+      and ``server_url`` default to ``""``), so it must never normalize to one
+      literal empty name (whose lookup legitimately finds nothing and is
+      indistinguishable from "this session defines no names");
     - a native array -> returned as a list;
     - a bare name (``"x"``) -> ``["x"]``;
     - a JSON array (``'["x", "y"]'``) -> ``["x", "y"]``, including the
       empty array ``"[]"`` -> ``[]``;
     - a JSON-encoded string (``'"x"'``) -> ``["x"]``.
 
-    A string that does not decode to a JSON array/string is treated as one
-    literal name, so a numeric-looking id (``"5"``) still addresses ``"5"``
-    rather than being coerced to an integer.
+    A non-empty string that does not decode to a JSON array/string is treated
+    as one literal name, so a numeric-looking id (``"5"``) still addresses
+    ``"5"`` rather than being coerced to an integer, and a malformed
+    JSON-looking string (``"[Hbol"``) stays a literal target that the caller
+    sees reported back.
     """
     if value is None:
         return []
     if not isinstance(value, str):
         return list(value)
+    if not value.strip():
+        return []
     decoded = _decode_json_container(value)
     return [value] if decoded is None else decoded
 

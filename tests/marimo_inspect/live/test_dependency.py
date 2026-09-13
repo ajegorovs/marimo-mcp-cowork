@@ -1,9 +1,11 @@
 """Live integration tests for the dependency template.
 
-Note on scope: the shared fixture session is created by the /sse handshake and
-is never instantiated (instantiation requires the token-gated
-/api/kernel/instantiate endpoint out of scope for the suite), so against it
-`ctx.graph` reports no executed cells. Two tiers therefore exist here:
+Note on scope: the shared fixture session is created by the /sse handshake,
+which materializes the session without executing its cells (see
+docs/live-tests.md — original-cell execution is the separate
+/api/kernel/instantiate step, covered hermetically by test_instantiate.py). So
+against the shared fixture `ctx.graph` reports no executed cells. Two tiers
+therefore exist here:
 
 - Structure tests against the shared session: the template runs against a live
   kernel, returns the documented structure, and does not raise.

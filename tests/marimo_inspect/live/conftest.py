@@ -61,6 +61,9 @@ class MarimoServerManager:
         # "edit" (default) or "run" - see start(). Recorded so a failing test
         # can say which mode it booted.
         self.mode: str = "edit"
+        # True when the server was booted auth-gated (`--token`). Recorded so
+        # readiness can accept the 401 that /api/version answers then.
+        self.auth: bool = False
         self._state_dir: Path | None = None
         # False when the caller supplied state_dir (it owns the dir, so stop()
         # must not reap it).
@@ -84,6 +87,7 @@ class MarimoServerManager:
         *,
         mode: str = "edit",
         state_dir: str | Path | None = None,
+        auth: bool = False,
     ) -> str:
         """Start a headless marimo server on a free port.
 
@@ -93,6 +97,13 @@ class MarimoServerManager:
         endpoint requires ``edit`` scope), so ``discover_servers()`` never
         reports a run server — see ``tests/marimo_inspect/live/test_discovery.py``.
 
+        ``auth=True`` boots with ``--token`` (marimo's default auth) and a
+        throwaway password instead of ``--no-token``: the server then gates
+        *every* API read, including ``GET /api/version``, and registers no
+        registry entry (registration is gated on ``--no-token``). Readiness
+        therefore accepts the 401 that ``/api/version`` answers as "process is
+        up", which is the measured auth-on shape.
+
         ``state_dir`` overrides the isolated ``XDG_STATE_HOME`` (and therefore
         the marimo server registry). Omit it for the default per-boot temp
         dir; pass one when several servers must share a registry.
@@ -100,6 +111,7 @@ class MarimoServerManager:
         if mode not in ("edit", "run"):
             raise ValueError(f"mode must be 'edit' or 'run', got {mode!r}")
         self.mode = mode
+        self.auth = auth
         # Remember which notebook this server owns: create_session() must
         # hand the SAME file back to the /sse handshake or the kernel opens
         # the default notebook instead.
@@ -129,13 +141,21 @@ class MarimoServerManager:
             "marimo",
             mode,
             notebook,
-            "--no-token",
             "--headless",
             "--port",
             str(port),
             "--host",
             "127.0.0.1",
         ]
+        # Auth is off by default (the documented headless recipe). An auth-on
+        # server is booted with a fixed throwaway password — never a real
+        # credential — because a test needs to know the gate is closed, not to
+        # log in through it.
+        cmd += (
+            ["--token", "--token-password", "marimo-inspect-live-test"]
+            if auth
+            else ["--no-token"]
+        )
         self.process = subprocess.Popen(  # noqa: ASYNC220 - test scaffolding
             cmd,
             stdout=subprocess.PIPE,
@@ -174,6 +194,10 @@ class MarimoServerManager:
     async def _wait_until_ready(self, port: int) -> str:
         """Poll /api/version until the server responds.
 
+        200 is the healthy answer. An auth-gated server (`--token`) answers
+        **401** here instead — that is the measured auth-on shape and it still
+        proves the process is up and listening, so it counts as ready.
+
         Raises with dumped server logs if it never comes up.
         """
         url = f"http://127.0.0.1:{port}"
@@ -185,7 +209,9 @@ class MarimoServerManager:
             try:
                 async with httpx.AsyncClient(timeout=2) as client:
                     response = await client.get(f"{url}/api/version")
-                if response.status_code == 200:
+                if response.status_code == 200 or (
+                    self.auth and response.status_code == 401
+                ):
                     return url
             except (httpx.HTTPError, OSError):
                 pass
@@ -438,6 +464,9 @@ async def bare_server(tmp_path):
     ``tests/marimo_inspect/live/test_discovery.py``).
 
     ``mode`` selects ``marimo edit`` (default) or ``marimo run``.
+    ``auth=True`` boots with marimo's auth on (``--token`` and a throwaway
+    password) instead of ``--no-token``, so every API read — ``/api/version``
+    included — answers 401 and no registry entry is written.
     ``state_dir`` pins the isolated ``XDG_STATE_HOME`` — and with it the marimo
     server registry — so a test can point ``discover_servers()`` (and
     ``list_active_notebooks()``' discovery path) at exactly the servers it
@@ -456,11 +485,12 @@ async def bare_server(tmp_path):
         name: str = "notebook.py",
         mode: str = "edit",
         state_dir: str | Path | None = None,
+        auth: bool = False,
     ) -> MarimoServerManager:
         notebook = tmp_path / name
         notebook.write_text(source)
         manager = MarimoServerManager()
-        await manager.start(str(notebook), mode=mode, state_dir=state_dir)
+        await manager.start(str(notebook), mode=mode, state_dir=state_dir, auth=auth)
         managers.append(manager)
         return manager
 

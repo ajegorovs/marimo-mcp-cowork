@@ -18,9 +18,12 @@ Protocol (marimo 0.24) described inline, not by pointer:
 exists only after a client reconnects through `GET /sse` until `kernel-ready`.
 It answers 200 `{"success": true}`; 401 `Missing server token` / `Invalid
 server token`; 500 `Invalid session id: …` / `Missing Marimo-Session-Id
-header`; 403 when the endpoint is not served in this mode (`edit` only). A
-transport error leaves the outcome unknown. The skew token is rendered into the
-page HTML as `<marimo-server-token data-token="…">`.
+header`; 403 when the endpoint is not served in this mode (`edit` only — a
+defensive row, since 0.24.0 serves an API 403 as `401 {"detail":"Authorization
+header required"}` and a run-mode server is refused earlier by the census
+probe as `edit_scope_required`). A transport error leaves the outcome unknown.
+The skew token is rendered into the page HTML as
+`<marimo-server-token data-token="…">`.
 """
 
 from __future__ import annotations
@@ -30,12 +33,24 @@ from fastmcp.client import Client
 
 from marimo_inspection.client import (
     MarimoClient,
+    ProbeResponse,
     RestartOutcome,
+    RootPageResponse,
     SessionInfo,
     SkewTokenUnavailable,
 )
 
 SERVER = "http://stub"
+
+#: The exact body real marimo 0.24.0 answers for both an auth gate and an API
+#: 403 (edit-scope) denial — the reason a denied census cannot classify itself.
+AUTH_BODY = '{"detail":"Authorization header required"}'
+
+#: A served app shell: its skew-token marker proves the page is the notebook app.
+APP_SHELL_HTML = '<html><marimo-server-token data-token="tok" hidden></html>'
+
+#: The measured auth-on `GET /` answer: a 303 to the login form.
+LOGIN_LOCATION = "/auth/login?next=%2F"
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +332,14 @@ class TestRestartSessionClassification:
         assert outcome.status_code == 502
 
     async def test_forbidden_maps_to_edit_required(self):
-        """A 403 means the endpoint is not served in this mode (`edit` only)."""
+        """A literal 403 means the endpoint is not served in this mode.
+
+        Defensive row: the endpoint is `edit`-mode only, but measured marimo
+        0.24.0 converts an API 403 into the 401 auth body, so a real run-mode
+        server is refused earlier by the census probe (`edit_scope_required`),
+        never here. This pins the mapping without claiming it is the normal
+        pinned-range behavior.
+        """
         handler = _RestartHandler(restart_responses=[(403, {"detail": "Forbidden"})])
         client = _client(handler)
         try:
@@ -424,7 +446,13 @@ class FakeContext:
 
 
 class FakeClient:
-    """Scripted MarimoClient for the handler's two client phases."""
+    """Scripted MarimoClient for the handler's two client phases.
+
+    Also carries the two read-scope probes the auth/scope classifier uses, so
+    a census denial is classified against a scripted probe recipe instead of a
+    real socket (``version_status`` 200 is the run-mode shape; 401 with
+    ``version_body`` equal to the census body is the auth-gate shape).
+    """
 
     def __init__(
         self,
@@ -435,6 +463,11 @@ class FakeClient:
         token_fingerprint: str = "fp-before",
         list_error: Exception | None = None,
         fingerprint_error: Exception | None = None,
+        version_status: int = 200,
+        version_body: str = AUTH_BODY,
+        page_status: int = 404,
+        page_body: str = "",
+        page_location: str = "",
     ) -> None:
         self._sessions = list(sessions or [])
         self.outcome = outcome or RestartOutcome(
@@ -447,14 +480,33 @@ class FakeClient:
         self.token_fingerprint = token_fingerprint
         self.list_error = list_error
         self.fingerprint_error = fingerprint_error
+        self.version_status = version_status
+        self.version_body = version_body
+        self.page_status = page_status
+        self.page_body = page_body
+        self.page_location = page_location
         self.restart_calls: list[str] = []
         self.materialized: list[tuple[str, str]] = []
+        self.version_probes = 0
+        self.page_probes = 0
         self.closed = False
 
     async def list_sessions(self) -> list[SessionInfo]:
         if self.list_error is not None:
             raise self.list_error
         return list(self._sessions)
+
+    async def probe_version(self) -> ProbeResponse:
+        self.version_probes += 1
+        return ProbeResponse(status_code=self.version_status, detail=self.version_body)
+
+    async def probe_root_page(self) -> RootPageResponse:
+        self.page_probes += 1
+        return RootPageResponse(
+            status_code=self.page_status,
+            body=self.page_body,
+            location=self.page_location,
+        )
 
     async def restart_session(self, session_id: str) -> RestartOutcome:
         self.restart_calls.append(session_id)
@@ -593,26 +645,60 @@ class TestRestartKernelGuardRails:
         assert result["error"]
 
     @staticmethod
-    def _status_error(status: int) -> httpx2.HTTPStatusError:
+    def _status_error(status: int, body: str = AUTH_BODY) -> httpx2.HTTPStatusError:
+        """A census denial carrying marimo's real body (the classifier reads it)."""
         request = httpx2.Request("GET", f"{SERVER}/api/sessions")
         return httpx2.HTTPStatusError(
-            f"{status} error", request=request, response=httpx2.Response(status)
+            f"{status} error",
+            request=request,
+            response=httpx2.Response(status, text=body),
         )
 
-    async def test_auth_enabled_is_named_not_generic(self, monkeypatch):
-        """marimo auth refuses the census itself — name that cause.
+    async def test_run_mode_census_denial_is_edit_scope_required(self, monkeypatch):
+        """A run-mode census 401 is classified by the readable read-scope probe.
 
-        Measured against a real auth-on server: `GET /api/sessions` answers 401
-        to an unauthenticated client, so the pre-flight is where an
-        auth-protected server is stopped. A generic `restart_failed` would hide
-        the only actionable cause. (Whether the page is also gated so no token
-        can be read is server-config dependent and is deliberately not asserted
-        in the refusal.)
+        This is the bug the taxonomy fixes. A run-mode server and an auth-on
+        server answer the census with the *same* 401 body, so the pre-flight
+        alone cannot tell them apart; when `GET /api/version` answers 200 the
+        server is readable without auth, the census merely needs edit scope,
+        and `auth_required` would be unfixable advice.
         """
         from marimo_inspection.tools import lifecycle
 
         _fast_poll(monkeypatch)
-        pre = FakeClient(list_error=self._status_error(401))
+        pre = FakeClient(list_error=self._status_error(401), version_status=200)
+        post = FakeClient([])
+        with _patch_clients(pre, post):
+            result = await lifecycle.restart_kernel(
+                session_id="sid-1", server_url=SERVER
+            )
+
+        assert result["status"] == "error"
+        assert result["reason"] == "edit_scope_required"
+        assert result["state_changed"] is False
+        assert result["restarted"] is False
+        # The probe evidence is reported, and the page was never needed.
+        assert result["read_scope_status_code"] == 200
+        assert result["page_kind"] == "unknown"
+        assert pre.version_probes == 1
+        assert pre.page_probes == 0
+        # Nothing was closed: the restart endpoint was never called.
+        assert pre.restart_calls == []
+        assert any("edit" in step.lower() for step in result["next_steps"])
+        assert "nothing was closed" in result["message"].lower() or (
+            "not restarted" in result["message"].lower()
+        )
+
+    async def test_auth_on_census_denial_is_auth_required(self, monkeypatch):
+        """A genuine auth gate: the read-scope probe is denied with same body."""
+        from marimo_inspection.tools import lifecycle
+
+        _fast_poll(monkeypatch)
+        pre = FakeClient(
+            list_error=self._status_error(401),
+            version_status=401,
+            version_body=AUTH_BODY,
+        )
         post = FakeClient([])
         with _patch_clients(pre, post):
             result = await lifecycle.restart_kernel(
@@ -623,8 +709,73 @@ class TestRestartKernelGuardRails:
         assert result["reason"] == "auth_required"
         assert result["state_changed"] is False
         assert result["restarted"] is False
+        assert result["read_scope_status_code"] == 401
         assert pre.restart_calls == []
         assert any("auth" in step.lower() for step in result["next_steps"])
+
+    async def test_unclassifiable_census_denial_is_conservative(self, monkeypatch):
+        """Neither probe decides -> session_census_denied, never a guess."""
+        from marimo_inspection.tools import lifecycle
+
+        _fast_poll(monkeypatch)
+        pre = FakeClient(
+            list_error=self._status_error(401),
+            version_status=404,
+            page_status=404,
+        )
+        post = FakeClient([])
+        with _patch_clients(pre, post):
+            result = await lifecycle.restart_kernel(
+                session_id="sid-1", server_url=SERVER
+            )
+
+        assert result["reason"] == "session_census_denied"
+        assert result["state_changed"] is False
+        assert result["read_scope_status_code"] == 404
+        assert result["page_kind"] == "unknown"
+        assert pre.version_probes == 1
+        assert pre.page_probes == 1
+        assert pre.restart_calls == []
+
+    async def test_ambiguous_page_markers_classify_the_census_denial(self, monkeypatch):
+        """When the read-scope probe is unavailable, page markers decide."""
+        from marimo_inspection.tools import lifecycle
+
+        _fast_poll(monkeypatch)
+        pre = FakeClient(
+            list_error=self._status_error(401),
+            version_status=404,
+            page_status=200,
+            page_body=APP_SHELL_HTML,
+        )
+        post = FakeClient([])
+        with _patch_clients(pre, post):
+            result = await lifecycle.restart_kernel(
+                session_id="sid-1", server_url=SERVER
+            )
+
+        assert result["reason"] == "edit_scope_required"
+        assert result["page_kind"] == "app_shell"
+
+    async def test_literal_403_census_denial_uses_the_same_probe(self, monkeypatch):
+        """A literal 403 is a defensive row: classified the same way, not assumed.
+
+        Pinned marimo 0.24.0 converts an API 403 into the 401 auth body, so a
+        403 here is not the normal run-mode path — but when it does appear it
+        must not become its own certainty. The read-scope probe decides.
+        """
+        from marimo_inspection.tools import lifecycle
+
+        _fast_poll(monkeypatch)
+        pre = FakeClient(list_error=self._status_error(403), version_status=200)
+        post = FakeClient([])
+        with _patch_clients(pre, post):
+            result = await lifecycle.restart_kernel(
+                session_id="sid-1", server_url=SERVER
+            )
+
+        assert result["reason"] == "edit_scope_required"
+        assert result["restarted"] is False
 
     async def test_other_census_errors_stay_generic(self, monkeypatch):
         from marimo_inspection.tools import lifecycle

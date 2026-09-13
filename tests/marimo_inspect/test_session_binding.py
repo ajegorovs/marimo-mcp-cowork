@@ -94,23 +94,43 @@ def _make_session(session_id: str = "abc123"):
 # ---------------------------------------------------------------------------
 
 
+#: The exact body real marimo 0.24.0 answers for both an auth gate and an API
+#: 403 (edit-scope) census denial — why the denied census needs a read-scope probe.
+AUTH_BODY = '{"detail":"Authorization header required"}'
+
+#: A served app shell (skew-token marker present) and the measured auth-on
+#: `GET /` answer (a 303 to the login form).
+APP_SHELL_HTML = '<html><marimo-server-token data-token="tok" hidden></html>'
+LOGIN_LOCATION = "/auth/login?next=%2F"
+
+
 class _StubSessionsHandler(http.server.BaseHTTPRequestHandler):
-    """Serve GET /api/sessions; mark every other request with a body token."""
+    """Serve the census plus the read-scope probes; mark other GETs."""
 
     @property
     def _stub(self) -> StubMarimoServer:
         """The owning stub server (typed accessor for its session list)."""
         return self.server  # type: ignore[return-value]
 
-    def _respond(self, code: int, body: bytes, content_type: str) -> None:
+    def _respond(
+        self,
+        code: int,
+        body: bytes,
+        content_type: str,
+        *,
+        location: str = "",
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if location:
+            self.send_header("Location", location)
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if self.path.split("?")[0] == "/api/sessions":
+        path = self.path.split("?")[0]
+        if path == "/api/sessions":
             self._stub.sessions_calls += 1
             if (
                 self._stub.sessions_ok_calls is not None
@@ -121,8 +141,10 @@ class _StubSessionsHandler(http.server.BaseHTTPRequestHandler):
                 # then died before validation.
                 self._respond(
                     self._stub.sessions_error_status,
-                    b"stub: sessions unavailable",
-                    "text/plain",
+                    self._stub.sessions_status_body.encode(),
+                    "application/json"
+                    if self._stub.sessions_error_status in (401, 403)
+                    else "text/plain",
                 )
                 return
             if self._stub.sessions_payload is not None:
@@ -135,8 +157,10 @@ class _StubSessionsHandler(http.server.BaseHTTPRequestHandler):
             if self._stub.sessions_status != 200:
                 self._respond(
                     self._stub.sessions_status,
-                    b"stub: sessions unavailable",
-                    "text/plain",
+                    self._stub.sessions_status_body.encode(),
+                    "application/json"
+                    if self._stub.sessions_status in (401, 403)
+                    else "text/plain",
                 )
                 return
             payload = {
@@ -144,6 +168,25 @@ class _StubSessionsHandler(http.server.BaseHTTPRequestHandler):
                 for sid in self._stub.session_ids
             }
             self._respond(200, json.dumps(payload).encode(), "application/json")
+            return
+        if path == "/api/version":
+            self._stub.version_calls += 1
+            self._respond(
+                self._stub.version_status,
+                self._stub.version_body.encode(),
+                "application/json"
+                if self._stub.version_status == 200
+                else "text/plain",
+            )
+            return
+        if path == "/":
+            self._stub.page_calls += 1
+            self._respond(
+                self._stub.page_status,
+                self._stub.page_body.encode(),
+                "text/html",
+                location=self._stub.page_location,
+            )
             return
         self._respond(404, b"stub: no such endpoint", "text/plain")
 
@@ -168,6 +211,12 @@ class StubMarimoServer(http.server.ThreadingHTTPServer):
         sessions_payload: str | None = None,
         sessions_ok_calls: int | None = None,
         sessions_error_status: int = 500,
+        sessions_status_body: str = "stub: sessions unavailable",
+        version_status: int = 200,
+        version_body: str = "0.24.0",
+        page_status: int = 404,
+        page_body: str = "stub: no such endpoint",
+        page_location: str = "",
     ) -> None:
         super().__init__(("127.0.0.1", 0), _StubSessionsHandler)
         self.session_ids = session_ids
@@ -177,7 +226,15 @@ class StubMarimoServer(http.server.ThreadingHTTPServer):
         # later one fails with sessions_error_status (see do_GET).
         self.sessions_ok_calls = sessions_ok_calls
         self.sessions_error_status = sessions_error_status
+        self.sessions_status_body = sessions_status_body
+        self.version_status = version_status
+        self.version_body = version_body
+        self.page_status = page_status
+        self.page_body = page_body
+        self.page_location = page_location
         self.sessions_calls = 0
+        self.version_calls = 0
+        self.page_calls = 0
 
     @property
     def url(self) -> str:
@@ -196,12 +253,14 @@ def stub_server():
         sessions_status: int = 200,
         sessions_payload: str | None = None,
         sessions_ok_calls: int | None = None,
+        **kwargs: object,
     ) -> StubMarimoServer:
         server = StubMarimoServer(
             session_ids,
             sessions_status=sessions_status,
             sessions_payload=sessions_payload,
             sessions_ok_calls=sessions_ok_calls,
+            **kwargs,  # type: ignore[arg-type]
         )
         threading.Thread(target=server.serve_forever, daemon=True).start()
         started.append(server)
@@ -548,6 +607,103 @@ async def test_refuses_a_200_with_an_unusable_body(stub_server):
     assert result["status"] == "error"
     assert result["reason"] == "server_query_failed"
     assert result["servers_queried"] == []
+    assert ctx._state == {}
+
+
+# ---------------------------------------------------------------------------
+# A denied census is classified, and the bind agrees with target resolution.
+#
+# Pinned marimo 0.24.0 serves an API 403 as 401 with one auth body, so a
+# run-mode census denial and a true auth gate are byte-identical at the denied
+# endpoint; only the read-scope probe separates them. The reason vocabulary is
+# the one `resolve_target` and `restart_kernel` speak.
+# ---------------------------------------------------------------------------
+
+
+async def test_refuses_a_run_mode_census_as_edit_scope_required(stub_server):
+    """Run mode: the census needs edit scope, the server is readable."""
+    from marimo_inspection.tools.session import set_active_session
+
+    stub = stub_server(
+        sessions_status=401,
+        sessions_status_body=AUTH_BODY,
+        version_status=200,
+    )
+    ctx = FakeContext()
+
+    result = await set_active_session(session_id="s_any", server_url=stub.url, ctx=ctx)
+
+    assert result["status"] == "error"
+    assert result["reason"] == "edit_scope_required"
+    assert result["reason"] != "auth_required"
+    assert result["bound"] is False
+    assert result["state_changed"] is False
+    assert result["servers_failed"] == [
+        {"server_url": stub.url, "reason": "edit_scope_required"}
+    ]
+    assert ctx._state == {}
+    # The refusal tells the caller edit mode is the fix, not authentication.
+    assert "edit" in result["message"].lower()
+    assert any("edit" in step.lower() for step in result["next_steps"])
+    assert stub.version_calls == 1
+    assert stub.page_calls == 0
+
+
+async def test_refuses_an_auth_gated_census_as_auth_required(stub_server):
+    """True auth: the read-scope probe is denied with the same body."""
+    from marimo_inspection.tools.session import set_active_session
+
+    stub = stub_server(
+        sessions_status=401,
+        sessions_status_body=AUTH_BODY,
+        version_status=401,
+        version_body=AUTH_BODY,
+    )
+    ctx = FakeContext()
+
+    result = await set_active_session(session_id="s_any", server_url=stub.url, ctx=ctx)
+
+    assert result["status"] == "error"
+    assert result["reason"] == "auth_required"
+    assert result["bound"] is False
+    assert result["state_changed"] is False
+    assert ctx._state == {}
+    assert any("auth" in step.lower() for step in result["next_steps"])
+
+
+async def test_refuses_an_unclassifiable_census_conservatively(stub_server):
+    """Neither probe decides: session_census_denied, never a confident guess."""
+    from marimo_inspection.tools.session import set_active_session
+
+    stub = stub_server(
+        sessions_status=401,
+        sessions_status_body=AUTH_BODY,
+        version_status=404,
+        page_status=303,
+        page_location=LOGIN_LOCATION,
+    )
+    ctx = FakeContext()
+
+    result = await set_active_session(session_id="s_any", server_url=stub.url, ctx=ctx)
+
+    # The page marker *does* decide here (login page -> auth gate), so the
+    # reason is auth_required; a stub with no markers at all is the
+    # conservative case, pinned in test_access.py and below.
+    assert result["reason"] == "auth_required"
+    assert result["bound"] is False
+
+    bare = stub_server(
+        sessions_status=401,
+        sessions_status_body=AUTH_BODY,
+        version_status=404,
+    )
+    conservative = await set_active_session(
+        session_id="s_any", server_url=bare.url, ctx=ctx
+    )
+
+    assert conservative["reason"] == "session_census_denied"
+    assert conservative["bound"] is False
+    assert conservative["state_changed"] is False
     assert ctx._state == {}
 
 

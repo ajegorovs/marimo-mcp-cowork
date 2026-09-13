@@ -19,6 +19,20 @@ marimo's own scheduler orders them), and a separate post-run report — marimo
 discards the run payload when any target raises and the in-context snapshot is
 frozen. The response reports per-cell terminal states, never a single
 batch-level verdict (T15).
+
+**Cell and anchor references are validated before dispatch.** `delete_cell` and
+`create_cell(after=/before=)` name a *cell* (id or name, resolved the way marimo
+resolves one); `ctx.delete_cell`/`ctx.create_cell` raise `KeyError` /
+`RuntimeError` from *inside* the write scratchpad for an absent anchor, which
+reached callers as the raw `{"error": "Execution failed", "stderr":
+"Traceback…"}` envelope with no target flags (bug-hunt-2 F1/F4). Each mutation
+therefore runs one **read-only** live-cell validation before generating the
+write scratchpad and, on a miss, returns the shared structured refusal
+(`status: error`; `target_resolved`/`operation_ran`/`state_changed` all false;
+the echoed reference; `reason` one of `unknown_cell_ids` — not a live cell,
+`conflicting_anchors` — both `before` and `after` supplied, or
+`target_validation_failed` — the validation read itself failed). No write is
+generated or queued on a refusal, so no `KeyError` traceback can reach a caller.
 """
 
 from __future__ import annotations
@@ -140,6 +154,118 @@ async def _refresh_snapshot(
     return fps
 
 
+# ---------------------------------------------------------------------------
+# Structured cell/anchor target refusals (F1/F4)
+# ---------------------------------------------------------------------------
+#
+# `resolve_target` (tools/session.py) makes a *session* target a payload. A
+# cell reference the caller names is a second target class: `ctx.delete_cell`
+# and `ctx.create_cell(after=/before=)` resolve it through marimo's
+# `_resolve_target`, which raises `KeyError` for an absent one — surfacing to
+# callers as the raw `{"error": "Execution failed", "stderr": "Traceback…"}`
+# envelope with no `status`/`reason`/target flags. Each mutation therefore
+# validates its cell reference against a READ-ONLY snapshot of the live cells
+# *before* it generates or dispatches the write scratchpad, and refuses with
+# the same envelope (`target_resolved` / `operation_ran` / `state_changed` all
+# false) the rest of the surface speaks.
+
+#: The named cell/anchor is not a live cell (by id or by name).
+REASON_UNKNOWN_CELL_IDS = "unknown_cell_ids"
+#: `create_cell` was given BOTH `before` and `after` (input validation).
+REASON_CONFLICTING_ANCHORS = "conflicting_anchors"
+#: The live-cell read needed to validate the reference failed, so it could not
+#: be checked — nothing was dispatched.
+REASON_TARGET_VALIDATION_FAILED = "target_validation_failed"
+
+
+def _target_refusal(
+    reason: str,
+    message: str,
+    *,
+    session_id: str,
+    cell_id: str | None = None,
+    next_steps: Iterable[str] = (),
+    **extra: object,
+) -> dict:
+    """Build the structured refusal for a cell/anchor target problem.
+
+    The envelope mirrors every other target refusal on this surface
+    (``status: error`` plus ``target_resolved`` / ``operation_ran`` /
+    ``state_changed`` all false), so one caller checks one vocabulary. It is a
+    *cell* refusal, not a session one: the echoed bad reference is ``cell_id``
+    for the tools that take one; `create_cell` echoes its placement anchor in
+    ``anchor`` (``"after"``/``"before"``) + ``anchor_cell_id`` instead, because
+    it has no ``cell_id`` argument of its own.
+    """
+    payload: dict = {
+        "status": "error",
+        "reason": reason,
+        "error": message,
+        "message": message,
+        "session_id": session_id,
+        "cell_id": cell_id,
+        "target_resolved": False,
+        "operation_ran": False,
+        "state_changed": False,
+        "next_steps": list(next_steps),
+    }
+    payload.update(extra)
+    return payload
+
+
+def _target_known(targets: list[dict], target: str) -> bool:
+    """Whether ``target`` names a live cell by id or by name.
+
+    Mirrors marimo's own ``_resolve_target`` (``ctx.cells._resolve``), which
+    accepts either — validating ids alone would newly refuse a working name.
+    """
+    for row in targets:
+        if str(row.get("cell_id")) == target:
+            return True
+        name = row.get("name")
+        if name and str(name) == target:
+            return True
+    return False
+
+
+async def _live_cell_targets(
+    client: MarimoClient,
+    sid: str,
+    *,
+    cell_id: str | None = None,
+) -> tuple[list[dict], dict | None]:
+    """Read the live cells as ``(cell_id, name)`` rows, or the refusal.
+
+    Returns ``(targets, None)`` on a successful read, and ``([], refusal)``
+    when the read itself failed — in which case the caller must return the
+    refusal verbatim: the reference cannot be checked, so no mutation may be
+    generated or dispatched. This read is READ-ONLY; it never queues a write.
+    """
+    from marimo_inspection.templates.mutation import build_cell_targets_template
+
+    data = await _execute_json(client, sid, build_cell_targets_template())
+    if "error" in data:
+        detail = data.get("stderr") or data.get("error") or "unknown failure"
+        return [], _target_refusal(
+            REASON_TARGET_VALIDATION_FAILED,
+            (
+                f"reason: {REASON_TARGET_VALIDATION_FAILED} — the read-only "
+                "live-cell validation needed to check the referenced cell "
+                f"failed ({detail}), so nothing was dispatched and no write "
+                "was queued. Retry once the kernel answers reads again; use "
+                "get_cell_map to list the live cell ids and names."
+            ),
+            session_id=sid,
+            cell_id=cell_id,
+            stderr=data.get("stderr", ""),
+            next_steps=[
+                "Check the marimo server's health, then retry the call.",
+                "Use get_cell_map to list the live cell ids and names.",
+            ],
+        )
+    return list(data.get("targets") or []), None
+
+
 async def create_cell(
     source: str,
     *,
@@ -167,10 +293,35 @@ async def create_cell(
         server_url: Server URL override.
 
     Returns:
-        Dict with status and the created cell_id.
+        Dict with status and the created cell_id. A placement anchor (`after` /
+        `before`) that is not a live cell — by id or by name — is a structured
+        refusal (`status: error`, `reason: unknown_cell_ids`,
+        `anchor_cell_id`, `target_resolved`/`operation_ran`/`state_changed` all
+        false, nothing created); supplying both anchors is
+        `reason: conflicting_anchors`. Nothing is dispatched on either.
     """
     if not source.strip():
         return {"error": "source must not be empty", "status": "error"}
+
+    # Input validation, ahead of any session work: marimo raises
+    # `RuntimeError: Cannot specify both 'before' and 'after'` inside the
+    # scratchpad, which used to surface as a raw traceback envelope.
+    if before and after:
+        return _target_refusal(
+            REASON_CONFLICTING_ANCHORS,
+            (
+                f"reason: {REASON_CONFLICTING_ANCHORS} — create_cell cannot place "
+                f"one new cell both before {before!r} and after {after!r}: supply "
+                "at most one placement anchor. Nothing was created."
+            ),
+            session_id=session_id,
+            after=after,
+            before=before,
+            next_steps=[
+                "Pass only `after` or only `before`, never both.",
+                "Use get_cell_map to confirm the anchor cell id or name.",
+            ],
+        )
 
     resolved = await resolve_target(
         session_id, server_url, ctx=ctx, client_factory=MarimoClient
@@ -179,6 +330,37 @@ async def create_cell(
         return resolved.refusal
     client, session = resolved.unwrap()
     sid = session.session_id
+
+    # Validate the placement anchor against the live cells BEFORE generating
+    # the create scratchpad: an absent anchor is a target problem, and letting
+    # marimo raise `KeyError` from inside the write would violate the
+    # "nothing ran" guarantee the refusal makes.
+    anchor = after or before
+    if anchor:
+        targets, refusal = await _live_cell_targets(client, sid)
+        if refusal is not None:
+            return refusal
+        if not _target_known(targets, anchor):
+            which = "after" if after else "before"
+            return _target_refusal(
+                REASON_UNKNOWN_CELL_IDS,
+                (
+                    f"reason: {REASON_UNKNOWN_CELL_IDS} — the {which} anchor "
+                    f"{anchor!r} was not found among the live cells of session "
+                    f"{sid} (it matched neither a cell id nor a cell name), so "
+                    "nothing was created. Use get_cell_map to list the live "
+                    "cell ids and names, then retry with one of them."
+                ),
+                session_id=sid,
+                anchor=which,
+                anchor_cell_id=anchor,
+                unknown_cell_ids=[anchor],
+                next_steps=[
+                    "Use get_cell_map to list the live cell ids and names.",
+                    "Retry create_cell with one of them as the anchor.",
+                ],
+            )
+
     if ctx:
         await ctx.info(f"Creating cell in session {sid}...")
 
@@ -269,16 +451,24 @@ async def edit_cell(
     if cell_id not in live:
         # Genuinely absent from the session (not just a None hash): the
         # staleness guard is meaningless for a nonexistent cell. Refuse
-        # BEFORE mutating.
-        return {
-            "status": "error",
-            "cell_id": cell_id,
-            "message": (
-                f"Cell {cell_id} not found in session {sid}. "
-                "Use get_cell_map to list the current cell ids, then read "
-                "one with get_cell_data and retry."
+        # BEFORE mutating, in the shared structured-refusal envelope so a
+        # caller checks one vocabulary for every absent cell reference.
+        return _target_refusal(
+            REASON_UNKNOWN_CELL_IDS,
+            (
+                f"reason: {REASON_UNKNOWN_CELL_IDS} — cell {cell_id} was not "
+                f"found in session {sid}, so nothing was edited. Use "
+                "get_cell_map to list the current cell ids, then read one with "
+                "get_cell_data and retry."
             ),
-        }
+            session_id=sid,
+            cell_id=cell_id,
+            unknown_cell_ids=[cell_id],
+            next_steps=[
+                "Use get_cell_map to list the live cell ids.",
+                "Read the cell with get_cell_data, then retry edit_cell.",
+            ],
+        )
     live_hash = live.get(cell_id)
 
     tracker = get_tracker()
@@ -405,12 +595,18 @@ async def run_cell(
     `unverified_cell_ids`). `failed_cell_ids` covers the requested targets
     only. `status` is `ok` only when every requested target is idle, `partial`
     otherwise, and `error` for a validation failure (`cell_id_required`,
-    `invalid_mode`, `cell_id_not_allowed`), a planning failure
-    (`planning_failed`), a reporting failure (`reporting_failed`),
-    `unknown_cell_ids` or `graph_unpopulated`. Every failure carries a
-    top-level `error` string **and** the structured `status`/`reason` fields,
-    so a caller written against the pre-modes `{"error": ...}` contract still
-    sees the failure.
+    `cell_id_not_allowed`), a planning failure (`planning_failed`), a
+    reporting failure (`reporting_failed`), `unknown_cell_ids` or
+    `graph_unpopulated`. Every failure carries a top-level `error` string
+    **and** the structured `status`/`reason` fields, so a caller written
+    against the pre-modes `{"error": ...}` contract still sees the failure.
+
+    `mode` is a **literal enum** in the published MCP input schema, so an
+    out-of-enum value is rejected by the framework (`literal_error`) before
+    this handler runs — no MCP caller ever receives a structured payload for
+    it, which is why no out-of-enum reason appears in the vocabulary above. The
+    defensive branch for that case remains only for a direct Python caller that
+    bypasses schema validation.
 
     Args:
         cell_id: Target cell id **or cell name**. Required for
@@ -426,6 +622,11 @@ async def run_cell(
         and `execution_error` + `stderr` when the run call itself failed.
     """
     if mode not in _RUN_MODES:
+        # DEFENSIVE ONLY (bug-hunt-2 F2): `mode` is a Literal in the published
+        # signature, so FastMCP's schema validation rejects an out-of-enum
+        # value before this function runs and this branch is unreachable over
+        # MCP. It is kept for a direct Python caller, and `invalid_mode` is
+        # deliberately NOT part of the public MCP reason vocabulary.
         message = (
             f"mode must be one of {list(_RUN_MODES)}; got {mode!r}. Nothing was run."
         )
@@ -702,13 +903,17 @@ async def delete_cell(
     """Delete an existing cell from the notebook.
 
     Args:
-        cell_id: Target cell id.
+        cell_id: Target cell id **or cell name**.
         session_id: Session ID; omit only when the active-session binding holds
             for this call (see `list_active_notebooks`).
         server_url: Server URL override.
 
     Returns:
-        Dict with status.
+        Dict with status. A target that is not a live cell — by id or by name —
+        is a structured refusal (`status: error`, `reason: unknown_cell_ids`,
+        `target_resolved`/`operation_ran`/`state_changed` all false), validated
+        against the live cells before the delete is generated; the raw marimo
+        `KeyError` envelope is never returned.
     """
     if not cell_id:
         return {"error": "cell_id is required", "status": "error"}
@@ -720,6 +925,33 @@ async def delete_cell(
         return resolved.refusal
     client, session = resolved.unwrap()
     sid = session.session_id
+
+    # Validate the target against the live cells BEFORE generating the delete
+    # scratchpad. `ctx.delete_cell` raises `KeyError` for an absent id (or
+    # name), which reached callers as a raw traceback envelope with no
+    # structured refusal fields (F1).
+    targets, refusal = await _live_cell_targets(client, sid, cell_id=cell_id)
+    if refusal is not None:
+        return refusal
+    if not _target_known(targets, cell_id):
+        return _target_refusal(
+            REASON_UNKNOWN_CELL_IDS,
+            (
+                f"reason: {REASON_UNKNOWN_CELL_IDS} — cell {cell_id} was not "
+                f"found among the live cells of session {sid} (it matched "
+                "neither a cell id nor a cell name), so nothing was deleted. "
+                "Use get_cell_map to list the current cell ids and names, then "
+                "retry with one of them."
+            ),
+            session_id=sid,
+            cell_id=cell_id,
+            unknown_cell_ids=[cell_id],
+            next_steps=[
+                "Use get_cell_map to list the live cell ids and names.",
+                "Retry delete_cell with one of them.",
+            ],
+        )
+
     if ctx:
         await ctx.info(f"Deleting cell {cell_id} in session {sid}...")
 

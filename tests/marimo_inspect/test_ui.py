@@ -177,6 +177,25 @@ def _scalar_shaped():
     return _shaped_element("_FakeScalarShaped", UIElement[int | float, int | float])
 
 
+def _dropdown_shaped():
+    """A fake declaring ``list[str]`` *and* marimo's dropdown class name.
+
+    Real marimo names the class ``dropdown`` (lowercase) and its declared input
+    is ``list[str]`` — the same declaration ``multiselect`` carries. The F6
+    length guard is keyed on that element type, so the fake must carry it too.
+    """
+    from marimo._plugins.ui._core.ui_element import UIElement
+
+    return _shaped_element("dropdown", UIElement[list[str], Any])
+
+
+def _multiselect_shaped():
+    """A fake with the SAME declaration as a dropdown but a different name."""
+    from marimo._plugins.ui._core.ui_element import UIElement
+
+    return _shaped_element("multiselect", UIElement[list[str], Any])
+
+
 # -------------------------------------------------------------------
 # build_set_ui_value_template — generation + behavior
 # -------------------------------------------------------------------
@@ -365,6 +384,88 @@ class TestSetUiValueTemplate:
         assert payload["value_before"] == ["alpha"]
         assert payload["value_after"] == ["beta"]
         assert calls == [(element, ["beta"])]
+
+    # --- F6: a dropdown takes EXACTLY one key ------------------------
+
+    async def test_dropdown_refuses_a_zero_element_list(self, monkeypatch):
+        """F6: `[]` is not the documented one-element shape — refuse it.
+
+        marimo clears a dropdown to `None` for `[]` and prints the assertion
+        only to stderr, so before this guard the tool reported
+        `status: ok, applied: true, value_after: null` against an element whose
+        own declaration says it cannot be none.
+        """
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _dropdown_shaped()(value=["alpha"])
+        element._options = {"alpha": "alpha", "beta": "beta"}
+        payload, calls = await _run_template_payload(
+            build_set_ui_value_template("dd", []),
+            {"dd": element},
+            monkeypatch,
+        )
+        assert payload["status"] == "error", payload
+        assert payload["reason"] == "value_shape_mismatch", payload
+        assert payload["element_type"] == "dropdown", payload
+        assert payload["accepted_shape"] == "list[str]", payload
+        assert payload["submitted_value"] == [], payload
+        # No single key can be inferred from an empty list: the field is
+        # absent and the message says so instead of guessing one of them.
+        assert "did_you_mean" not in payload, payload
+        assert "be inferred" in payload["message"], payload
+        assert "Nothing was changed" in payload["message"], payload
+        assert calls == [], payload  # never queued
+        assert element.value == ["alpha"]  # untouched
+
+    async def test_dropdown_refuses_a_multi_element_list(self, monkeypatch):
+        """F6: a dropdown selects exactly ONE option key, not several."""
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _dropdown_shaped()(value=["alpha"])
+        element._options = {"alpha": "alpha", "beta": "beta"}
+        payload, calls = await _run_template_payload(
+            build_set_ui_value_template("dd", ["alpha", "beta"]),
+            {"dd": element},
+            monkeypatch,
+        )
+        assert payload["status"] == "error", payload
+        assert payload["reason"] == "value_shape_mismatch", payload
+        assert payload["submitted_value"] == ["alpha", "beta"], payload
+        assert "did_you_mean" not in payload, payload
+        assert "be inferred" in payload["message"], payload
+        assert calls == [], payload
+        assert element.value == ["alpha"]
+
+    async def test_dropdown_zero_list_with_one_option_infers_it(self, monkeypatch):
+        """The one inferable replacement: the element's sole option key."""
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _dropdown_shaped()(value=["only"])
+        element._options = {"only": "only"}
+        payload, calls = await _run_template_payload(
+            build_set_ui_value_template("dd", []),
+            {"dd": element},
+            monkeypatch,
+        )
+        assert payload["status"] == "error", payload
+        assert payload["did_you_mean"] == ["only"], payload
+        assert calls == []
+
+    async def test_multiselect_still_accepts_an_empty_list(self, monkeypatch):
+        """F6 must not change multiselect: clearing every selection is valid."""
+        from marimo_inspection.templates.ui import build_set_ui_value_template
+
+        element = _multiselect_shaped()(value=["a", "b"])
+        payload, calls = await _run_template_payload(
+            build_set_ui_value_template("ms", []),
+            {"ms": element},
+            monkeypatch,
+        )
+        assert payload["status"] == "ok", payload
+        assert payload["applied"] is True, payload
+        assert payload["value_after"] == [], payload
+        assert calls == [(element, [])]
+        assert element.value == []
 
     async def test_scalar_shaped_element_refuses_list(self, monkeypatch):
         from marimo_inspection.templates.ui import build_set_ui_value_template

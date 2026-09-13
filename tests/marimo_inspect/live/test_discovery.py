@@ -23,6 +23,14 @@ does not create a session):
   discovery path's ``servers_discovered`` does not count it. Only an explicit
   ``server_url`` pointed at a run server reaches it, as one connection-failure
   **sentinel** (``session_count`` 0, ``servers_discovered`` 1, one row).
+
+Two further tests here pin the **auth/scope taxonomy** (Task 01) on real
+servers, because the denied census cannot classify itself: run mode denies the
+census for lack of **edit scope** while staying readable, and a true auth gate
+denies reads too — the same 401 body either way. The read-scope probe
+(``GET /api/version``) is what separates ``edit_scope_required`` from
+``auth_required``, and the refusals of ``restart_kernel``,
+``set_active_session`` and a targeting handler must agree.
 """
 
 from __future__ import annotations
@@ -228,3 +236,119 @@ async def test_run_mode_server_is_registered_but_not_discoverable(
     # A sentinel is a row, not a session: it carries no provenance/owner.
     assert "provenance" not in sentinel
     assert "owner" not in sentinel
+
+
+# ---------------------------------------------------------------------------
+# Auth/scope taxonomy (Task 01) against real 0.24.0 servers.
+#
+# The denied census cannot classify itself: pinned marimo 0.24.0 serves an API
+# 403 as 401 {"detail":"Authorization header required"} and strips
+# WWW-Authenticate, so a run-mode scope denial and a true auth gate are the
+# same bytes at that endpoint. The read-scope probe decides.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+async def test_run_mode_denial_is_classified_edit_scope_required(
+    bare_server, tmp_path, monkeypatch
+):
+    """Run mode: readable read scope, edit-scope census denial.
+
+    Measured rows (``marimo run --no-token``): ``GET /api/sessions`` answers
+    401 with the auth body, ``GET /api/version`` answers 200, and ``GET /``
+    serves the app shell (skew-token marker present). Every refusal must
+    therefore be ``edit_scope_required`` — never ``auth_required``, which would
+    tell the user to authenticate and cannot fix a missing edit scope.
+    """
+    from marimo_inspection.tools.cells import get_cell_map
+    from marimo_inspection.tools.lifecycle import restart_kernel
+    from marimo_inspection.tools.session import set_active_session
+
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    manager = await bare_server(DISCOVERY_NOTEBOOK, mode="run", state_dir=state_dir)
+    server_url = manager.server_url
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        census = await client.get(f"{server_url}/api/sessions")
+        version = await client.get(f"{server_url}/api/version")
+        page = await client.get(f"{server_url}/")
+
+    # The measured shape the classifier is built on.
+    assert census.status_code == 401, census.text
+    assert "Authorization header required" in census.text
+    assert version.status_code == 200, version.text
+    assert "<marimo-server-token" in page.text
+
+    restarted = await restart_kernel(
+        session_id="no-such-session", server_url=server_url
+    )
+    assert restarted["status"] == "error", restarted
+    assert restarted["reason"] == "edit_scope_required", restarted
+    assert restarted["state_changed"] is False
+    assert restarted["restarted"] is False
+    assert restarted["read_scope_status_code"] == 200
+
+    bound = await set_active_session(
+        session_id="no-such-session", server_url=server_url
+    )
+    assert bound["status"] == "error", bound
+    assert bound["reason"] == "edit_scope_required", bound
+    assert bound["bound"] is False
+
+    refused = await get_cell_map(session_id="no-such-session", server_url=server_url)
+    assert refused["status"] == "error", refused
+    assert refused["reason"] == "edit_scope_required", refused
+    assert refused["target_resolved"] is False
+    assert refused["operation_ran"] is False
+    assert refused["available_sessions_readable"] is False
+
+
+@pytest.mark.live
+async def test_auth_on_denial_is_classified_auth_required(bare_server):
+    """A real auth gate denies the census *and* the read-scope probe.
+
+    Measured rows (``--token``): ``GET /api/sessions`` and ``GET /api/version``
+    both answer 401 with the same body, and ``GET /`` answers 303 to
+    ``/auth/login``. That is the one case the user can fix by authenticating,
+    so it must be reported as ``auth_required`` — and nothing may be read or
+    written after the refusal.
+    """
+    from marimo_inspection.tools.cells import get_cell_map
+    from marimo_inspection.tools.lifecycle import restart_kernel
+    from marimo_inspection.tools.session import set_active_session
+
+    manager = await bare_server(DISCOVERY_NOTEBOOK, mode="run", auth=True)
+    server_url = manager.server_url
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        census = await client.get(f"{server_url}/api/sessions")
+        version = await client.get(f"{server_url}/api/version")
+        # follow_redirects=False: the 303's location IS the login-page evidence.
+        page = await client.get(f"{server_url}/", follow_redirects=False)
+
+    assert census.status_code == 401, census.text
+    assert version.status_code == 401, version.text
+    assert census.text == version.text
+    assert "Authorization header required" in census.text
+    assert page.status_code == 303, page.text
+    assert "/auth/login" in page.headers.get("location", "")
+
+    restarted = await restart_kernel(
+        session_id="no-such-session", server_url=server_url
+    )
+    assert restarted["status"] == "error", restarted
+    assert restarted["reason"] == "auth_required", restarted
+    assert restarted["state_changed"] is False
+    assert restarted["read_scope_status_code"] == 401
+
+    bound = await set_active_session(
+        session_id="no-such-session", server_url=server_url
+    )
+    assert bound["reason"] == "auth_required", bound
+    assert bound["bound"] is False
+
+    refused = await get_cell_map(session_id="no-such-session", server_url=server_url)
+    assert refused["reason"] == "auth_required", refused
+    assert refused["operation_ran"] is False
+    assert refused["available_sessions_readable"] is False

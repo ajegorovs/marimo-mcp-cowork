@@ -11,9 +11,13 @@ Verified marimo 0.24 protocol this handler builds on:
 
 * ``POST /api/kernel/restart_session`` requires **both** ``Marimo-Session-Id``
   and ``Marimo-Server-Token``, and only **closes** the session: there is no
-  replacement kernel until a client reconnects through the ``/sse`` handshake
-  (a 403 means the endpoint is not served in this mode — it exists in ``edit``
-  mode only). The endpoint alone answers 200 ``{"success": true}`` and leaves
+  replacement kernel until a client reconnects through the ``/sse`` handshake.
+  The endpoint is served in ``edit`` mode only; a literal 403 is classified
+  ``edit_required`` (defensive — measured marimo 0.24.0 converts an API 403
+  into ``401 {"detail":"Authorization header required"}``, so a run-mode
+  server is normally caught earlier, at the census, and classified
+  ``edit_scope_required``). The endpoint alone answers 200 ``{"success": true}``
+  and leaves
   ``/api/sessions`` empty, so reporting success from the 200 alone is the
   documented failure mode; re-materialization is part of the contract here.
 * The skew token is rendered into the page HTML as
@@ -51,6 +55,7 @@ from marimo_inspection.client import (
     SessionInfo,
     SkewTokenUnavailable,
 )
+from marimo_inspection.tools import access
 from marimo_inspection.tools.change_tracking import get_tracker
 from marimo_inspection.tools.session import (
     SessionBindingError,
@@ -66,13 +71,22 @@ logger = logging.getLogger(__name__)
 REMATERIALIZE_POLL_ATTEMPTS = 10
 REMATERIALIZE_POLL_DELAY = 0.5
 
-#: Failure-reason vocabulary (Wave 3).
+#: Failure-reason vocabulary (Wave 3, extended by the auth/scope taxonomy).
 REASON_SESSION_REQUIRED = "session_required"
 REASON_SESSION_NOT_FOUND = "session_not_found"
 REASON_SESSION_FILE_UNKNOWN = "session_file_unknown"
-REASON_AUTH_REQUIRED = "auth_required"
+#: Access denials are classified by the shared read-scope probe
+#: (``tools/access.py``), so the census denial reasons come from one place:
+#: ``auth_required`` (read scope gated too), ``edit_scope_required`` (the
+#: run-mode census denial) and ``session_census_denied`` (undetermined).
+REASON_AUTH_REQUIRED = access.REASON_AUTH_REQUIRED
+REASON_EDIT_SCOPE_REQUIRED = access.REASON_EDIT_SCOPE_REQUIRED
+REASON_SESSION_CENSUS_DENIED = access.REASON_SESSION_CENSUS_DENIED
 REASON_SKEW_TOKEN_UNAVAILABLE = "skew_token_unavailable"
 REASON_SKEW_TOKEN_INVALID = "skew_token_invalid"
+#: Defensive endpoint-specific reason: a literal 403 from the restart POST.
+#: Pinned marimo 0.24.0 serves an API 403 as 401, so this is kept for
+#: future/other deployments rather than asserted as run-mode behavior.
 REASON_EDIT_REQUIRED = "edit_required"
 REASON_SERVER_UNREACHABLE = "server_unreachable"
 REASON_RESTART_FAILED = "restart_failed"
@@ -275,15 +289,22 @@ async def restart_kernel(
     The token the endpoint requires is read from the server's own page
     (`<marimo-server-token data-token="…">`, the same value the frontend sends)
     and is never exposed in the payload — only the *measured*
-    `skew_token_rotated` boolean is. When the census itself is refused with 401
-    the call is refused with `reason: auth_required` (an authenticated server
-    may gate the page so this unauthenticated client cannot read a token either)
-    and **nothing is closed**. A server whose API answers but whose page carries
-    no token is refused with `reason: skew_token_unavailable`; a POST refused
-    401 is reported with the same reason and states whether a token was tried.
-    A token that became invalid (the server was relaunched) is re-scraped once
-    and retried. A 403 from the endpoint is `reason: edit_required` (the
-    endpoint is served in `edit` mode only).
+    `skew_token_rotated` boolean is. When the census itself is refused with
+    401/403 the refusal is **classified by a read-scope probe**, never guessed
+    from the denied response: `edit_scope_required` when `GET /api/version`
+    answers 200 (the run-mode case — the census needs edit scope, and
+    authenticating would not help), `auth_required` when the read-scope probe
+    is refused with the same auth body (marimo auth gates reads too), and
+    `session_census_denied` when the probes cannot tell the two apart. Each
+    refusal carries `read_scope_status_code`/`page_kind` as its evidence, and
+    **nothing is closed**. A server whose API answers but whose page carries no
+    token is refused with `reason: skew_token_unavailable`; a POST refused 401
+    is reported with the same reason and states whether a token was tried. A
+    token that became invalid (the server was relaunched) is re-scraped once
+    and retried. A literal 403 from the endpoint is `reason: edit_required` —
+    kept defensively (the endpoint is `edit`-mode only), but not the path
+    pinned marimo 0.24.0 produces, which converts an API 403 into the 401 auth
+    body above.
 
     Failure contract — every refusal is `status: error` with a machine-readable
     `reason`, a top-level `error` string, and `state_changed`:
@@ -294,11 +315,20 @@ async def restart_kernel(
       sessionless server.
     - `session_file_unknown` — the live session reports no notebook path, so
       the `/sse` handshake has no `file` to hand back; nothing was closed.
-    - `auth_required` — the server requires marimo auth, so even the session
-      census is refused; nothing was closed.
+    - `edit_scope_required` — the server is reachable and readable (a
+      read-scope probe answered 200) but its session census requires edit
+      scope, so a `marimo run` server is refused here; authenticating would not
+      help, and nothing was closed.
+    - `auth_required` — the server requires marimo auth even for read-scope
+      endpoints (the census and the read-scope probe returned the same auth
+      body); nothing was closed.
+    - `session_census_denied` — the census was denied and the read-scope probes
+      could not tell an auth gate from a missing edit scope: a conservative
+      refusal rather than a confident wrong reason.
     - `skew_token_unavailable` / `skew_token_invalid` / `edit_required` /
       `restart_failed` — the restart POST was refused and did not close the
-      kernel.
+      kernel. `edit_required` is defensive (a literal endpoint 403); pinned
+      marimo 0.24.0 serves that denial as 401 above.
     - `server_unreachable` — the POST's transport failed, so `state_changed` and
       `restarted` are `null`: the request may or may not have reached the server
       and a kernel may or may not have been closed. Verify before retrying.
@@ -370,27 +400,26 @@ async def restart_kernel(
         except (httpx2.HTTPError, ValueError, AttributeError, TypeError) as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status in (401, 403):
-                # marimo auth is on: an unauthenticated client cannot even
-                # read the session census, so nothing here can work. Whether a
-                # token is also unreachable depends on the server's page config,
-                # so it is not asserted here.
+                # The denied census cannot classify itself: pinned marimo
+                # 0.24.0 serves an API 403 as 401 with one auth body and strips
+                # WWW-Authenticate, so a run-mode scope denial and a true auth
+                # gate look identical here. Probe read scope before deciding.
+                probe = await access.classify_denied_census(
+                    client,
+                    url,
+                    denied_status=status,
+                    denied_detail=access.http_error_body(exc),
+                )
                 return _failure(
-                    REASON_AUTH_REQUIRED,
-                    f"reason: {REASON_AUTH_REQUIRED} — {url} answered "
-                    f"GET /api/sessions with {status}: marimo auth is enabled, "
-                    "so this unauthenticated client cannot enumerate the "
-                    f"session. {_NOT_STARTED}.",
+                    probe.reason,
+                    (
+                        f"{access.access_refusal_message(probe.reason, url, detail=probe.detail)} "
+                        f"{_NOT_STARTED}."
+                    ),
                     session_id=sid,
                     server_url=url,
-                    next_steps=[
-                        (
-                            "Run the marimo server without auth (the "
-                            "documented headless recipe: `marimo edit "
-                            "<notebook> --no-token --headless`) so agent tooling "
-                            "can reach it, then retry."
-                        ),
-                        "Or restart the server manually if auth must stay on.",
-                    ],
+                    next_steps=access.access_next_steps(probe.reason),
+                    **access.probe_evidence(probe),
                 )
             return _failure(
                 REASON_RESTART_FAILED,

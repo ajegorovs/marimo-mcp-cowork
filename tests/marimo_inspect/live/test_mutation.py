@@ -463,3 +463,77 @@ async def test_cell_map_still_reports_changes_since_last(mutation_server):
         target, "x = 1", session_id=session_id, server_url=server_url
     )
     assert refused["status"] == "needs_read", refused
+
+
+# The marker the anchor-creation below must never commit (neither live nor on
+# disk) — the proof that no write was dispatched.
+_F1_MARKER = "f1_absent_anchor_marker"
+
+
+@pytest.mark.live
+async def test_absent_delete_and_anchor_are_structured_refusals(mutation_server):
+    """F1/F4 live: an absent cell reference refuses WITHOUT touching the kernel.
+
+    Against a real 0.24 kernel, `delete_cell` on an absent id and `create_cell`
+    with an absent `after` anchor used to surface marimo's raw `KeyError`
+    envelope (`{"error": "Execution failed", "stderr": "Traceback…"}`). Both
+    must now be structured refusals — and the proof that no write was queued is
+    the unchanged live cell set plus the marker source never appearing in the
+    session or on disk.
+    """
+    _manager, server_url, session_id, notebook_copy = mutation_server
+
+    before = await get_cell_map(session_id=session_id, server_url=server_url)
+    before_ids = {c["cell_id"] for c in before["cells"]}
+    assert before_ids, before
+
+    deleted = await delete_cell(
+        "ZZZZ_NOPE_ABSENT", session_id=session_id, server_url=server_url
+    )
+    assert deleted["status"] == "error", deleted
+    assert deleted["reason"] == "unknown_cell_ids", deleted
+    assert deleted["cell_id"] == "ZZZZ_NOPE_ABSENT", deleted
+    assert deleted["target_resolved"] is False, deleted
+    assert deleted["operation_ran"] is False, deleted
+    assert deleted["state_changed"] is False, deleted
+    assert "not found" in deleted["message"], deleted
+    # Never the raw marimo traceback envelope.
+    assert "stderr" not in deleted, deleted
+
+    created = await create_cell(
+        f"{_F1_MARKER} = 1",
+        after="ZZZZ_NOPE_ABSENT",
+        session_id=session_id,
+        server_url=server_url,
+    )
+    assert created["status"] == "error", created
+    assert created["reason"] == "unknown_cell_ids", created
+    assert created["anchor"] == "after", created
+    assert created["anchor_cell_id"] == "ZZZZ_NOPE_ABSENT", created
+    assert created["target_resolved"] is False, created
+    assert created["operation_ran"] is False, created
+    assert created["state_changed"] is False, created
+    assert "stderr" not in created, created
+
+    # Both anchors supplied is input validation, refused with no session work.
+    both = await create_cell(
+        f"{_F1_MARKER}_both = 1",
+        after="ZZZZ_NOPE_ABSENT",
+        before="ZZZZ_NOPE_ABSENT",
+        session_id=session_id,
+        server_url=server_url,
+    )
+    assert both["status"] == "error", both
+    assert both["reason"] == "conflicting_anchors", both
+    assert both["operation_ran"] is False, both
+
+    # Proof no write was dispatched: the live cell set is unchanged and the
+    # marker source exists nowhere — in the session or on the notebook file.
+    after = await get_cell_map(session_id=session_id, server_url=server_url)
+    after_ids = {c["cell_id"] for c in after["cells"]}
+    assert after_ids == before_ids, (before_ids, after_ids)
+    assert _F1_MARKER not in notebook_copy.read_text(), (
+        "an anchor refusal leaked its source to disk"
+    )
+    data = await get_cell_data(session_id=session_id, server_url=server_url)
+    assert all(_F1_MARKER not in (row.get("code") or "") for row in data["data"]), data

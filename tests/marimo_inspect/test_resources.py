@@ -248,6 +248,10 @@ class TestResourceContent:
         assert "reporting_failed" in text
         assert "null" in text
         assert "requested targets only" in text
+        # F2: `mode` is a literal enum in the published schema, so an
+        # out-of-enum value is rejected by the framework before the handler —
+        # `invalid_mode` is not a reachable public MCP reason.
+        assert "invalid_mode" not in text
 
     async def test_co_work_loop_documents_the_common_target_refusal(self, mcp_server):
         """The loop teaches the shared target-refusal contract and its reasons.
@@ -274,7 +278,13 @@ class TestResourceContent:
         assert "available_sessions" in text
         assert "available_sessions_readable" in text
         assert "operation_ran" in text
-        assert "nothing was read or written" in text
+        assert "no mutation is dispatched on a refusal" in text
+        # F1/F4: the same family covers a bad cell id or placement anchor.
+        assert "unknown_cell_ids" in text
+        assert "conflicting_anchors" in text
+        assert "target_validation_failed" in text
+        # F5: diagnostics locate a source-file position, not a live cell id.
+        assert "cell_index" in text
 
     async def test_co_work_loop_documents_the_composite_error_read(self, mcp_server):
         """The loop teaches the opt-in include_errors read and its exact fields.
@@ -438,9 +448,11 @@ class TestResourceContent:
         # A cell edit never needs one — the consumer's own self-inflicted restart.
         assert "cell edit" in text
         assert 'run_cell(mode="all")' in text
-        # The token path, and the auth-on refusal it produces.
+        # The token path, and the classified census-denial vocabulary it produces.
         assert "skew token" in text
+        assert "edit_scope_required" in text
         assert "auth_required" in text
+        assert "session_census_denied" in text
         # And that the confirmed id is point-in-time, not durable.
         assert "session_id_stable" in text
         assert "point_in_time" in text
@@ -459,7 +471,7 @@ class TestResourceContent:
 
         assert "target_resolved" in text
         assert "operation_ran" in text
-        assert "no read or write operation runs on a refusal" in text
+        assert "no mutation is dispatched on a refusal" in text
         for reason in (
             "session_required",
             "binding_ambiguous",
@@ -471,6 +483,86 @@ class TestResourceContent:
         assert "available_sessions" in text
         assert "available_sessions_readable" in text
         assert "unreadable" in text
+
+    async def test_fallbacks_documents_cell_and_anchor_target_refusals(
+        self, mcp_server
+    ):
+        """F1/F4: a bad cell id or anchor is the same structured refusal family.
+
+        The limits reference must say a create/delete/edit cell reference that
+        is not a live cell is refused as a payload with the target flags set and
+        nothing dispatched — never the raw marimo traceback envelope — and name
+        the reason vocabulary (`unknown_cell_ids`, `conflicting_anchors`), plus
+        the failed-validation-read reason.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "unknown_cell_ids" in text
+        assert "conflicting_anchors" in text
+        assert "target_validation_failed" in text
+        assert "anchor" in text
+        assert "cell_index" in text
+
+    async def test_fallbacks_documents_the_lint_diagnostic_position(self, mcp_server):
+        """F5: lint diagnostics locate source-file positions, not live cells.
+
+        A diagnostic reports `cell_index` (the flagged cell's position in the
+        parsed file) alongside `filename`/`line`/`column`; it is NOT the live
+        `cell_id` from `get_cell_map`, and piping it into a live cell tool is
+        refused.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "cell_index" in text
+        assert "cell_id" in text
+        assert "position" in text
+        assert "get_cell_map" in text
+
+    async def test_fallbacks_never_promises_an_mcp_invalid_mode_reason(
+        self, mcp_server
+    ):
+        """F2: `invalid_mode` is unreachable on the MCP surface — drop it.
+
+        `mode` is a literal enum in the published schema, so FastMCP rejects an
+        out-of-enum value before the handler runs: no structured payload with
+        `reason: invalid_mode` can reach a caller. The reason table must not
+        promise it.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "invalid_mode" not in text
+        # The reachable run_cell validation reasons stay documented.
+        assert "cell_id_not_allowed" in text
+        assert "graph_unpopulated" in text
+
+    async def test_fallbacks_documents_the_classified_access_denials(self, mcp_server):
+        """Task 01: the access taxonomy and why the denial cannot self-classify.
+
+        The reference must name all three access reasons, say the classification
+        comes from a read-scope probe (not a header or a byte count), and state
+        that a denied census is not readable — so a caller cannot read an empty
+        `available_sessions` as "no sessions live there".
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "edit_scope_required" in text
+        assert "auth_required" in text
+        assert "session_census_denied" in text
+        assert "read-scope probe" in text
+        assert "/api/version" in text
+        assert "www-authenticate" in text
+        assert "byte count" in text
+        assert "available_sessions_readable: false" in text
+        # Run mode is the edit-scope case, not an auth problem.
+        assert "marimo run" in text
 
     async def test_fallbacks_documents_the_cell_data_variables_placeholder(
         self, mcp_server

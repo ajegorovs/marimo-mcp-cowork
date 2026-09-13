@@ -4,9 +4,10 @@
 > independently re-verified against the source before triage. Refine from use, not
 > from theory: this document describes what that run actually needed.
 >
-> **Related:** `AGENTS.md` §Live tests (why the suite cannot see these),
-> `docs/live-tests.md` (boot mechanics), `docs/agenda-udv-consumer-findings.md`
-> (the historical findings this protocol exists to keep finding).
+> **Related:** `AGENTS.md` §Live tests (what the suite does and does not cover),
+> `docs/live-tests.md` (boot mechanics and the instantiation regressions),
+> `docs/agenda-udv-consumer-findings.md` (the historical findings this protocol
+> exists to keep finding).
 
 ## The failure mode this targets
 
@@ -26,9 +27,9 @@ The automated suite **cannot** find them, by construction:
 - it mocks the state layer (so a broken binding passes) and always passes
   `session_id`/`server_url` explicitly (so the argument-less path is never
   exercised);
-- its live tier reaches executed-cell state only through cells created by the
-  write tools (the shared `/sse` fixture is never instantiated), and it boots
-  its own kernel rather than a real consumer notebook.
+- its live tier boots its own kernel on its own fixture — now including a
+  *copied* committed fixture whose original cells it instantiates — so it never
+  drives a real consumer notebook's own imports, data and cell set.
 
 So discovery has to be agentic: a real task, in a real notebook, through the
 real tool surface, with evidence the reader can rerun. Everything *around*
@@ -62,12 +63,24 @@ What hunt #1 used, and why it worked:
 - an **instantiated** session (cells have outputs). This is not optional for the
   execution-state reads (`get_errors`, `get_cell_outputs`, and unfiltered
   `get_variables`, which reports executed notebook-defined public names only):
-  they show nothing useful on a fresh non-instantiated session — the known
-  token-gated gap. `get_dependency_graph` is the exception: it inventories every
+  they show nothing useful on a session that was merely *materialized*. Do not
+  settle for that: instantiation is a scriptable step, not a browser-only one.
+  `MarimoClient.instantiate_notebook(session_id)` performs it, and by hand it
+  is a token scrape plus one POST — read the skew-protection token from the
+  served page (`GET /` carries `<marimo-server-token data-token="…">`) and POST
+  `/api/kernel/instantiate` with headers `Marimo-Server-Token` and
+  `Marimo-Session-Id` and body
+  `{"objectIds": [], "values": [], "autoRun": true}`. `--no-token` disables
+  **auth**, not skew protection, so the header is required on a normal headless
+  server; opening the notebook in a browser achieves the same thing.
+  `get_dependency_graph` is the exception: it inventories every
   live cell from the notebook structure even without execution and only its
   graph-derived `defs`/`refs`/edges are empty for the unexecuted ones. The lab
-  can be materialized in a browser, or the session may already be running from
-  an earlier run.
+  may equally be a session that has been running since an earlier run.
+  A read issued in the moment after instantiate can transiently answer the
+  tool's execution-error shape while the notebook's console output drains — poll
+  on the payload's own key rather than believing the first read (see
+  `docs/live-tests.md` §Hermetic original-cell instantiation regressions).
 
 **Lab pitfall — session binding does not survive every client.** With a
 harness-shaped FastMCP `Client` over stdio, `list_active_notebooks` and
@@ -155,9 +168,10 @@ yesterday's defects.
    every reason code against the read-back fields in the same payload.
 3. **Cell identity**: stale, deleted, absent and never-read cell ids across all
    read and write tools; `edit_cell` against a never-read cell.
-4. **Execution-state tools** against an instantiated notebook — the tier the
-   shared fixture cannot exercise (the suite reaches executed cells only through
-   write-tool-created cells).
+4. **Execution-state tools** against an instantiated notebook — instantiate the
+   lab first (§1); a session that was only materialized shows structure, never
+   executed state. The suite instantiates a copied fixture, but a consumer
+   notebook's own cells are still the interesting case.
 5. **Claim cross-check**: every sentence in `resources/*.md` and every tool
    description, against observed payloads.
 6. **`lint_notebook`** on a cell that trips a rule, then on the repaired state.
@@ -187,12 +201,18 @@ yesterday's defects.
 
 - **One lab, one hunt.** The lab is a single live session and the hunt writes to
   it; concurrent hunts would interleave writes and invent findings.
-- **Instantiation is the coverage boundary.** Without an executed session,
-  checklist item 4 degrades to structure-only: the suite now covers executed
-  `dependency`/`variables`/widget state only for cells created through the write
-  tools, while a browser-instantiated consumer notebook still has to be hunted by
-  hand. Closing the token-gated instantiation gap is what would convert most of
-  this from a manual hunt into suite coverage.
+- **Instantiation is no longer the boundary; the lab is.** The suite
+  instantiates a disposable copy of the committed fixture
+  (`tests/marimo_inspect/live/test_instantiate.py`), so executed original-cell
+  state — outputs, variables, structured errors and console-only tracebacks — is
+  covered for that document. What stays manual is the *consumer* notebook: only
+  a lab built from the real notebook exercises its imports, its data and its
+  cell set. Note that the committed fixture itself does not instantiate
+  all-green — its hidden setup helper `_double` is a leading-underscore name,
+  which marimo treats as a cell temporary and never exposes to other cells, so
+  the dependent cell raises `NameError` and its table cell is `cancelled`. That
+  is why the fixture cannot stand in for a consumer notebook, and it is the kind
+  of defect only an instantiated lab surfaces.
 - **Some claims need purpose-built lab features** (multi-output cells, a
   restartable kernel). Mark them unexercised rather than inferring a verdict.
 - **Unconfirmed findings need a second, targeted pass** with a lab built for the

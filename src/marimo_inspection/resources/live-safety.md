@@ -28,11 +28,15 @@ registers under `--no-token` exactly as an edit server does, but
 `GET /api/sessions` requires `edit` scope and answers **`401`** in run mode, so
 the census-200 health check drops it and it never contributes to
 `servers_discovered`; only an explicit `server_url` reaches one, as a
-connection-failure **sentinel**. Nor does a launch ever create a session in the
-first place — only a client connect (`/ws`, or the browser's `/sse` stream)
-does — so a session listed before any client attached is an earlier client's
-**orphan**, never a startup artifact and never the on-disk `__marimo__` session
-cache (which stores cell outputs).
+connection-failure **sentinel**. Because its read-scope endpoints still answer,
+a tool call against it is refused `reason: edit_scope_required` — not
+`auth_required`: authenticating would not change the missing edit scope. (A
+true auth gate refuses reads too; the two are the same 401 body at the census,
+so only the read-scope probe tells them apart.) Nor does a launch ever create a
+session in the first place — only a client connect (`/ws`, or the browser's
+`/sse` stream) does — so a session listed before any client attached is an
+earlier client's **orphan**, never a startup artifact and never the on-disk
+`__marimo__` session cache (which stores cell outputs).
 
 The `summary` reports `total_notebooks` (`session_count`), `result_row_count`
 (every row, including a connection-failure sentinel) and `attached_client_count:
@@ -141,9 +145,13 @@ tool call is not proof of a correct result.
   unknown_variable`) — the tool cannot fix that for you.
 - Update a widget from outside via `set_ui_value`, not by editing its cell.
   It never coerces the value: send the shape the element accepts (a `dropdown`
-  option key goes inside a one-element list, e.g. `["beta"]`). A refused shape
-  returns `reason: value_shape_mismatch` with the corrected payload in
-  `did_you_mean`; a value the element's conversion rejected returns `reason:
+  takes EXACTLY one option key inside a one-element list, e.g. `["beta"]`; a
+  `multiselect` takes any number of keys, `[]` included). A refused shape
+  (a list whose length is not one against a `dropdown`) returns
+  `reason: value_shape_mismatch`, with the corrected payload in `did_you_mean`
+  when one can be inferred — it is absent, and the message names the element's
+  option keys, when none can; a value the element's conversion rejected returns
+  `reason:
   value_not_applied` with the kernel's own message and the widget unmoved,
   while a value the element's `on_change` handler raised on returns `reason:
   on_change_failed` (`handler_ran: true`) — the value WAS accepted, with

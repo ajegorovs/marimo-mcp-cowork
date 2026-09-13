@@ -1,12 +1,13 @@
 """Live integration tests for the errors template.
 
-Note on scope: a headless session created via /sse is not instantiated, so no
-cell has run and no execution error has been recorded yet
-(instantiation requires the token-gated /api/kernel/instantiate endpoint).
-The verifiable live contract is that the template runs against a real kernel
-and reports a well-formed, consistent error summary (0 errors in a fresh,
-non-instantiated session). Instantiation-dependent error detection belongs to
-a future instantiate-enabled phase.
+Note on scope: a headless session created via /sse is materialized but not
+instantiated, so no cell has run here and no execution error has been recorded
+yet (original-cell execution is the separate /api/kernel/instantiate step — see
+docs/live-tests.md; test_instantiate.py covers an instantiated copy of the
+fixture, including its error cell, and the console-channel regressions below
+cover a real traceback). The verifiable live contract on THIS fixture is that
+the template runs against a real kernel and reports a well-formed, consistent
+error summary (0 errors in a fresh, non-instantiated session).
 
 The console-channel regressions below are behavioural: they need cells that
 actually executed, so they use the isolated ``mutation_server`` fixture and

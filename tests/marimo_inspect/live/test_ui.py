@@ -2,10 +2,11 @@
 
 The plan assumed widget behaviour could only be validated against a
 browser-instantiated session, because the shared live fixture's notebook cells
-never execute (the `/sse`-created session cannot be instantiated without the
-skew token — see AGENTS.md). That assumption is too conservative: a cell
-*created through the MCP write tools* runs fine, so a widget can be
-materialized in-kernel and driven end to end here.
+never execute (the `/sse` handshake only materializes the session; the
+skew-token-protected `/api/kernel/instantiate` POST is the execution step — see
+docs/live-tests.md and `test_instantiate.py`). That assumption is too
+conservative: a cell *created through the MCP write tools* runs fine, so a
+widget can be materialized in-kernel and driven end to end here.
 
 The behaviours below are locked in against a real marimo 0.24 kernel:
 
@@ -823,6 +824,77 @@ async def test_set_ui_value_reports_run_button_click_evidence(mutation_server, c
         assert result["handler_invoked"] is True, result
         assert result["side_effects_verified"] is False, result
         assert result["next_steps"], result
+    finally:
+        for cell_id in reversed(created):
+            deleted = await delete_cell(
+                cell_id, session_id=session_id, server_url=server_url
+            )
+            assert deleted.get("status") == "ok", deleted
+
+
+@pytest.mark.live
+async def test_set_ui_value_dropdown_empty_and_multi_lists_are_refused(
+    mutation_server,
+):
+    """F6: a dropdown takes exactly one key — `[]` must not apply as `None`.
+
+    Against a real kernel, `set_ui_value(gate_dropdown, [])` used to report
+    `status: ok` with `value_after: null`: marimo clears a dropdown to `None`
+    for an empty list, swallows the assertion, and the one-element-list contract
+    was never enforced. Both `[]` and a multi-element list must now be refused
+    `value_shape_mismatch` BEFORE anything is queued — the widget and its
+    dependent cell stay exactly where they were (no reactive re-run), and
+    `did_you_mean` is absent because no single key can be inferred.
+    """
+    _manager, server_url, session_id, _notebook_copy = mutation_server
+
+    created: list[str] = []
+    try:
+        created.append(await _make_cell(_DROPDOWN_SOURCE, server_url, session_id))
+        created.append(
+            await _make_cell(_DROPDOWN_READER_SOURCE, server_url, session_id)
+        )
+
+        before = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(before, _DROPDOWN) == "alpha", before
+        assert _inner_value(before, "gate_dropdown_readback") == "alpha!", before
+
+        empty = await set_ui_value(
+            _DROPDOWN, [], session_id=session_id, server_url=server_url
+        )
+        assert empty["status"] == "error", empty
+        assert empty["reason"] == "value_shape_mismatch", empty
+        assert empty["element_type"] == "dropdown", empty
+        assert empty["accepted_shape"] == "list[str]", empty
+        assert empty["submitted_value"] == [], empty
+        # No single key can be inferred from `[]` — the field is absent.
+        assert "did_you_mean" not in empty, empty
+        assert "be inferred" in empty["message"], empty
+        assert "Nothing was changed" in empty["message"], empty
+
+        multi = await set_ui_value(
+            _DROPDOWN, ["alpha", "beta"], session_id=session_id, server_url=server_url
+        )
+        assert multi["status"] == "error", multi
+        assert multi["reason"] == "value_shape_mismatch", multi
+        assert multi["submitted_value"] == ["alpha", "beta"], multi
+        assert "did_you_mean" not in multi, multi
+
+        # Nothing moved: the widget is unchanged AND its dependent cell did not
+        # re-run (the reactivity the update would otherwise have triggered).
+        after = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after, _DROPDOWN) == "alpha", after
+        assert _inner_value(after, "gate_dropdown_readback") == "alpha!", after
+
+        # The one-element form still applies (the F6 guard must not break it).
+        ok = await set_ui_value(
+            _DROPDOWN, ["beta"], session_id=session_id, server_url=server_url
+        )
+        assert ok["status"] == "ok", ok
+        assert ok["applied"] is True, ok
+        assert ok["value_after"] == "beta", ok
+        after_ok = await get_variables(session_id=session_id, server_url=server_url)
+        assert _inner_value(after_ok, "gate_dropdown_readback") == "beta!", after_ok
     finally:
         for cell_id in reversed(created):
             deleted = await delete_cell(

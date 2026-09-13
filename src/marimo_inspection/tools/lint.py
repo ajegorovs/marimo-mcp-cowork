@@ -31,7 +31,14 @@ async def _lint_source(contents: str, filepath: str) -> dict:
         filepath: Path used for the ``NotebookSerialization``.
 
     Returns:
-        A dict of the form ``{"summary": {...}, "diagnostics": [...]}``.
+        A dict of the form ``{"summary": {...}, "diagnostics": [...]}``. Each
+        diagnostic locates the issue in the **source file** (``filename``,
+        ``line``, ``column``) and carries ``cell_index`` — marimo's positional
+        index of the flagged cell in the parsed document. ``cell_index`` is
+        deliberately NOT named ``cell_id``: the surface reserves ``cell_id``
+        for the live session ids ``get_cell_map`` reports, and a file position
+        is not one, so emitting it as ``cell_id`` invited callers to pipe it
+        into ``get_cell_data``/``edit_cell`` and get a not-found.
     """
     from marimo._ast.parse import parse_notebook
     from marimo._lint.rule_engine import RuleEngine
@@ -71,13 +78,18 @@ async def _lint_source(contents: str, filepath: str) -> dict:
                 return None
             return value[0] if isinstance(value, list) and value else value
 
+        # diag.cell_id is marimo's FILE-POSITIONAL index of the flagged cell in
+        # the parsed document (diag.line/column are likewise file positions).
+        # It is exposed as `cell_index`, never `cell_id`: `cell_id` means a live
+        # session cell id everywhere else on this surface, and the positional
+        # index joins to nothing a live-cell tool accepts.
         results.append(
             {
                 "rule": diag.code,
                 "name": diag.name,
                 "severity": sev,
                 "message": diag.message,
-                "cell_id": _first(diag.cell_id),
+                "cell_index": _first(diag.cell_id),
                 "line": _first(diag.line),
                 "column": _first(diag.column),
                 "filename": diag.filename,
@@ -109,6 +121,16 @@ async def lint_notebook(
     - Breaking issues: Problems that prevent the notebook from running
     - Runtime issues: Problems that may cause unexpected behavior
     - Formatting issues: Code style and formatting problems
+
+    Diagnostics locate positions in the notebook **source file**, not cells in
+    the live session: each diagnostic carries `rule`, `name`, `severity`,
+    `message`, the file locator (`filename`, `line`, `column`), and
+    `cell_index` — the flagged cell's positional index in the parsed document.
+    `cell_index` is **not** a live cell id: use `line`/`column`/`filename` to
+    find the source, and read the live ids from `get_cell_map` before calling a
+    live-cell tool. The two are separate identifier spaces, so a diagnostic can
+    locate source text without necessarily identifying a live session cell
+    (the file on disk and the kernel's cell set can differ).
 
     Args:
         session_id: Session ID from list_active_notebooks.

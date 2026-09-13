@@ -41,8 +41,12 @@ of the notebook session.
 
 Every cell/session-targeting tool resolves its target through one shared step,
 so a target problem comes back as a structured refusal — `status: error` with
-`operation_ran: false` and `state_changed: false`, and **nothing was read or
-written** — rather than as a raw exception. The reasons are:
+`target_resolved: false`, `operation_ran: false` and `state_changed: false` —
+rather than as a raw exception, and **no mutation is dispatched on a refusal**:
+a *session*-target refusal is built before any call at all, and a *cell* or
+*anchor* target is checked against a read-only validation of the live cells
+before any create/edit/delete scratchpad is generated. Nothing is written in
+either case. The session reasons are:
 
 - `session_required` — there is no explicit and no bound `session_id` /
   `server_url`; discover and bind one, or pass both explicitly.
@@ -63,6 +67,27 @@ census that was successfully read: an unreadable census is `server_query_failed`
 and never `session_not_found`, and `available_sessions_readable` says whether
 the list is a real census (`true`, an empty successful census included) or
 empty because nothing could be read (`false`).
+
+### Cell and anchor targets are the same refusal family
+
+A cell reference is a second target class, and it is refused in the **same
+envelope** rather than reaching marimo as an exception. `delete_cell`'s
+`cell_id` and `create_cell`'s `after`/`before` anchor each accept a live cell
+**id or cell name** (resolved the way `ctx.cells` resolves one) and are checked
+against the live cell set *before* the write is generated:
+
+- `unknown_cell_ids` — the named cell (or anchor) is not a live cell, by id or
+  by name. `cell_id` echoes the reference (for `create_cell`, `anchor`
+  (`"after"`/`"before"`) + `anchor_cell_id`), `unknown_cell_ids` lists it, and
+  nothing was created/deleted/edited — the raw `KeyError`
+  (`{"error":"Execution failed","stderr":"Traceback…"}`) is never returned.
+- `conflicting_anchors` — `create_cell` was given **both** `before` and `after`
+  (input validation; no session work, no scratchpad).
+- `target_validation_failed` — the read-only live-cell read itself failed, so
+  the reference could not be checked; nothing was dispatched.
+
+`edit_cell` reports the same `unknown_cell_ids` refusal for a cell that is not
+live (it validates against live ids).
 
 ### Browser-first: let the page hold the main consumer connection
 
@@ -230,9 +255,13 @@ target raises, and the in-context snapshot is frozen):
 - `counts` and `status`: `ok` **only** when every requested target is idle,
   `partial` when any target failed or did not finish, and `error` for
   validation/planning/reporting failures — `unknown_cell_ids`,
-  `graph_unpopulated`, `cell_id_not_allowed`, `invalid_mode`,
-  `cell_id_required`, `planning_failed`, `reporting_failed`. A failure always
-  carries a top-level `error` string beside the structured `status`/`reason`.
+  `graph_unpopulated`, `cell_id_not_allowed`, `cell_id_required`,
+  `planning_failed`, `reporting_failed`. A failure always carries a top-level
+  `error` string beside the structured `status`/`reason`. `mode` is a literal
+  enum in the tool's published input schema, so an out-of-enum value is
+  rejected by the framework (`literal_error`) **before** the handler runs: no
+  MCP caller receives a structured payload for one, and no reason code is
+  published for it.
 - `execution_error` + `stderr` — present when the run call itself failed (a
   target raised), so a failed batch is never reported as a plain success; the
   same failure also sets the top-level `error`.
@@ -248,20 +277,26 @@ the shape the element's own declaration accepts, derived from the widget type �
 | `slider`, `number`, `text`, `text_area`, `code_editor`, `date` | scalar | `7`, `"hello"` |
 | `checkbox`, `switch` | bool | `true` |
 | `radio` | option key (scalar) | `"alpha"` |
-| `dropdown` | **one-element list** of the option key | `["beta"]` |
-| `multiselect` | list of option keys | `["a", "b"]` |
+| `dropdown` | **exactly one** option key inside a one-element list | `["beta"]` |
+| `multiselect` | list of option keys (any length; `[]` clears it) | `["a", "b"]` |
 | `range_slider` | two-element list | `[2, 8]` |
 | `matrix`, `file`, `file_browser` | list (rows / file specs) | — |
 | `table`, `array`, `dictionary`, `dataframe`, … | opaque — no shape guard, read-back only | — |
 
 A shape the element cannot accept is refused **before** anything is applied: the
 error carries `reason: value_shape_mismatch`, the declaration it read in
-`accepted_shape` (e.g. `list[str]`), and the corrected payload in
-`did_you_mean` — a scalar sent to a dropdown returns `did_you_mean: ["beta"]`.
-The correction is derived from the element's **own option keys**, so it is a key
-the element actually accepts: a multiselect keyed by `"4"` is corrected to
-`["4"]`, never `[4]`. Send that corrected form; do not repeat the rejected
-shape.
+`accepted_shape` (e.g. `list[str]`), and — when one particular valid replacement
+can be inferred — the corrected payload in `did_you_mean`. A scalar sent to a
+dropdown returns `did_you_mean: ["beta"]`; a `dropdown` sent a list whose length
+is not exactly one is refused too (it selects exactly one key), and since no
+single key can be inferred from an empty or multi-element list the
+`did_you_mean` field is then **absent** and the message names the element's
+option keys instead — send exactly one of those. A `multiselect` shares the
+`list[str]` declaration but legitimately takes **any** number of keys, an empty
+list included (that clears the selection). The correction is derived from the
+element's **own option keys**, so it is a key the element actually accepts: a
+multiselect keyed by `"4"` is corrected to `["4"]`, never `[4]`. Send that
+corrected form; do not repeat the rejected shape.
 
 `status: ok` guarantees the read-back succeeded (`verified: true`): either the
 element's own value **moved** (`applied: true`, with `value_before` /
@@ -383,6 +418,14 @@ use `get_errors` (structured *and* console) for the notebook-wide picture.
 
 `lint_notebook` — static checks that need no kernel execution.
 
+Each diagnostic locates a position in the notebook **source file**: `filename`,
+`line`, `column`, and `cell_index` — the flagged cell's positional index in the
+parsed document. `cell_index` is **not** a live session cell id: read the live
+ids from `get_cell_map` before calling a live-cell tool (`get_cell_data`,
+`edit_cell`, `delete_cell`). A file position and a live id are separate
+identifier spaces, so a diagnostic can point at source text without necessarily
+identifying a live session cell — navigate by `line`/`column`/`filename`.
+
 For structural changes, call `get_dependency_graph` before `delete_cell` or
 before merging cells. Then repeat steps 2–7 as the notebook evolves.
 
@@ -413,13 +456,18 @@ cell id. Then re-run what you need: `run_cell(mode="all")` re-executes the whole
 document, and `set_ui_value` re-applies widget values.
 
 The endpoint needs the server's skew token, which the tool reads from the served
-page (`GET /`); with marimo auth on the session census is refused outright, so
-it returns `reason: auth_required` without closing anything (whether the page is
-also gated so no token can be read is server-config dependent and is not
-assumed). A restart is never reported as success without the expected session id
-confirmed live afterwards — `session_not_rematerialized` or `server_sessionless`
-means the kernel is closed and no usable session was confirmed (the server may be
-at zero sessions).
+page (`GET /`). A census the server denies is **classified by a read-scope
+probe**, never guessed from the denial (pinned marimo 0.24.0 serves an API 403
+as `401 {"detail":"Authorization header required"}` and strips
+`WWW-Authenticate`, so a run-mode scope denial and a true auth gate look
+identical at the census): `reason: edit_scope_required` when `GET /api/version`
+answers 200 — a `marimo run` server, where authenticating would not help —
+`reason: auth_required` when that probe is denied with the same body, and
+`reason: session_census_denied` when the probes cannot tell the two apart. None
+of them closes anything. A restart is never reported as success without the
+expected session id confirmed live afterwards — `session_not_rematerialized` or
+`server_sessionless` means the kernel is closed and no usable session was
+confirmed (the server may be at zero sessions).
 
 That confirmation is **point-in-time**: the payload reports
 `session_id_stable: false` and `session_verification: "point_in_time"`, because

@@ -396,7 +396,12 @@ def errors_response():
 
 @pytest.fixture
 def lint_response():
-    """Sample lint response."""
+    """Sample lint response.
+
+    Diagnostics locate positions in the notebook SOURCE FILE: the flagged
+    cell's positional index is ``cell_index`` (never ``cell_id``, which means a
+    live session cell id everywhere else on the surface).
+    """
     return {
         "summary": {
             "total_issues": 2,
@@ -409,7 +414,7 @@ def lint_response():
                 "rule": "unused-import",
                 "severity": "RUNTIME",
                 "message": "unused import 'os'",
-                "cell_id": "0",
+                "cell_index": "0",
                 "line": 5,
                 "column": 1,
             },
@@ -417,7 +422,7 @@ def lint_response():
                 "rule": "unused-variable",
                 "severity": "FORMATTING",
                 "message": "unused variable 'unused'",
-                "cell_id": "1",
+                "cell_index": "1",
                 "line": 3,
                 "column": 1,
             },

@@ -308,9 +308,40 @@ def build_cell_hashes_template() -> str:
 TEMPLATE_CELL_HASHES = build_cell_hashes_template()
 
 
+def build_cell_targets_template() -> str:
+    """Build a snippet that lists the live cells as ``(id, name)`` targets.
+
+    This is the READ-ONLY validation step the mutation tools run *before* they
+    generate or dispatch any create/edit/delete scratchpad, so an absent
+    target can be refused structurally instead of letting marimo raise a
+    ``KeyError`` inside the write. It returns the same lookup universe
+    ``ctx.cells`` resolves a target against — every live cell's **id and
+    name** — because marimo's own ``_resolve_target`` accepts either, and a
+    check that compared ids alone would newly refuse a working name.
+    """
+    return (
+        _PREAMBLE
+        + "\nasync def _run():\n"
+        + "    async with cm.get_context() as ctx:\n"
+        + "        targets = []\n"
+        + "        for c in ctx.cells:\n"
+        + '            name = getattr(c, "name", None)\n'
+        + "            targets.append({\n"
+        + '                "cell_id": str(c.id),\n'
+        + '                "name": str(name) if name else None,\n'
+        + "            })\n"
+        + '        return json.dumps({"targets": targets})\n'
+        + "\nprint(await _run())"
+    )
+
+
+TEMPLATE_CELL_TARGETS = build_cell_targets_template()
+
+
 __all__ = [
     "TEMPLATE_CELL_HASHES",
     "TEMPLATE_CELL_STATUS",
+    "TEMPLATE_CELL_TARGETS",
     "TEMPLATE_CREATE_CELL",
     "TEMPLATE_DELETE_CELL",
     "TEMPLATE_EDIT_CELL",
@@ -318,6 +349,7 @@ __all__ = [
     "TEMPLATE_RUN_PLAN",
     "build_cell_hashes_template",
     "build_cell_status_template",
+    "build_cell_targets_template",
     "build_create_cell_template",
     "build_delete_cell_template",
     "build_edit_cell_template",

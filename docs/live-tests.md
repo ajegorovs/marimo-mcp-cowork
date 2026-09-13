@@ -5,7 +5,10 @@
 > (Wave 3), T-V3 dependency-completeness, T-V4 notebook-only-variables, T18
 > server-vs-session discovery, T20 button-click, T22
 > session-census-field-limit regressions, the composite-read `include_errors`
-> regression, and the example-notebook smoke +
+> regression, the bug-hunt-2 **F1/F4** mutation-target-refusal and **F6**
+> dropdown-arity regressions, the original-cell **instantiation** regressions (a generated
+> sentinel notebook plus a byte-identical copy of the committed fixture, whose
+> original cells now genuinely execute), and the example-notebook smoke +
 > interaction regressions; the non-live tier also carries the
 > structured-target-resolution (Wave A) regressions — every targeting-tool
 > refusal reports `available_sessions_readable`, and an unreadable census body
@@ -123,10 +126,27 @@ All orchestration lives in `tests/marimo_inspect/live/conftest.py`
    (`terminate`, then `kill` after 5 s) and drains captured logs.
 
 **Note on instantiation:** the headless session created by the `/sse`
-handshake is *not instantiated* — notebook cells do not run, because cell
-instantiation requires the token-gated `/api/kernel/instantiate` endpoint.
-Templates that read *executed* cell state therefore report empty/fresh values,
-and the live tests assert the honest, verifiable contract for that state:
+handshake performs only the *materialize* half of a frontend's connect
+sequence — no notebook cell runs. Original-cell execution is an explicit second
+step, and it is neither blocked nor browser-only: a frontend reads the
+skew-protection token out of the served page
+(`<marimo-server-token data-token="…">`) and POSTs `/api/kernel/instantiate`
+with that token as `Marimo-Server-Token` plus `Marimo-Session-Id`, body
+`{"objectIds": [], "values": [], "autoRun": true}` (`objectIds`/`values` are
+required by marimo's request model and must be the same length; `autoRun` is
+its camelCase wire key, default true). `--no-token` disables **auth**, not skew
+protection, so the header is required on a normal headless server;
+`--mcp`/`--no-skew-protection` switch the middleware off.
+`MarimoClient.instantiate_notebook(session_id)` encodes the sequence and the
+[instantiation regressions](#hermetic-original-cell-instantiation-regressions)
+exercise it hermetically.
+
+The **session-scoped shared fixture** is still never instantiated — a
+deliberate choice, since many live tests are written against its fresh
+executed state (and instantiating the shared session would leak a running
+document into every one of them). Templates that read *executed* cell state
+therefore still report empty/fresh values there, and the live tests assert the
+honest, verifiable contract for that state:
 
 - `cell_map` and `cell_data` read cell *source/structure* and work fully.
 - `get_dependency_graph` inventories **every** live notebook cell from the
@@ -139,14 +159,16 @@ and the live tests assert the honest, verifiable contract for that state:
 - `get_cell_outputs` and `get_errors` return their documented structure with
   empty executed content.
 
-Executed-cell behaviour is covered by the per-test `mutation_server` fixtures
-instead: cells created through the write tools *do* run, which is what makes the
-dependency, variables and widget regressions behavioral rather than structural
-(see the hermetic sections below).
+Executed-cell behaviour is covered two ways: by the per-test
+`mutation_server`/`notebook_server` fixtures, where cells created through the
+write tools *do* run (which is what makes the dependency, variables and widget
+regressions behavioral rather than structural), and by the instantiation
+regressions, which run a *copied* committed fixture's own cells (see the
+hermetic sections below).
 
-## What's tested (69 tests, 14 files in `tests/marimo_inspect/live/`)
+## What's tested (75 tests, 15 files in `tests/marimo_inspect/live/`)
 
-The directory holds 13 test modules plus the shared `conftest.py` harness
+The directory holds 14 test modules plus the shared `conftest.py` harness
 (`MarimoServerManager` + fixtures, including the sessionless `bare_server`
 factory). Counts are stable as of the run in
 [Current status](#current-status).
@@ -160,13 +182,14 @@ factory). Counts are stable as of the run in
 | `test_variables.py` | 4 | runs against a live kernel and returns the documented structure; **T-V4** — an unfiltered call reports executed notebook-defined **public** names only, excluding kernel-injected globals (`input`, `spec_from_loader`), the template's own scaffolding and private leading-underscore names, with the allowance derived from the notebook graph's cell definitions and exercised via `mutation_server` cells that actually execute (explicit filtered lookup of a public name is preserved; a private/absent name reports nothing); degrades gracefully without numpy/pandas (regression for the unguarded numpy import) |
 | `test_dependency.py` | 3 | template executes against a live kernel and returns the documented structure/types; **T-V3** — cell completeness: one dependency entry per live notebook cell with `set(cells ids) == set(get_cell_map ids)`, `cell_name` agreement for *every* cell, a real parent/child edge between a created import cell and its dependent, and a never-run fixture cell present with empty graph-derived lists (no invented edges, no dropped cells) — all through the real handlers against `mutation_server` |
 | `test_errors.py` | 5 | template returns consistent, typed error summary; stable across repeated runs — plus **console-channel regressions**: a UI-handler traceback marimo never records structurally is flagged through `console_stderr` (`has_console_exception: true`), and a `print()` lands in `get_cell_outputs.stdout` |
-| `test_mutation.py` | 8 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, external-conflict→re-read→recover, and the guard-scope invariants — an unrelated write neither disarms the guard nor blesses a never-read cell, a `get_cell_map` preview records no read baseline, an insert/delete leaves every other cell's `code_hash` unchanged, and `get_cell_map` still reports `changes_since_last` — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
+| `test_mutation.py` | 9 | **hermetic mutation regressions**: create→read→guarded-edit→run→verify→delete, external-conflict→re-read→recover, the guard-scope invariants — an unrelated write neither disarms the guard nor blesses a never-read cell, a `get_cell_map` preview records no read baseline, an insert/delete leaves every other cell's `code_hash` unchanged, and `get_cell_map` still reports `changes_since_last` — plus the **F1/F4 target-refusal regression**: an absent `delete_cell` id, an absent `create_cell` `after` anchor, and both anchors supplied are all structured refusals that leave the live cell set and the notebook file untouched — see [Hermetic mutation regressions](#hermetic-mutation-regressions) below |
 | `test_run_cell_modes.py` | 5 | **hermetic run-mode regressions**: `mode="all"` on a fresh `/sse` session runs every document cell and registers an unreferenced widget leaf (unreachable via `set_ui_value` before); `mode="descendants"` refuses `graph_unpopulated` on an unregistered target (nothing runs) and resolves target + descendants once `mode="all"` populated the graph; a mixed batch reports `exception` and `cancelled` per cell while the run call itself errored; unknown ids/names and `all` + non-empty `cell_id` abort before anything runs, and the default `mode="cell"` stays single-target; a cell NAME resolves like a cell id (pre-modes compat) for `cell` and `descendants`, with the resolved id reported — see [Hermetic run-mode regressions](#hermetic-run-mode-regressions) below |
 | `test_restart.py` | 3 | **hermetic kernel-restart regressions** (Wave 3): `restart_kernel` closes the kernel and **re-materializes** a replacement via the `/sse` handshake — never reporting success from the POST 200 alone — asserting `re_materialized: true`, one live session under the **expected** id, a genuinely new kernel (the scratchpad's `os.getpid()` changes), execution state reset (a kernel global is gone, every cell `stale`), the change tracker cleared (the first `edit_cell` of a file-parsed cell is `needs_read` again), the server process preserved (the skew token re-read from the page and unchanged), and a following `run_cell(mode="all")` re-running the document green; plus `session_id_stable: false` / `session_verification: "point_in_time"` with a later browser-like reconnect re-keying the id (the old id then answers `Invalid session id`); plus the zero-session/unknown-id guard (`reason: session_not_found`, `state_changed: false`, nothing closed, the live session named) — see [Hermetic kernel-restart regressions](#hermetic-kernel-restart-regressions) below |
 | `test_sessions.py` | 3 | **T22** — a raw `GET /api/sessions` census on a hermetic server publishes only `filename`/`path` per session (no creator, owner, creation time, or per-session client count), which is exactly why `list_active_notebooks` reports `provenance`/`owner` as `"unknown"` and `attached_client_count: null`; the **real handler** is then called against that server and pins `session_count`/`total_notebooks`/`active_connections` (deprecated alias) = 1, `attached_client_count: null`, `result_row_count` = 1; and `/api/status/connections.active` is measured to have main-consumer semantics — 1 while the session's main `/sse` stream is open, 0 after it is closed/orphaned — and is never reported as a client count |
-| `test_discovery.py` | 2 | **T18 server-vs-session discovery**: a freshly launched headless edit server is discoverable (census 200, empty) yet reports **zero** sessions — a launch creates no session, only a client connect does; one `/sse` connect materializes exactly one session, and closing that stream leaves it listed as an orphan with `/api/status/connections.active` 0 (no default TTL reaps it); a `marimo run` server registers in the same registry under `--no-token` but its `/api/sessions` census is **401** (the endpoint requires edit scope), so `discover_servers` returns nothing and the discovery path's `servers_discovered` is 0 — only an explicit `server_url` reaches it, as one connection-failure sentinel (`session_count` 0, `servers_discovered` 1, `result_row_count` 1) |
-| `test_ui.py` | 15 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; a dropdown built from numeric options stores the number and is addressed by its STRING transport key — sending scalar `4` is refused with `did_you_mean: ["4"]` (never `[4]`, which the kernel itself rejects), and applying `["4"]` moves the element to the numeric 4 (`value_after: 4`, confirmed by a dependent read `4 * 2 == 8`); **T20** — a side-effect-only `button` click is reported from the frontend click counter (0 → 1, `handler_invoked: true`) with the `mo.state` side effect confirmed by an independent read, the `0` counter sentinel reports `handler_invoked: false` and clicks nothing, a repeated nonzero counter reports `handler_invoked: null` while the runtime *did* run the handler again, a raising `on_click` returns `reason: on_click_failed` acknowledging the partial side effect it applied before raising, and `run_button` carries the same counter evidence; missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
+| `test_discovery.py` | 4 | **T18 server-vs-session discovery**: a freshly launched headless edit server is discoverable (census 200, empty) yet reports **zero** sessions — a launch creates no session, only a client connect does; one `/sse` connect materializes exactly one session, and closing that stream leaves it listed as an orphan with `/api/status/connections.active` 0 (no default TTL reaps it); a `marimo run` server registers in the same registry under `--no-token` but its `/api/sessions` census is **401** (the endpoint requires edit scope), so `discover_servers` returns nothing and the discovery path's `servers_discovered` is 0 — only an explicit `server_url` reaches it, as one connection-failure sentinel (`session_count` 0, `servers_discovered` 1, `result_row_count` 1); plus the **auth/scope taxonomy** on real servers — a `run --no-token` server (census 401 with the auth body, `/api/version` 200, `GET /` carrying the app-shell token marker) makes `restart_kernel`, `set_active_session` and `get_cell_map` all refuse `reason: edit_scope_required` with nothing read or written, and an auth-gated server (`--token`: census and `/api/version` both 401 with the same body, `GET /` a 303 to `/auth/login`) makes them all refuse `reason: auth_required` |
+| `test_ui.py` | 16 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); **F6** — an empty list (`[]`) and a multi-element list sent to a `dropdown` are both refused `value_shape_mismatch` (no `did_you_mean` — no single key can be inferred), leaving the widget AND its dependent cell unmoved, while the one-element form still applies; a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; a dropdown built from numeric options stores the number and is addressed by its STRING transport key — sending scalar `4` is refused with `did_you_mean: ["4"]` (never `[4]`, which the kernel itself rejects), and applying `["4"]` moves the element to the numeric 4 (`value_after: 4`, confirmed by a dependent read `4 * 2 == 8`); **T20** — a side-effect-only `button` click is reported from the frontend click counter (0 → 1, `handler_invoked: true`) with the `mo.state` side effect confirmed by an independent read, the `0` counter sentinel reports `handler_invoked: false` and clicks nothing, a repeated nonzero counter reports `handler_invoked: null` while the runtime *did* run the handler again, a raising `on_click` returns `reason: on_click_failed` acknowledging the partial side effect it applied before raising, and `run_button` carries the same counter evidence; missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 | `test_examples.py` | 6 | **example-notebook gate**: a discovery guard (an empty `examples/` tree fails the run rather than making the smoke vacuous), then the parametrized smoke over the **discovered** tracked `examples/**/*.py` tree — each example is copied into `tmp_path`, booted on its own headless server via the `notebook_server` factory and run whole through the REAL `run_cell(mode="all")` handler: `status: ok`, no failed/not-run/unverified target, every cell `idle` with a readable empty error channel, and the repo file byte-identical afterwards; plus one interaction regression per shipped example — the step buttons move the ONE shared `mo.state` index through repeated advancing counters (0→1→2→3, backward to 0, clamped there, then the coarse quarter-axis steps 11/22/33/44 and clamped at `LAST = 47`) with `step_slider` read back equal to `index` at every step, and a cascade parent change rebuilds the child (new options, selection reset to the first entry, `result` re-derived; a group-a-only option on the group-b child is refused `value_not_applied`; switching back resets the child again, pinning that the shipped example has NO per-parent memory) — and the live verification of the T-E6 per-parent-memory recipe as a test-local notebook (child restored per parent, no-memory-yet fallback) — see [Example smoke and interaction regressions](#example-smoke-and-interaction-regressions) below |
+| `test_instantiate.py` | 2 | **original-cell instantiation**: a generated one-cell sentinel notebook proves `/sse` alone executes nothing and `MarimoClient.instantiate_notebook` then runs it (sentinel file + its public variable); a byte-identical `tmp_path` **copy of the committed fixture** is instantiated and read back through the real MCP handlers — 6 original cells leave `stale` with output records, `value_a`/`value_b`/`value_c` are live public ints, the intentional error cell reports one structured runtime error, the setup-helper `NameError` is pinned on the console channel, and the committed bytes are asserted unchanged — see [Hermetic original-cell instantiation regressions](#hermetic-original-cell-instantiation-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
 do **not** need a kernel, so they live in the fast path (`tests/marimo_inspect/`).
@@ -195,6 +218,16 @@ MCP server. The end-to-end flows and their guard-scope invariants are locked in:
   must not disarm the guard or bless a never-read cell; a `get_cell_map` preview
   records no read baseline while still feeding `changes_since_last`; and an
   insert or delete leaves every *other* cell's `code_hash` unchanged.
+- **Target refusals are payloads (F1/F4)**: an absent `delete_cell` id, an
+  absent `create_cell` `after` anchor, and `create_cell` with both anchors are
+  each a structured refusal (`reason: unknown_cell_ids` / `conflicting_anchors`,
+  `target_resolved`/`operation_ran`/`state_changed` all false, no `stderr`
+  traceback key) against the real kernel — and the proof no write ran is the
+  unchanged live cell set plus the marker source appearing neither in a
+  `get_cell_data` read nor in the disposable notebook file. Pre-fix each of the
+  first two surfaced marimo's raw `{"error": "Execution failed", "stderr":
+  "Traceback…"}` envelope (`raw/10_051_s5_delete_absent.json`,
+  `raw/repro_F4_create_cell_absent_anchor.stdout.txt`).
 
 Isolation (the `mutation_server` fixture): every test boots its **own**
 `MarimoServerManager` on a `tmp_path` **copy** of `notebooks/test_marimo.py`
@@ -215,17 +248,66 @@ cell, a computed-values cell, a dependency cell, a polars table cell, and one
 hidden cell that raises `ValueError("integration_test_error")`). No
 third-party image-processing lib, no numpy/pandas requirements.
 
+## Hermetic original-cell instantiation regressions
+
+`test_instantiate.py` closes the old "original cells never run" gap. It uses
+**two** documents on purpose: a generated notebook proves the *mechanism*, while
+only the committed fixture's own cells can be said to be *covered*.
+
+- **Generated sentinel notebook (mechanism).** A one-cell notebook whose cell
+  writes a sentinel file is booted by the `notebook_server` factory, whose `/sse`
+  handshake materializes the session and runs nothing: the sentinel is asserted
+  absent, `get_variables` is empty, and the cell is `stale`. The test then calls
+  `client.instantiate_notebook(session_id)` — the POST must answer
+  `status_code: 200` with `token_used: true` and no failure reason — and waits
+  until the sentinel file holds the expected contents and the cell's public
+  variable (`sentinel_written`) is visible to `get_variables`. The sentinel is
+  never used as evidence about the fixture.
+- **Copied committed fixture (coverage).** `notebooks/test_marimo.py` is copied
+  byte-for-byte into `tmp_path` (asserted equal at boot), booted on its own
+  disposable server, instantiated, and read back through the **real MCP
+  handlers**. *Before*: 6 cells, all `stale`, `get_variables` empty. *After*:
+  every original cell has left `stale` with an output record, the same 6 cell
+  ids, `value_a`/`value_b`/`value_c` live as public ints (`value_c` checked
+  against the cell's own `value_a + value_b**2`), one structured runtime error
+  (`ValueError: integration_test_error`), and `get_cell_data(include_errors=True)`
+  reaching the original error cell. The committed file and the copy are asserted
+  byte-identical afterwards, in addition to the factory's teardown gate.
+
+Two measured facts worth not re-deriving:
+
+1. **A read issued immediately after instantiate can transiently fail.** The
+   kernel runs the document asynchronously and its console output drains through
+   the same `POST /api/kernel/execute` stream the read templates use, so for well
+   under a second a read answers `{"error": "Execution failed", "stderr": […]}`
+   instead of its payload. Every read in the module therefore polls on its own
+   documented key (`cells` / `variables` / `has_errors` / `data`); asserting on
+   the first read is flaky and mistaking that shape for "nothing executed" is
+   wrong. The same applies to the cell's output record, which can land a moment
+   after the cell leaves `stale`.
+2. **The committed fixture does not instantiate all-green, and the suite says
+   so.** Its hidden setup cell defines the helper `_double`; a
+   leading-underscore name is a marimo cell *temporary*
+   (`marimo._ast.variables.is_local`; the compiler keeps only non-underscore defs
+   as nonlocals), never an app global, so the cell reading it raises `NameError`
+   — reported on the console channel only, with `has_errors: false` — and its
+   dependent table cell ends `cancelled`. The instantiation test asserts that
+   state explicitly rather than pretending the fixture runs clean: the fixture
+   has been instantiation-unclean all along, and before this task nothing could
+   see it. Renaming the helper would change bytes other tests assert on, so the
+   observation is recorded here instead of "fixed".
+
 ## Hermetic widget regressions
 
 `test_ui.py` proves `set_ui_value` against a real kernel, in the same
 `mutation_server` isolation.
 
-The plan originally assumed widget behaviour could only be validated against a
-**browser-instantiated** session — the shared fixture's notebook cells never run,
-because the `/sse` session cannot be instantiated without the skew token (see
-the coverage-gap note above). That assumption is too conservative: a cell
-*created through the MCP write tools* runs fine, so a widget can be
-materialized in-kernel with no browser at all. The reactivity test:
+Widget behaviour needs a session whose cells have executed. The shared fixture
+is still never instantiated (see the note above), but the mechanism is not the
+obstacle the plan assumed: a cell *created through the MCP write tools* runs
+fine, so a widget can be materialized in-kernel with no browser at all — and the
+[instantiation regressions](#hermetic-original-cell-instantiation-regressions)
+now run a copied fixture's own cells as well. The reactivity test:
 
 1. `create_cell` a cell whose **final expression** is a `mo.ui.slider` (so the
    control is visible), then `run_cell` it.
@@ -238,13 +320,15 @@ materialized in-kernel with no browser at all. The reactivity test:
    `value_before`/`value_after` = 3/7, the widget is `7`, **and the dependent
    cell re-ran** to `107`, with both cells `idle`.
 
-The remaining fourteen tests cover the dropdown contract (including the
-numeric-option string key), the rejection paths, the `on_change` failure classes,
-the T20 button-click evidence and the cell-private name rule — they exist
-because a flush is not proof of application (`set_ui_value` in `tools/ui.py`):
+The remaining fifteen tests cover the dropdown contract (including the
+numeric-option string key and the F6 arity refusal), the rejection paths, the
+`on_change` failure classes, the T20 button-click evidence and the cell-private
+name rule — they exist because a flush is not proof of application
+(`set_ui_value` in `tools/ui.py`):
 
 | Test | Locked-in behaviour |
 | --- | --- |
+| `[]` / multi-element list → `dropdown` (**F6**) | `status: error`, `reason: value_shape_mismatch`, `accepted_shape: list[str]`, `submitted_value` echoed, and **no** `did_you_mean` (no single key can be inferred from `[]` or `["alpha", "beta"]`; the message names the element's option keys instead). Neither the widget nor its dependent cell moves, so nothing was queued. Pre-fix `[]` returned `ok`/`applied: true` with `value_after: null`, contradicting the element's own `allow_select_none=False` |
 | scalar → `dropdown` | `status: error`, `reason: value_shape_mismatch`, `accepted_shape: list[str]`, `did_you_mean: ["beta"]`, widget and dependent cell untouched. A scalar trips `assert len(value) == 1` inside `dropdown._convert_value`; marimo **catches** that, writes the traceback to the kernel's stderr and drops the update, so without the guard this returned `ok` with no change |
 | `["beta"]` → `dropdown` | `status: ok` with `verified`/`applied` true, `value_before`/`value_after` = alpha/beta, dependent cell re-ran, and an immediate repeat is `applied: false` + `no_change: true` |
 | `["nope"]` → `dropdown` | `status: error`, `reason: value_not_applied`, `kernel_message` is the kernel's own `ValueError` naming the valid options, widget unmoved — marimo's rejection is converted into a real error instead of a false `ok` |
@@ -335,11 +419,20 @@ adds a cell that raises `NameError` and a dependent that reads its name.
   the resolved id (queuing the name would raise at queue time).
 
 Non-live coverage of the same contract lives in `tests/marimo_inspect/`
-(`test_mutation.py` handler cases, `TestRunCellTemplates` in `test_templates.py`
-for the plan/run/report templates, `test_server.py` for the advertised
-three-literal `mode` schema, and `test_resources.py` for the packaged
-co-work/live-safety/fallbacks guidance). The pre-fix failure evidence for both
-tiers is preserved in `.hermes/probes/t15-prefix/`.
+(`test_mutation.py` handler cases — including the bug-hunt-2 F1/F4
+mutation-target-refusal cases that assert no write snippet is dispatched —
+`TestRunCellTemplates` in `test_templates.py` for the plan/run/report
+templates, `test_server.py` for the advertised three-literal `mode` schema,
+which is the authoritative validator: because the enum is exhaustive, the
+handler's `invalid_mode` branch is unreachable over MCP and is therefore
+**not** part of the published vocabulary (F2), and `test_resources.py` for the
+packaged co-work/live-safety/fallbacks guidance, which forbids that vocabulary).
+F3 is pinned in `test_list_args.py` (a blank string is "no filter", and both
+handlers take the unfiltered path), F5 in `test_lint_source.py`
+(`_lint_source` emits `cell_index`, never `cell_id`), and F6 in `test_ui.py`
+(the template refuses a zero-/multi-element dropdown list before queueing). The
+pre-fix failure evidence for both tiers is preserved in
+`.hermes/probes/t15-prefix/`.
 
 ## Hermetic kernel-restart regressions
 
@@ -385,11 +478,43 @@ before.
   and a working read afterwards).
 
 The client primitives (token scrape from the page HTML, the `restart_session`
-status/body classification incl. the 403 → `edit_required` row, the `/sse`
-handshake) and the tool's guard rails (sessionless server, unknown id, unknown
-file, failed re-materialization, a foreign single session that is never adopted,
-an unknown-outcome transport failure, tracker reset, token-rotation honesty) are
+status/body classification — the literal 403 → `edit_required` row is defensive,
+since measured 0.24.0 converts an API 403 into the 401 auth body — the `/sse`
+handshake, and the two read-scope probes the access classifier uses) and the
+tool's guard rails (sessionless server, unknown id, unknown file, failed
+re-materialization, a foreign single session that is never adopted, an
+unknown-outcome transport failure, tracker reset, token-rotation honesty) are
 unit-tested without a kernel in `tests/marimo_inspect/test_lifecycle.py`.
+
+### Classifying a denied census (Task 01)
+
+A denied census cannot classify itself. Measured on real marimo 0.24.0 servers:
+
+```text
+server            GET /api/sessions                  GET /api/version                 GET /
+────────────────  ─────────────────────────────────  ───────────────────────────────  ─────────────────────────────
+run --no-token    401 {"detail":"Authorization
+                  header required"}                  200 "0.24.0"                     200 app shell (token marker)
+edit/run --token  401 same body                      401 same body                    303 -> /auth/login?next=%2F
+```
+
+An API 403 is served as that 401 body and `WWW-Authenticate` is stripped, so a
+run-mode scope denial and a true auth gate are the same bytes at the census. The
+classifier therefore probes `GET /api/version` (read scope) and, only when that
+is unavailable or ambiguous, the semantic `GET /` markers — never the header,
+never a byte count. The three reasons are `edit_scope_required` (readable
+read-scope endpoint: the run-mode case, which authenticating cannot fix),
+`auth_required` (read-scope probe denied with the same body), and
+`session_census_denied` (probes undecided — conservative). Target resolution,
+`set_active_session` and `restart_kernel` all report that vocabulary and refuse
+with `operation_ran: false` / `state_changed: false` (`bound: false` for the
+bind); a denied census is never readable, so `available_sessions` is empty with
+`available_sessions_readable: false`.
+
+The `run --no-token` row is covered end-to-end by the live regressions above.
+The auth-on row is covered end-to-end too, through the harness `auth=True`
+option (`--token` with a throwaway password); its readiness check accepts a 401
+from `/api/version` because that is exactly the auth-on shape.
 
 ## Hermetic server-vs-session discovery regressions
 
@@ -497,24 +622,37 @@ manual (see the widget section above).
 ## Current status (verified 2026-09-13)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (636 tests collected in total):
+split (710 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 69 passed, 567 deselected
+=> 75 passed, 635 deselected
 
 uv run pytest -m "not live"
-=> 567 passed, 69 deselected
+=> 635 passed, 75 deselected
 ```
 
+The access-denial classifier (`src/marimo_inspection/tools/access.py`) is pinned
+by `tests/marimo_inspect/test_access.py` (24 tests: a scripted probe client for
+every classification row, plus the real client's two probes on a
+`MockTransport`) and is driven end-to-end through the real handlers in
+`test_target_resolution.py` (the denial matrix against the loopback stub's
+`/api/version` and `/` recipes), `test_session_binding.py` (`set_active_session`
+agrees with target resolution) and `test_lifecycle.py` (`restart_kernel`'s
+pre-flight refuses `edit_scope_required`, never `auth_required`, for a readable
+but scope-denied census). The two real-server regressions live in
+`tests/marimo_inspect/live/test_discovery.py`; the auth-gated case boots through
+the harness's `auth=True` option, which is also why readiness accepts a 401 from
+`/api/version` as "the process is up".
+
 The Wave A target-resolution module (`tests/marimo_inspect/test_target_resolution.py`,
-69 tests) keeps its full twelve-handler fan-out wherever the case exercises
+72 tests) keeps its full twelve-handler fan-out wherever the case exercises
 `MarimoClient.resolve_session` itself (mismatch/not-found, unreachable, query
 failure, the mocked execution seam) and its loopback census stub, and runs one
 read plus one mutation handler for the shared pre-resolution matrices
-(`session_required`, `binding_ambiguous`, 401/403) whose coverage the module's
-source-inventory gate already proves for all twelve. The stub's server polls at
-0.05s, so per-test shutdown is not the module's dominant cost.
+(`session_required`, `binding_ambiguous`, the access denials) whose coverage the
+module's source-inventory gate already proves for all twelve. The stub's server
+polls at 0.05s, so per-test shutdown is not the module's dominant cost.
 
 (Elapsed times are machine-dependent and not part of the contract; the split and
 the counts are. Re-derive them with `--collect-only` after adding tests.)
@@ -531,7 +669,7 @@ The widget regressions alone (they boot one isolated server per test):
 
 ```text
 uv run pytest tests/marimo_inspect/live/test_ui.py -m live
-=> 15 passed
+=> 16 passed
 ```
 
 The run-mode regressions alone (one purpose-built notebook per test):
@@ -545,7 +683,7 @@ The mutation regressions alone:
 
 ```text
 uv run pytest tests/marimo_inspect/live/test_mutation.py -m live
-=> 8 passed
+=> 9 passed
 ```
 
 The kernel-restart regressions alone (one purpose-built notebook per test):
@@ -575,6 +713,14 @@ and a run server, each on its own isolated registry):
 
 ```text
 uv run pytest tests/marimo_inspect/live/test_discovery.py -m live
+=> 4 passed
+```
+
+The original-cell instantiation regressions alone (a generated sentinel notebook,
+and a byte-identical copy of the committed fixture):
+
+```text
+uv run pytest tests/marimo_inspect/live/test_instantiate.py -m live
 => 2 passed
 ```
 

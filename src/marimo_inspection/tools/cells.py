@@ -138,7 +138,8 @@ async def get_cell_data(
     always ``null`` — this tool does not return variable information. Inspect
     live variables with ``get_variables``.
 
-    If cell_ids is empty, returns data for all cells.
+    If cell_ids is empty — including an empty or whitespace-only string —
+    returns data for all cells.
 
     A requested id that resolves to nothing (deleted or mistyped) is reported
     in ``missing_cell_ids`` rather than silently omitted — the write tools
@@ -148,9 +149,9 @@ async def get_cell_data(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        cell_ids: Cell IDs from get_cell_map. Empty = all cells. Accepts a
-            single ID, a native array, or a JSON-encoded array — a harness
-            may deliver either of the latter two as a string.
+        cell_ids: Cell IDs from get_cell_map. Empty (or a blank string) = all
+            cells. Accepts a single ID, a native array, or a JSON-encoded
+            array — a harness may deliver either of the latter two as a string.
         include_errors: Add the four per-row error fields described above
             (default: false, leaving the payload shape unchanged).
         server_url: Optional server URL override.
@@ -270,9 +271,9 @@ async def get_cell_outputs(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        cell_ids: Cell IDs from get_cell_map. Empty = all cells. Accepts a
-            single ID, a native array, or a JSON-encoded array — a harness
-            may deliver either of the latter two as a string.
+        cell_ids: Cell IDs from get_cell_map. Empty (or a blank string) = all
+            cells. Accepts a single ID, a native array, or a JSON-encoded
+            array — a harness may deliver either of the latter two as a string.
         server_url: Optional server URL override.
 
     Returns:

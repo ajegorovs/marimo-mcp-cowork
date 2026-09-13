@@ -767,12 +767,19 @@ async def set_ui_value(
     same way a user interaction would.
 
     Value shape is per widget and is NEVER coerced: a slider/text takes a
-    scalar, a dropdown takes its option key inside a one-element list (for
-    example ``["beta"]``), a multiselect takes the list of selected keys, a
-    range_slider takes a two-element list, a checkbox takes a bool. The
-    element's own declaration decides; a shape mismatch is refused before
-    anything is applied and the response carries the corrected payload in
-    ``did_you_mean``.
+    scalar, a dropdown takes its option key inside a **one-element** list (for
+    example ``["beta"]``), a multiselect takes the list of selected keys (any
+    length, an empty list included — that clears the selection), a range_slider
+    takes a two-element list, a checkbox takes a bool. The element's own
+    declaration decides; a shape mismatch is refused before anything is applied
+    and the response carries the corrected payload in ``did_you_mean`` — present
+    only when one particular valid replacement can be inferred (a scalar sent to
+    a list-shaped element, or an empty/multi-element list sent to a dropdown
+    that exposes exactly one option key). When it cannot be inferred — a
+    zero- or multi-element list against a dropdown with several options — the
+    field is **absent** and the message says so instead of guessing a key. A
+    ``dropdown`` in particular refuses any list whose length is not exactly one
+    (marimo would clear it to ``None``, which its own declaration forbids).
 
     This tool accepts NO source code: it exists for widget interaction only,
     not for arbitrary code execution. The update is flushed on code-mode

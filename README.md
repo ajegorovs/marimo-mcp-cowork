@@ -62,7 +62,10 @@ Writes: `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
 Widget interaction: `set_ui_value`.
 Lifecycle: `restart_kernel` (closes the kernel and re-materializes a fresh one;
 the server process survives, but the confirmed session id is point-in-time —
-`session_id_stable: false`).
+`session_id_stable: false`). Its refused-census vocabulary is the same access
+taxonomy: `edit_scope_required` for a readable-but-scope-denied server (run
+mode), `auth_required` for a real auth gate, `session_census_denied` when the
+probes cannot tell them apart.
 
 `list_active_notebooks` discovers sessions and auto-binds the first one
 (`session_id` **and** `server_url`); every other tool falls back to that
@@ -99,7 +102,10 @@ Every cell/session-targeting tool (`get_cell_map`, `get_cell_data`,
 `set_ui_value`) resolves its target through one shared step. A target problem is
 therefore a **structured payload**, not a tool-level exception, and it is always
 `status: error` with `target_resolved: false`, `operation_ran: false`, and
-`state_changed: false` — **no read or write operation runs on a refusal**:
+`state_changed: false` — **no mutation is dispatched on a refusal**: a
+session-target refusal is built before any call at all, and a cell/anchor
+reference is checked against a read-only validation of the live cells before
+any write scratchpad is generated:
 
 - `session_required` — no explicit and no bound target (`session_id` /
   `server_url`); discover/bind one with `list_active_notebooks` or pass both
@@ -114,6 +120,32 @@ therefore a **structured payload**, not a tool-level exception, and it is always
 - `server_unreachable` — the session census could not be reached at all.
 - `server_query_failed` — the census answered with a non-auth error (HTTP 500
   included) or an unreadable body (truncated JSON or invalid UTF-8 included).
+- `edit_scope_required` — the census was denied for lack of **edit scope**
+  while a read-scope endpoint (`GET /api/version`) answered 200: the server is
+  reachable and readable, but the census itself needs `edit` mode. A
+  `marimo run` server is the typical case, and authenticating cannot fix it.
+- `auth_required` — the read-scope endpoint is denied with the **same** auth
+  body as the census, so the server requires marimo auth even for reads.
+- `session_census_denied` — the census was denied and the read-scope probes
+  could not tell an auth gate from a missing edit scope: the cause is reported
+  as undetermined instead of guessed.
+- `unknown_cell_ids` — a **cell** reference (`delete_cell`'s `cell_id`,
+  `edit_cell`'s `cell_id`, or `create_cell`'s `after`/`before` anchor) is not a
+  live cell, by id or by name. The payload echoes the reference (`anchor` +
+  `anchor_cell_id` for `create_cell`), lists it in `unknown_cell_ids`, and
+  dispatches nothing — the raw marimo `KeyError` traceback is never returned.
+- `conflicting_anchors` — `create_cell` was given **both** `before` and `after`.
+- `target_validation_failed` — the read-only live-cell validation itself failed,
+  so the reference could not be checked and nothing was dispatched.
+
+A denied census cannot classify itself. Pinned marimo 0.24.0 serves an API 403
+as `401 {"detail":"Authorization header required"}` and strips
+`WWW-Authenticate`, so a run-mode scope denial and a true auth gate look
+identical at the denied endpoint — which is why the reason comes from a
+**read-scope probe** (`GET /api/version`), never from a response header or a
+byte count. All three access refusals carry `read_scope_status_code` and
+`page_kind` as their evidence, and `set_active_session` / `restart_kernel`
+speak the same vocabulary.
 
 An explicit `session_id`/`server_url` pair that does not exist on the selected
 server is the `session_not_found` case, with the real session ids in
@@ -151,7 +183,9 @@ outputs. A **`marimo run`** server is not discoverable at all: it registers unde
 and answers `401` in run mode, so the census-200 health check drops it and it is
 never counted by a discovery-based `servers_discovered`. Only an explicit
 `server_url` pointed at one reaches it, as a single connection-failure sentinel
-row (`session_count` 0, `servers_discovered` 1).
+row (`session_count` 0, `servers_discovered` 1) — and a target-resolution or
+`restart_kernel` call against it is refused with `reason: edit_scope_required`
+(its read-scope endpoints answer normally, so it is not an auth problem).
 
 ### Read before you edit
 
@@ -166,8 +200,10 @@ Recovery is a real re-read, then retry: call `get_cell_data` (which records the
 read baseline), then retry `edit_cell`. A `get_cell_map` preview does **not**
 record the baseline — a preview is not a source read. A successful edit
 returns the post-edit `code_hash`. `check_fresh=False` is an explicit force
-escape hatch, **not** the recovery path. A missing cell id returns a clear
-error before anything is mutated.
+escape hatch, **not** the recovery path. A cell id that is not live is a
+structured refusal before anything is mutated (`reason: unknown_cell_ids`,
+`target_resolved`/`operation_ran`/`state_changed` all false) — the same family
+`delete_cell` and `create_cell`'s placement anchors use.
 
 ### Running cells — and running the whole notebook
 
@@ -204,9 +240,12 @@ with a readable, empty `errors`), `failed_cell_ids`
 targets only) and `not_run_cell_ids` / `unverified_cell_ids` (everything else,
 e.g. stale/disabled/unknown). `status` is `ok` only when every requested target
 is idle, `partial` when any failed or did not finish, and `error` for
-validation/planning/reporting failures (`cell_id_required`, `invalid_mode`,
+validation/planning/reporting failures (`cell_id_required`,
 `cell_id_not_allowed`, `unknown_cell_ids`, `graph_unpopulated`,
-`planning_failed`, `reporting_failed`). Every failure — and a run whose batch
+`planning_failed`, `reporting_failed`). `mode` is a **literal enum** in the
+published input schema, so an out-of-enum value is rejected by the framework
+(`literal_error`) before the handler runs — it has no structured reason, and
+none is documented. Every failure — and a run whose batch
 call itself failed (`execution_error` + `stderr`) — carries a top-level `error`
 string alongside the structured `status`/`reason`, so a caller that checked the
 old `{"error": ...}` payload still sees the failure.
@@ -225,10 +264,15 @@ time and cannot be confirmed back through the MCP read surface.
 kernel-global name and accepts **no source code**. It never coerces the value:
 send the shape the element's declaration accepts — scalar for `slider`/`text`,
 bool for `checkbox`, the option key **inside a one-element list** for a
-`dropdown` (`["beta"]`), a list of keys for `multiselect`, a two-element list
-for `range_slider`. A shape the element cannot accept is refused before
-anything is applied, and the error carries the corrected payload in
-`did_you_mean`.
+`dropdown` (`["beta"]`), a list of keys (any length, `[]` clears it) for
+`multiselect`, a two-element list for `range_slider`. A shape the element cannot
+accept is refused before anything is applied: a `dropdown` in particular takes
+**exactly one** key, so a list whose length is not one is refused rather than
+applied (marimo would clear it to `None`). The error carries
+`reason: value_shape_mismatch` and the corrected payload in `did_you_mean` when
+one particular valid replacement can be inferred; when it cannot — an empty or
+multi-element list against a dropdown with several options — `did_you_mean` is
+**absent** and the message names the element's option keys instead.
 
 The element's value is read back before the call returns, so `status: ok` with
 `verified: true` means the read-back succeeded: either the widget's own value was
@@ -320,6 +364,14 @@ faked). `get_errors` reports `cells[].structured_errors` (marimo `cell.errors`) 
 two separate per-cell channels; flagged entries name the matched marker in
 `cells[].console_exception_evidence`. Top-level error flags and totals summarize
 the two channels; `has_errors`/`total_errors` cover structured errors only.
+
+`lint_notebook` is static and in-process (the engine behind `marimo check`).
+Each diagnostic locates a position in the notebook **source file**:
+`rule`/`name`/`severity`/`message` plus `filename`, `line`, `column`, and
+`cell_index` — the flagged cell's positional index in the parsed document.
+`cell_index` is **not** a live cell id (those come from `get_cell_map`); the
+two are separate identifier spaces, so resolve the live id separately and
+navigate the source by `line`/`column`/`filename`.
 
 Arbitrary kernel probes, complex multi-operation CodeMode blocks, screenshots,
 and notebook-server lifecycle stay outside the MCP surface — see

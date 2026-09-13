@@ -12,7 +12,11 @@ element, plus the new value. Four properties make it safe for agent use:
    parameter of its ``UIElement[...]`` generic base (``list[str]`` for a
    dropdown, ``int | float`` for a slider) — never hard-coded per widget
    type. The refusal names the shape and, when the submitted scalar is one
-   list away from the correct form, the exact corrected payload.
+   list away from the correct form, the exact corrected payload. One
+   **arity** rule is additionally keyed on the element type: a ``dropdown``
+   declares ``list[str]`` exactly like a ``multiselect``, but selects
+   exactly **one** key, so a list whose length is not one is refused here
+   (marimo clears it to ``None`` and swallows the assertion).
 3. **The update is verified, not assumed.** Queued updates flush on code-mode
    context exit, and marimo *swallows* a rejected update (the traceback goes
    to the kernel's stderr, the flush still reports success). A second context
@@ -351,6 +355,50 @@ async def _run():
                            + (" - here, " + _text(suggestion) if suggestion is not None else "")
                            + ". Nothing was changed.",
             })
+
+        # A `dropdown`'s declared input is a ONE-element list of the option key
+        # (`list[str]`, the same declaration a `multiselect` carries), so a list
+        # of any other length is not a shape it accepts. marimo's own
+        # `_convert_value` asserts `len(value) == 1`, clears the element to
+        # None for `[]`, and only writes the AssertionError to stderr - so
+        # without this guard a zero-element list was applied as None and
+        # reported as verified success while the element's declaration said it
+        # cannot select none. Refuse BEFORE queueing. Keyed on the element type
+        # because `multiselect` shares the declaration but legitimately takes
+        # any number of keys (including zero, which clears the selection).
+        if element_type == "dropdown" and submitted_is_list and len(value) != 1:
+            keys = _option_keys(element)
+            if keys is not None and len(keys) == 1:
+                # Exactly one option exists, so that key is the only possible
+                # replacement and it can be offered without guessing.
+                suggestion = [keys[0]]
+                guidance = ("Re-send the one-element list " + _text(suggestion)
+                            + " (the element's only option key).")
+            else:
+                suggestion = None
+                where = "an empty list" if len(value) == 0 else "a multi-element list"
+                guidance = (
+                    "No single replacement can be inferred from " + where
+                    + " - send exactly one of the element's option keys"
+                    + (" (" + _text(keys) + ")" if keys else "")
+                    + "."
+                )
+            payload = {
+                "status": "error",
+                "reason": "value_shape_mismatch",
+                "variable_name": name,
+                "element_type": element_type,
+                "accepted_shape": shape_text,
+                "submitted_value": _jsonable(value),
+                "message": "The " + element_type + " element " + json.dumps(name)
+                           + " takes exactly one option key inside a one-element "
+                           "list (" + str(shape_text) + "); received "
+                           + _text(value) + ". " + guidance
+                           + " Nothing was changed.",
+            }
+            if suggestion is not None:
+                payload["did_you_mean"] = suggestion
+            return json.dumps(payload)
 
         before = element.value
         frontend_before = _jsonable(_frontend_value(element))

@@ -24,7 +24,8 @@ async def get_variables(
 
     Returns information about kernel variables and DataFrames.
 
-    If variable_names is empty, returns all variables — meaning the executed
+    If variable_names is empty — including an empty or whitespace-only string —
+    returns all variables, meaning the executed
     public names defined by notebook cells. Kernel-injected globals, the
     inspection template's scaffolding, private (leading-underscore) names, and
     definitions from cells that have not executed are excluded, because the
@@ -38,9 +39,9 @@ async def get_variables(
     Args:
         session_id: Session ID from list_active_notebooks.
             Optional if an active session is bound.
-        variable_names: Specific variables to inspect. Empty = all. Accepts a
-            single name, a native array, or a JSON-encoded array — a harness
-            may deliver either of the latter two as a string.
+        variable_names: Specific variables to inspect. Empty (or a blank string)
+            = all. Accepts a single name, a native array, or a JSON-encoded
+            array — a harness may deliver either of the latter two as a string.
         server_url: Optional server URL override.
 
     Returns:

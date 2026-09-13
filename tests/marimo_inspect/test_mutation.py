@@ -113,6 +113,7 @@ def test_templates_are_valid_python():
     from marimo_inspection.templates.mutation import (
         build_cell_hashes_template,
         build_cell_status_template,
+        build_cell_targets_template,
         build_create_cell_template,
         build_delete_cell_template,
         build_edit_cell_template,
@@ -122,6 +123,7 @@ def test_templates_are_valid_python():
 
     for code in [
         build_cell_hashes_template(),
+        build_cell_targets_template(),
         build_create_cell_template("x=1"),
         build_edit_cell_template("C1", "y=2"),
         build_run_cells_template(["C1"]),
@@ -1088,10 +1090,17 @@ async def test_run_cell_report_row_missing_is_unverified_not_succeeded():
 async def test_delete_cell_ok():
     from marimo_inspection.tools import mutation
 
-    mock_cls = _mock_client(['{"status": "ok", "cell_id": "C1"}'])
+    # The pre-dispatch target validation reads the live cells first, so the
+    # mock answers with that read, then the delete, then the hash refresh.
+    mock_cls = _run_client(
+        _targets_result([("C1", None)]),
+        _Result(['{"status": "ok", "cell_id": "C1"}']),
+        _Result(["{}"]),
+    )
     try:
         result = await mutation.delete_cell("C1", server_url="u", session_id="s")
         assert result["status"] == "ok"
+        assert result["cell_id"] == "C1"
     finally:
         mock_cls.stop()
 
@@ -1169,3 +1178,188 @@ async def test_edit_cell_ok_when_unchanged():
     finally:
         mock_cls.stop()
         tracker.clear_session("s1")
+
+
+# ── F1/F4: mutation targets are structured refusals ───────────────────────
+
+
+def _targets_result(pairs):
+    """A live-cell-validation read, as `build_cell_targets_template` emits it.
+
+    ``pairs`` is ``(cell_id, name)`` per live cell; ``name`` may be None.
+    """
+    return _Result(
+        [
+            json.dumps(
+                {"targets": [{"cell_id": cid, "name": name} for cid, name in pairs]}
+            )
+        ]
+    )
+
+
+def _mutation_snippets(client):
+    """Dispatched snippets that queue a create/edit/delete write op."""
+    return [
+        s
+        for s in _executed(client)
+        if "ctx.create_cell(" in s or "ctx.delete_cell(" in s or "ctx.edit_cell(" in s
+    ]
+
+
+def _assert_cell_target_refusal(result, reason, **expected):
+    """Pin the shared structured cell/anchor-target refusal envelope."""
+    assert isinstance(result, dict), result
+    assert result["status"] == "error", result
+    assert result["reason"] == reason, result
+    assert result["error"], result
+    assert result["message"], result
+    assert result["target_resolved"] is False, result
+    assert result["operation_ran"] is False, result
+    assert result["state_changed"] is False, result
+    assert result["next_steps"], result
+    assert "Traceback" not in json.dumps(result), result
+    for key, value in expected.items():
+        assert result[key] == value, result
+
+
+async def test_delete_cell_absent_id_is_a_structured_refusal():
+    """F1: an absent delete target refuses before the write is dispatched.
+
+    The raw marimo `KeyError` (surfaced as
+    ``{"error": "Execution failed", "stderr": "Traceback…"}``) carried no
+    `status`/`reason`/target flags, so a caller branching on the documented
+    refusal vocabulary could not classify it.
+    """
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(_targets_result([("C1", None)]))
+    try:
+        result = await mutation.delete_cell(
+            "ZZZZ_NOPE", server_url="u", session_id="s1"
+        )
+        _assert_cell_target_refusal(
+            result,
+            "unknown_cell_ids",
+            cell_id="ZZZZ_NOPE",
+            unknown_cell_ids=["ZZZZ_NOPE"],
+        )
+        assert "not found" in result["message"], result
+        # Only the read-only validation ran, and no write was queued.
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+        assert _mutation_snippets(mock) == [], _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_create_cell_absent_after_anchor_is_a_structured_refusal():
+    """F4: an absent `after` anchor is a target problem, refused upfront."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(_targets_result([("C1", None)]))
+    try:
+        result = await mutation.create_cell(
+            "x = 1", after="ZZZZ_NOPE", server_url="u", session_id="s1"
+        )
+        _assert_cell_target_refusal(
+            result,
+            "unknown_cell_ids",
+            anchor="after",
+            anchor_cell_id="ZZZZ_NOPE",
+            unknown_cell_ids=["ZZZZ_NOPE"],
+        )
+        assert "not found" in result["message"], result
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+        assert _mutation_snippets(mock) == [], _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_create_cell_absent_before_anchor_is_a_structured_refusal():
+    """F4: the same refusal for an absent `before` anchor."""
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(_targets_result([("C1", "c1")]))
+    try:
+        result = await mutation.create_cell(
+            "x = 1", before="ZZZZ_NOPE", server_url="u", session_id="s1"
+        )
+        _assert_cell_target_refusal(
+            result,
+            "unknown_cell_ids",
+            anchor="before",
+            anchor_cell_id="ZZZZ_NOPE",
+            unknown_cell_ids=["ZZZZ_NOPE"],
+        )
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+        assert _mutation_snippets(mock) == [], _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_create_cell_with_both_anchors_refuses_without_any_session_work():
+    """F4: both anchors is input validation — nothing is resolved or queued.
+
+    marimo raises `RuntimeError: Cannot specify both 'before' and 'after'`
+    inside the scratchpad, so the caller saw the same raw traceback envelope.
+    """
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client()
+    try:
+        result = await mutation.create_cell(
+            "x = 1", after="A", before="B", server_url="u", session_id="s1"
+        )
+        _assert_cell_target_refusal(
+            result, "conflicting_anchors", after="A", before="B"
+        )
+        assert "both" in result["message"].lower(), result
+        # Refused before any session work at all.
+        assert mock.instance.execute.call_count == 0, _executed(mock)
+        assert mock.instance.resolve_session.call_count == 0
+    finally:
+        mock.stop()
+
+
+async def test_delete_cell_accepts_a_live_cell_name():
+    """Validation matches ids AND names, exactly as marimo's resolver does.
+
+    `ctx.delete_cell` resolves an id or a **name**, so a pre-dispatch check
+    that only compared ids would newly refuse a working name — a silent
+    narrowing of the tool's accepted targets.
+    """
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _targets_result([("C1", "named_cell")]),
+        _Result(['{"status": "ok", "cell_id": "C1"}']),
+        _Result(["{}"]),
+    )
+    try:
+        result = await mutation.delete_cell(
+            "named_cell", server_url="u", session_id="s1"
+        )
+        assert result["status"] == "ok", result
+        assert _mutation_snippets(mock), _executed(mock)
+    finally:
+        mock.stop()
+
+
+async def test_delete_cell_unreadable_target_census_refuses_structurally():
+    """A failed validation read is a refusal too — never a raw traceback.
+
+    When the live-cell read cannot be performed the target cannot be checked,
+    so nothing is dispatched; the refusal says so and keeps the same envelope.
+    """
+    from marimo_inspection.tools import mutation
+
+    mock = _run_client(
+        _Result(["down"], status="error", stderr=["Connection refused\n"])
+    )
+    try:
+        result = await mutation.delete_cell("C1", server_url="u", session_id="s1")
+        _assert_cell_target_refusal(result, "target_validation_failed", cell_id="C1")
+        assert "Connection refused" in result.get("stderr", ""), result
+        assert mock.instance.execute.call_count == 1, _executed(mock)
+        assert _mutation_snippets(mock) == [], _executed(mock)
+    finally:
+        mock.stop()

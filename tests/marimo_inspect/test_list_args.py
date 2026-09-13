@@ -39,6 +39,13 @@ def _make_session(session_id: str = "abc123"):
         ("true", ["true"]),  # JSON scalar (not a container) -> literal
         ("[true]", ["[true]"]),  # non-scalar elements -> literal
         ("[[1]]", ["[[1]]"]),  # nested -> literal
+        # F3: a blank string is this surface's own "not provided" convention
+        # (session_id/server_url default to ""), so it must mean "all" exactly
+        # like None/[]/"[]" — never one literal empty name, which is
+        # indistinguishable from "this notebook has no variables".
+        ("", []),
+        ("   ", []),
+        ("\t\n ", []),
     ],
 )
 def test_normalize_list_arg_shapes(value, expected):
@@ -114,3 +121,64 @@ async def test_json_string_cell_ids_reaches_the_cell_outputs_template():
     assert "cells" in result
     code = instance.execute.await_args.args[1]
     assert 'cell_ids = ["Xref"]' in code
+
+
+# ---------------------------------------------------------------------------
+# F3 — a blank string is "no filter", identical to the omitted argument.
+# ---------------------------------------------------------------------------
+
+
+async def test_blank_variable_names_takes_the_all_variables_path():
+    """`variable_names=""` builds the unfiltered lookup, not `[""]`.
+
+    The blank string used to normalize to one literal empty name, whose lookup
+    legitimately finds nothing — a payload indistinguishable from "this
+    notebook has no variables". It must reach the template as the empty list
+    the "all" path keys on.
+    """
+    from marimo_inspection.tools.variables import get_variables
+
+    with patch("marimo_inspection.tools.variables.MarimoClient") as cls:
+        instance = MagicMock()
+        instance.resolve_session = AsyncMock(return_value=_make_session())
+        instance.execute = AsyncMock(
+            return_value=MagicMock(
+                status="ok", stdout=['{"variables": {}, "tables": {}}']
+            )
+        )
+        cls.return_value = instance
+
+        result = await get_variables(
+            session_id="abc123",
+            variable_names="   ",
+            server_url="http://127.0.0.1:8090",
+        )
+
+    assert "variables" in result
+    code = instance.execute.await_args.args[1]
+    assert "target_names = []" in code
+    assert 'target_names = [""]' not in code
+
+
+async def test_blank_cell_ids_takes_the_all_cells_path():
+    """`cell_ids=""` returns data for all cells, like `[]` and `"[]"`."""
+    from marimo_inspection.tools.cells import get_cell_data
+
+    with patch("marimo_inspection.tools.cells.MarimoClient") as cls:
+        instance = MagicMock()
+        instance.resolve_session = AsyncMock(return_value=_make_session())
+        instance.execute = AsyncMock(
+            return_value=MagicMock(status="ok", stdout=['{"data": []}'])
+        )
+        cls.return_value = instance
+
+        result = await get_cell_data(
+            session_id="abc123",
+            cell_ids="",
+            server_url="http://127.0.0.1:8090",
+        )
+
+    assert "data" in result
+    code = instance.execute.await_args.args[1]
+    assert "cell_ids = []" in code
+    assert 'cell_ids = [""]' not in code

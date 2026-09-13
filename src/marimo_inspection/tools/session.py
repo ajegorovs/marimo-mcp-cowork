@@ -64,6 +64,15 @@ from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient, SessionInfo
 from marimo_inspection.discovery import discover_servers
+from marimo_inspection.tools.access import (
+    ACCESS_REASONS,
+    AccessProbe,
+    access_next_steps,
+    access_refusal_message,
+    classify_denied_census,
+    http_error_body,
+    probe_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -356,14 +365,27 @@ async def _query_server(url: str) -> _ServerQuery:
     """Ask one server for its live sessions, classifying any failure.
 
     Read-only: nothing is written on either outcome. A transport failure is
-    reported as ``server_unreachable`` and an HTTP/parse failure as
+    reported as ``server_unreachable`` and a non-auth HTTP/parse failure as
     ``server_query_failed``, so the caller can distinguish "server is down"
-    from "server answered badly".
+    from "server answered badly". A 401/403 is **not** read as a generic query
+    failure: a census denial needs the read-scope probe to say whether the
+    server is auth-gated or merely missing edit scope, so it is classified by
+    ``classify_denied_census`` (``auth_required`` / ``edit_scope_required`` /
+    ``session_census_denied``).
     """
     client = MarimoClient(url)
     try:
         sessions = await client.list_sessions()
     except httpx2.HTTPStatusError as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", 0)
+        if status in (401, 403):
+            probe = await classify_denied_census(
+                client,
+                url,
+                denied_status=status,
+                denied_detail=http_error_body(exc),
+            )
+            return _ServerQuery(url=url, reason=probe.reason, detail=probe.detail)
         return _ServerQuery(
             url=url, reason=_REASON_SERVER_QUERY_FAILED, detail=str(exc)
         )
@@ -379,8 +401,18 @@ async def _query_server(url: str) -> _ServerQuery:
 
 
 def _failure_headline(failures: tuple[tuple[str, str], ...]) -> str:
-    """Pick the reason that describes a run where nothing answered."""
+    """Pick the reason that describes a run where nothing answered.
+
+    When every surveyed server refused its census, an access denial is the
+    headline rather than a generic query failure — but only when they *agree*:
+    a mix of access and transport/query outcomes stays ``server_query_failed``
+    so the reason is never picked from a subset.
+    """
     reasons = {reason for _, reason in failures}
+    if len(reasons) == 1:
+        only = next(iter(reasons))
+        if only in ACCESS_REASONS:
+            return only
     if reasons == {_REASON_SERVER_UNREACHABLE}:
         return _REASON_SERVER_UNREACHABLE
     return _REASON_SERVER_QUERY_FAILED
@@ -489,6 +521,36 @@ async def lookup_session(session_id: str, server_url: str = "") -> SessionLookup
     )
 
 
+def _access_refusal(
+    probe: AccessProbe,
+    *,
+    session_id: str,
+    server_url: str,
+) -> dict[str, Any]:
+    """Build the shared target refusal for a classified access denial.
+
+    Same envelope as every other target refusal (``target_resolved: false``,
+    ``operation_ran: false``, ``state_changed: false``) — plus the probe
+    evidence (``read_scope_status_code`` / ``page_kind``) so the reason is
+    auditable. The census was denied, so it is not readable:
+    ``available_sessions`` is empty and ``available_sessions_readable`` is
+    false, never an empty list pretending to be a real census.
+    """
+    return _target_refusal(
+        probe.reason,
+        (
+            f"{access_refusal_message(probe.reason, server_url, detail=probe.detail)} "
+            f"{_OPERATION_NOT_RUN}"
+        ),
+        session_id=session_id,
+        server_url=server_url,
+        available_sessions=[],
+        available_sessions_readable=False,
+        next_steps=access_next_steps(probe.reason),
+        **probe_evidence(probe),
+    )
+
+
 def _session_refusal(
     session_id: str,
     requested_url: str,
@@ -510,6 +572,11 @@ def _session_refusal(
             ),
             "Use list_active_notebooks to see each session's notebook path.",
         ]
+    elif lookup.reason in ACCESS_REASONS:
+        message = access_refusal_message(
+            lookup.reason, requested_url, detail=lookup.detail
+        )
+        next_steps = access_next_steps(lookup.reason)
     elif lookup.reason in (
         _REASON_SERVER_UNREACHABLE,
         _REASON_SERVER_QUERY_FAILED,
@@ -655,6 +722,13 @@ async def set_active_session(
       answers with an error (`reason: server_query_failed`) is reported
       explicitly — a query failure is never treated as "not found", and no
       binding is created in any of these cases.
+    * A census denied with HTTP 401/403 is classified, not blurred: the id
+      cannot be validated, so the bind is refused with `reason:
+      edit_scope_required` when a read-scope endpoint proves the server is
+      readable (the run-mode case), `reason: auth_required` when the read-scope
+      probe is denied with the same auth body, and `reason:
+      session_census_denied` when the probes cannot tell the two apart — the
+      same reasons the targeting tools and `restart_kernel` report.
     * A refusal reports `bound: false`, `state_changed: false`, the servers it
       queried (`servers_queried`) or failed on (`servers_failed`), and the
       sessions it did see (`available_sessions`), plus `next_steps`. An empty
@@ -758,10 +832,13 @@ async def set_active_session(
 # returns either the resolved (client, session) pair or one common refusal
 # payload, and **every refusal is built before any read or write operation**.
 #
-# Deliberately out of scope here: HTTP 401/403. The auth/scope taxonomy is a
-# follow-up decision (does a run-mode scope failure share `auth_required` with a
-# true auth failure, or get its own reason?), so this resolver closes the client
-# and re-raises `HTTPStatusError` unchanged rather than picking one.
+# HTTP 401/403 is classified, not propagated and not read as a generic query
+# failure. Pinned marimo 0.24.0 serves an API 403 as 401
+# `{"detail":"Authorization header required"}` and strips WWW-Authenticate, so
+# a denied census cannot say by itself whether the server is auth-gated or the
+# census merely needs edit scope. `classify_denied_census` (tools/access.py)
+# resolves it with a read-scope probe, and the refusal reason is
+# `auth_required`, `edit_scope_required` or `session_census_denied`.
 
 
 @dataclass(frozen=True)
@@ -936,8 +1013,13 @@ async def resolve_target(
       session is absent": absence is concluded only from a census that was
       successfully read, so a malformed census body is a query failure, not
       `session_not_found`.
-    - HTTP 401/403 is **not** classified here: it propagates unchanged so the
-      follow-up auth-taxonomy decision is not pre-empted.
+    - HTTP 401/403 is classified with a read-scope probe, never propagated and
+      never folded into `server_query_failed`: `edit_scope_required` when
+      `GET /api/version` is readable (the run-mode census denial — the user
+      cannot fix it by authenticating), `auth_required` when the read-scope
+      probe is denied with the same body, and `session_census_denied` when the
+      probes cannot tell the two apart. All three carry
+      `read_scope_status_code` and `page_kind` as their evidence.
 
     Every refusal carries `available_sessions` plus
     `available_sessions_readable`, which is true only when a census was
@@ -1021,11 +1103,23 @@ async def resolve_target(
         session = await client.resolve_session(session_id=sid)
     except httpx2.HTTPStatusError as exc:
         status = getattr(getattr(exc, "response", None), "status_code", 0)
-        await _close_quietly(client)
         if status in (401, 403):
-            # Deliberately unclassified: the follow-up wave decides whether a
-            # run-mode scope failure and a true auth failure share a reason.
-            raise
+            # A denied census cannot classify itself: pinned marimo 0.24.0
+            # serves an API 403 as 401 with one auth body and strips
+            # WWW-Authenticate, so a run-mode scope denial and a true auth gate
+            # look identical here. The read-scope probe tells them apart before
+            # the client is closed.
+            probe = await classify_denied_census(
+                client,
+                url,
+                denied_status=status,
+                denied_detail=http_error_body(exc),
+            )
+            await _close_quietly(client)
+            return TargetResolution(
+                refusal=_access_refusal(probe, session_id=sid, server_url=url)
+            )
+        await _close_quietly(client)
         return TargetResolution(
             refusal=_target_refusal(
                 REASON_SERVER_QUERY_FAILED,

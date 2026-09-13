@@ -120,17 +120,34 @@ def create_server(
         only. `status` is `ok` only when every requested target is idle,
         `partial` when any target failed or did not finish, and `error` for
         validation/planning/reporting failures (`cell_id_required`,
-        `invalid_mode`, `cell_id_not_allowed`, `unknown_cell_ids`,
-        `graph_unpopulated`, `planning_failed`, `reporting_failed`), each
-        carrying a top-level `error` string plus the structured
-        `status`/`reason`; a failing run reports `error`/`execution_error` +
-        `stderr`.
+        `cell_id_not_allowed`, `unknown_cell_ids`, `graph_unpopulated`,
+        `planning_failed`, `reporting_failed`), each carrying a top-level
+        `error` string plus the structured `status`/`reason`; a failing run
+        reports `error`/`execution_error` + `stderr`. `mode` is a literal enum
+        in this tool's published schema, so an out-of-enum value is rejected by
+        the framework (`literal_error`) before the handler runs — no MCP caller
+        receives a structured payload for it.
+
+        A **cell** reference is also a target: `create_cell`'s `after`/`before`
+        anchor and `delete_cell`'s `cell_id` accept a live cell id **or name**,
+        and a reference that is not a live cell comes back as the same
+        structured refusal family (`status: error` with `target_resolved`,
+        `operation_ran` and `state_changed` all false, the echoed reference, and
+        `reason: unknown_cell_ids`) — never a raw marimo traceback. Supplying
+        both `before` and `after` is `reason: conflicting_anchors`; a validation
+        read that fails is `reason: target_validation_failed`. No create/edit/
+        delete scratchpad is generated on a refusal.
 
         Widget interaction: `set_ui_value` sets a live UI element's value by
         its variable name. Value shapes are per widget and are never coerced
-        (`dropdown` takes its option key inside a one-element list); a
+        (`dropdown` takes its option key inside a **one-element** list, and any
+        list whose length is not exactly one is refused; `multiselect` takes
+        any number of keys, an empty list included); a
         mismatched shape is refused with the corrected payload in
-        `did_you_mean`, and the element's value is read back so `status: ok`
+        `did_you_mean` when one particular replacement can be inferred (the
+        field is absent, and the message says so, when it cannot — e.g. an
+        empty list against a dropdown with several options), and the element's
+        value is read back so `status: ok`
         means the widget actually moved. A `button`/`run_button` is the
         exception. Both expose a frontend click counter (`0` is the
         initialization sentinel, for which marimo processes no click), but
@@ -148,6 +165,12 @@ def create_server(
         with `handler_ran: true`, and a marker that cannot be attributed to
         the target is a generic `ui_update_failed`). It is a narrow widget tool
         and accepts NO source code.
+
+        `lint_notebook` is static and in-process. Each diagnostic locates a
+        position in the notebook **source file** — `filename`, `line`,
+        `column` — plus `cell_index`, the flagged cell's positional index in
+        the parsed document. `cell_index` is **not** a live cell id: read live
+        ids from `get_cell_map` before calling a live-cell tool.
 
         Lifecycle: `restart_kernel` closes the current kernel and
         re-materializes a fresh one, keeping the server process (and any open
@@ -167,9 +190,15 @@ def create_server(
         confirming the expected session came back — `session_not_rematerialized`
         / `server_sessionless` mean the kernel was closed and no usable session
         was confirmed (the server may be at zero sessions). A transport failure
-        on the restart POST reports `state_changed: null` (outcome unknown),
-        and a 403 is `edit_required` (the endpoint is served in `edit` mode
-        only).""",
+        on the restart POST reports `state_changed: null` (outcome unknown).
+        A refused session census is classified by a read-scope probe, never
+        guessed from the denial: `edit_scope_required` when `GET /api/version`
+        is readable (a `marimo run` server — authenticating would not help),
+        `auth_required` when the read-scope probe is denied with the same auth
+        body, and `session_census_denied` when the probes cannot tell the two
+        apart; a literal 403 from the endpoint stays `edit_required`
+        (defensive — pinned marimo 0.24.0 serves an API 403 as the 401 auth
+        body instead).""",
     )
 
     # Register tools

@@ -101,10 +101,20 @@ answers:
    or write runs. An unreadable census is `server_query_failed`, never a
    not-found, and transport failures are `server_unreachable`.
    See `reference://marimo-inspect/fallbacks-and-limits` §"Target errors are
-   payloads, not tool exceptions". **The rest of this item remains open:**
-   nothing yet pins which server a *bound* session belongs to, and remote
-   hosting itself is an undecided design question (see Status above), so this
-   is not a closure of the remote topology.
+   payloads, not tool exceptions". ✓ **Sub-question resolved (2026-09-13,
+   Task 01):** the **auth-versus-edit-scope taxonomy** is decided and
+   implemented. A denied census is classified by a read-scope probe
+   (`GET /api/version`), never by `WWW-Authenticate` (stripped) or a byte
+   count: `edit_scope_required` (readable read-scope endpoint — the run-mode
+   case, which authentication cannot fix), `auth_required` (read-scope probe
+   denied with the same body), `session_census_denied` (probes undecided,
+   conservative). Target resolution, `set_active_session` and `restart_kernel`
+   all speak that vocabulary, and a denied census reports
+   `available_sessions_readable: false` rather than an empty list. **The rest
+   of this item remains open:** nothing yet pins which server a *bound*
+   session belongs to, and remote hosting itself is an undecided design
+   question (see Status above), so this is not a closure of the remote
+   topology.
 5. **Latency and timeouts.** Templates round-trip scratchpad execution over
    `POST /api/kernel/execute` and parse an SSE stream. Every tool call becomes a
    WAN round-trip. The harness default `toolCallTimeoutMs` is 60000 — long kernel
@@ -162,14 +172,21 @@ but the *auth* question in item 2 remains the actual blocker, not Python version
   reuses `_check_server()`.
 - **Auth.** If we must stop using `--no-token`: is there a way to pass marimo's
   auth through `MarimoClient` at all today? ❓ unverified — probably the single
-  most important question in this doc, because it gates item 3 above.
+  most important question in this doc, because it gates item 3 above. Partially
+  answered (2026-09-13, Task 01): the client can now *detect* an auth gate and
+  say so (`reason: auth_required`, from a refused read-scope probe) instead of
+  blaming a missing edit scope — but it still cannot authenticate, so remote
+  hosting behind auth remains open.
 - **Where the version contract lives.** If R2 is the answer to the pin problem,
   the *host* needs 0.24.x and consumers need nothing — that flips the consumer
   story in `harness-integration/README.md` (they'd configure a URL, not a
   dependency). Worth writing down before it becomes implicit.
 - **Failure semantics.** What a tool call should return when the remote kernel is
-  unreachable vs authenticated-wrong vs slow-but-alive. Currently `{error,
-  stderr}`-ish dicts with no such distinction.
+  unreachable vs authenticated-wrong vs slow-but-alive. ✓ **Partially resolved
+  (2026-09-13, Task 01):** unreachable (`server_unreachable`), auth-gated
+  (`auth_required`), and scope-denied (`edit_scope_required`) are now distinct
+  structured reasons, with `session_census_denied` as the conservative fallback;
+  slow-but-alive still has no dedicated reason.
 - **Multi-tenancy.** Two humans, one shared server: sessions are per-server, so
   this needs a real answer or an explicit "single-user only" non-goal.
 

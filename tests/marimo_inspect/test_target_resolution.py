@@ -22,8 +22,14 @@ of the twelve:
   absence is only ever concluded from a census that was successfully read;
 * a transport failure is ``server_unreachable``;
 * a non-auth HTTP/parse/type query failure is ``server_query_failed``;
-* HTTP 401/403 stay **unclassified** and propagate unchanged (negative
-  control: this wave deliberately does not choose the auth/scope taxonomy);
+* HTTP 401/403 is **classified** by the shared read-scope probe (Task 01), not
+  propagated and not folded into ``server_query_failed``:
+  ``edit_scope_required`` when ``GET /api/version`` is readable (the run-mode
+  census denial), ``auth_required`` when the read-scope probe is denied with
+  the same auth body, and ``session_census_denied`` when the probes cannot tell
+  the two apart — each carrying ``read_scope_status_code``/``page_kind`` as its
+  evidence and a false ``available_sessions_readable`` (a denied census was
+  never read);
 * no refusal runs a read or a write (``operation_ran: false``, and the real
   stub sees no POST / the mocked execute seam is never reached).
 
@@ -31,8 +37,10 @@ The session/server cases drive the real handler against a loopback HTTP stub
 through the real ``MarimoClient`` (no mocks below the tool boundary); the
 binding and mocked cases pin the resolver's own branches and the untouched
 execution seam. The shared *pre-resolution* matrices (``session_required``,
-``binding_ambiguous``, 401/403) run one read and one mutation handler because
-the inventory test proves all twelve take the same path.
+``binding_ambiguous``) run one read and one mutation handler because the
+inventory test proves all twelve take the same path; the access-denial matrix
+keeps the same representative pair (the classification itself is fanned out in
+``test_access.py``).
 """
 
 from __future__ import annotations
@@ -45,7 +53,6 @@ import socket
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx2
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -118,31 +125,75 @@ async def _call(name: str, module_path: str, kwargs: dict, **overrides):
 # ---------------------------------------------------------------------------
 
 
+#: The exact body real marimo 0.24.0 answers for both an auth gate and an API
+#: 403 (edit-scope) denial.
+AUTH_BODY = b'{"detail":"Authorization header required"}'
+
+#: A served app shell: its skew-token marker proves the page is the notebook app.
+APP_SHELL_HTML = b'<html><marimo-server-token data-token="tok" hidden></html>'
+
+#: The measured auth-on `GET /` answer: a 303 to the login form.
+LOGIN_LOCATION = "/auth/login?next=%2F"
+
+
 class _StubHandler(http.server.BaseHTTPRequestHandler):
-    """Serve GET /api/sessions; count (and refuse) every POST."""
+    """Serve GET /api/sessions, /api/version and / from a fixed recipe.
+
+    Every POST is counted and refused, so a test can prove no kernel/execute
+    call happened on a refusal.
+    """
 
     @property
     def _stub(self) -> StubMarimoServer:
         return self.server  # type: ignore[return-value]
 
-    def _respond(self, code: int, body: bytes, content_type: str) -> None:
+    def _respond(
+        self,
+        code: int,
+        body: bytes,
+        content_type: str,
+        *,
+        location: str = "",
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if location:
+            self.send_header("Location", location)
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if self.path.split("?")[0] == "/api/sessions":
+        path = self.path.split("?")[0]
+        if path == "/api/sessions":
             self._stub.sessions_calls += 1
             if self._stub.sessions_status != 200:
                 self._respond(
                     self._stub.sessions_status,
-                    b"stub: sessions unavailable",
-                    "text/plain",
+                    self._stub.sessions_status_body,
+                    "application/json",
                 )
                 return
             self._respond(200, self._stub.sessions_payload(), "application/json")
+            return
+        if path == "/api/version":
+            self._stub.version_calls += 1
+            self._respond(
+                self._stub.version_status,
+                self._stub.version_body,
+                "application/json"
+                if self._stub.version_status == 200
+                else "text/plain",
+            )
+            return
+        if path == "/":
+            self._stub.page_calls += 1
+            self._respond(
+                self._stub.page_status,
+                self._stub.page_body,
+                "text/html",
+                location=self._stub.page_location,
+            )
             return
         self._respond(404, b"stub: no such endpoint", "text/plain")
 
@@ -157,11 +208,12 @@ class _StubHandler(http.server.BaseHTTPRequestHandler):
 
 
 class StubMarimoServer(http.server.ThreadingHTTPServer):
-    """A loopback stub serving ``GET /api/sessions`` from a fixed recipe.
+    """A loopback stub serving the census plus its read-scope probes.
 
     One stub covers every census shape a test needs — status code plus either
-    an advertised id set or a raw body — so a malformed/empty census does not
-    need a second server implementation.
+    an advertised id set or a raw body — and, for the access-denial matrix, the
+    two probes the classifier reads: ``GET /api/version`` (read scope) and
+    ``GET /`` (semantic page markers).
     """
 
     daemon_threads = True
@@ -171,6 +223,12 @@ class StubMarimoServer(http.server.ThreadingHTTPServer):
         session_ids: tuple[str, ...] = (),
         sessions_status: int = 200,
         sessions_body: bytes | None = None,
+        sessions_status_body: bytes = AUTH_BODY,
+        version_status: int = 200,
+        version_body: bytes = b"0.24.0",
+        page_status: int = 404,
+        page_body: bytes = b"stub: no such endpoint",
+        page_location: str = "",
     ) -> None:
         super().__init__(("127.0.0.1", 0), _StubHandler)
         self.session_ids = session_ids
@@ -179,7 +237,16 @@ class StubMarimoServer(http.server.ThreadingHTTPServer):
         #: from ``session_ids``. Lets a test serve a truncated, non-UTF-8 or
         #: non-object body at HTTP 200.
         self.sessions_body = sessions_body
+        #: Body for a non-200 census (defaults to marimo's real denial body).
+        self.sessions_status_body = sessions_status_body
+        self.version_status = version_status
+        self.version_body = version_body
+        self.page_status = page_status
+        self.page_body = page_body
+        self.page_location = page_location
         self.sessions_calls = 0
+        self.version_calls = 0
+        self.page_calls = 0
         self.post_calls = 0
 
     def sessions_payload(self) -> bytes:
@@ -212,11 +279,13 @@ def stub_server():
         *session_ids: str,
         sessions_status: int = 200,
         sessions_body: bytes | None = None,
+        **kwargs: object,
     ) -> StubMarimoServer:
         server = StubMarimoServer(
             tuple(session_ids),
             sessions_status=sessions_status,
             sessions_body=sessions_body,
+            **kwargs,  # type: ignore[arg-type]
         )
         threading.Thread(
             target=server.serve_forever,
@@ -459,28 +528,137 @@ async def test_query_failure_is_server_query_failed(
 
 
 # ---------------------------------------------------------------------------
-# 6. Negative control: 401/403 stay unclassified and propagate.
+# 6. Access denials are classified by a read-scope probe (Task 01), not raw.
+#
+# Pinned marimo 0.24.0 serves an API 403 as 401 {"detail":"Authorization
+# header required"} and strips WWW-Authenticate, so a denied census cannot say
+# by itself whether the server is auth-gated or the census merely needs edit
+# scope. Every row below is a real server shape; the classifier rows are driven
+# end-to-end through the real handler against the stub.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("name", "module_path", "kwargs"), REPRESENTATIVE, ids=REPRESENTATIVE_IDS
+    ("row", "expected"),
+    [
+        pytest.param(
+            "run_mode_readable",
+            "edit_scope_required",
+            id="run-mode-version-200",
+        ),
+        pytest.param(
+            "auth_gate_same_body",
+            "auth_required",
+            id="auth-on-version-401-same-body",
+        ),
+        pytest.param(
+            "ambiguous_app_shell",
+            "edit_scope_required",
+            id="ambiguous-page-app-shell",
+        ),
+        pytest.param(
+            "ambiguous_login_page",
+            "auth_required",
+            id="ambiguous-page-login",
+        ),
+        pytest.param(
+            "ambiguous_unreadable",
+            "session_census_denied",
+            id="ambiguous-both-probes-fail",
+        ),
+    ],
 )
-@pytest.mark.parametrize("status", [401, 403], ids=["401", "403"])
-async def test_auth_statuses_propagate_unclassified(
-    name, module_path, kwargs, stub_server, status
-):
-    """401/403 must NOT be mapped onto auth_required or server_query_failed.
+async def test_access_denials_are_classified_by_probe(row, expected, stub_server):
+    """Each real denial shape maps to its classified reason, with no operation.
 
-    This wave deliberately leaves the auth/scope taxonomy to a follow-up, so
-    the status error propagates unchanged and nothing is executed.
+    The census is denied (401), the probe recipe decides the reason, and the
+    refusal must be the common target-refusal envelope: the census was never
+    read (`available_sessions` empty, `available_sessions_readable: false`),
+    the probe evidence is reported, and nothing was POSTed.
     """
-    stub = stub_server("s_live", sessions_status=status)
+    recipes = {
+        "run_mode_readable": {"version_status": 200},
+        "auth_gate_same_body": {
+            "version_status": 401,
+            "version_body": AUTH_BODY,
+        },
+        "ambiguous_app_shell": {
+            "version_status": 404,
+            "page_status": 200,
+            "page_body": APP_SHELL_HTML,
+        },
+        "ambiguous_login_page": {
+            "version_status": 404,
+            "page_status": 303,
+            "page_location": LOGIN_LOCATION,
+        },
+        "ambiguous_unreadable": {"version_status": 404},
+    }
+    stub = stub_server(sessions_status=401, **recipes[row])
 
-    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
-        await _call(name, module_path, kwargs, session_id="s_live", server_url=stub.url)
+    for name, module_path, kwargs in REPRESENTATIVE:
+        result = await _call(
+            name, module_path, kwargs, session_id="s_live", server_url=stub.url
+        )
+        _assert_refusal(result, expected)
+        assert result["server_url"] == stub.url, result
+        assert result["available_sessions"] == [], result
+        assert result["available_sessions_readable"] is False, result
+        assert result["read_scope_status_code"] == recipes[row]["version_status"], (
+            result
+        )
+        assert result["target_resolved"] is False, result
+        # The reason must be actionable: edit-scope refusals name edit mode,
+        # auth refusals name auth.
+        if expected == "edit_scope_required":
+            assert "edit" in result["message"].lower(), result
+        if expected == "auth_required":
+            assert "auth" in result["message"].lower(), result
 
-    assert excinfo.value.response.status_code == status
+    assert stub.post_calls == 0, "a refusal POSTed"
+    # One denied census read per handler call, and no discriminating re-read:
+    # the denial is classified from the probes, never by rereading the census.
+    assert stub.sessions_calls == len(REPRESENTATIVE), stub.sessions_calls
+
+
+async def test_run_mode_denial_is_not_reported_as_auth_required(stub_server):
+    """The bug this task fixes: run mode must not be blamed on auth.
+
+    A run-mode server answers the census 401 with the *same* auth body an
+    auth-on server uses; only the readable read-scope endpoint separates them.
+    Reporting ``auth_required`` there tells the user to authenticate, which
+    cannot fix a missing edit scope.
+    """
+    stub = stub_server(sessions_status=401, version_status=200)
+
+    result = await _call(
+        "get_cell_data",
+        "marimo_inspection.tools.cells",
+        {},
+        session_id="s_live",
+        server_url=stub.url,
+    )
+
+    assert result["reason"] == "edit_scope_required", result
+    assert result["reason"] != "auth_required"
+    assert stub.version_calls == 1, stub.version_calls
+    assert stub.page_calls == 0, "the readable probe already decided"
+
+
+async def test_parameterized_denied_status_is_classified_not_propagated(stub_server):
+    """A denied census is a payload now — no HTTPStatusError escapes a tool."""
+    stub = stub_server(sessions_status=403, version_status=200)
+
+    result = await _call(
+        "edit_cell",
+        "marimo_inspection.tools.mutation",
+        {"cell_id": "c1", "source": "x = 2"},
+        session_id="s_live",
+        server_url=stub.url,
+    )
+
+    _assert_refusal(result, "edit_scope_required")
+    assert result["error"], result
     assert stub.post_calls == 0
 
 

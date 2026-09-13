@@ -5,6 +5,7 @@ Handles communication with a running marimo server via its HTTP API:
 - POST /api/kernel/execute (scratchpad execution)
 - GET /sse (the frontend handshake that materializes a kernel session)
 - POST /api/kernel/restart_session (kernel restart; skew-token protected)
+- POST /api/kernel/instantiate (original-cell execution; skew-token protected)
 - SSE stream parsing (execution output, kernel-ready)
 
 Skew protection (the `Marimo-Server-Token` header)
@@ -21,8 +22,11 @@ it with one `GET /` — the same value the frontend sends as
 `GET /` carries the marker; `POST /api/kernel/restart_session` answers 200
 `{"success": true}` with both headers, 401 `Missing server token` / `Invalid
 server token` without a valid one, and 500 `Invalid session id: …` / `Missing
-Marimo-Session-Id header` for a bad or missing session header. A 403 (the
-endpoint is served in `edit` mode only) is classified `edit_required`. A
+`Marimo-Session-Id header` for a bad or missing session header. A literal 403
+(the endpoint is served in `edit` mode only) is classified `edit_required` —
+kept defensively, because measured marimo 0.24.0 converts an API 403 into the
+401 auth body rather than serving the 403, and a run-mode server is caught
+earlier with `edit_scope_required` (see `marimo_inspection.tools.access`). A
 restart only **closes** the session: a replacement kernel exists only after a
 client reconnects through `GET /sse` (see
 :meth:`MarimoClient.materialize_session`).
@@ -54,6 +58,18 @@ RESTART_PATH = "/api/kernel/restart_session"
 #: The frontend handshake that materializes (or reconnects) a session.
 SSE_PATH = "/sse"
 
+#: The original-cell execution endpoint. `/sse` materializes a session but runs
+#: no cell; this POST is the second half of the frontend's connect sequence
+#: (skew-token protected, `edit` scope only).
+INSTANTIATE_PATH = "/api/kernel/instantiate"
+
+#: The unauthenticated read-scope endpoint the auth/scope classifier probes
+#: (see ``marimo_inspection.tools.access``). Measured on marimo 0.24.0: it
+#: answers 200 on a run-mode server whose ``/api/sessions`` census is denied for
+#: lack of edit scope, and 401 with the same auth body when the server is
+#: auth-gated — which is what separates a scope denial from an auth gate.
+VERSION_PATH = "/api/version"
+
 
 class SkewTokenUnavailable(RuntimeError):
     """The server exposed no skew-protection token over HTTP.
@@ -78,6 +94,50 @@ def _skew_token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
 
 
+def page_carries_skew_token(text: str) -> bool:
+    """True when served HTML carries marimo's app-shell token marker.
+
+    The marker (``<marimo-server-token data-token="…">``) is a *semantic* page
+    fact: it is served by the notebook app and absent from the login page, so
+    the auth/scope classifier can tell the two apart without guessing from a
+    response header or a byte count.
+    """
+    return _SKEW_TOKEN_RE.search(text) is not None
+
+
+@dataclass(frozen=True)
+class ProbeResponse:
+    """One read-scope probe's answer, never an exception.
+
+    ``status_code`` is 0 when the request never produced an HTTP answer
+    (``transport_failed`` true); otherwise the server's status. ``detail`` is
+    the response body (truncated), which is what the classifier compares for
+    the marimo API auth body.
+    """
+
+    status_code: int = 0
+    detail: str = ""
+    transport_failed: bool = False
+
+
+@dataclass(frozen=True)
+class RootPageResponse:
+    """A raw ``GET /`` observation for the auth/scope classifier.
+
+    Deliberately raw: the classifier reads the status, the (unfollowed)
+    redirect ``location`` and the body markers. The redirect is *not* followed,
+    because the 303's ``location`` is itself the evidence — following it would
+    replace the marker with a login page and hide which of the two it was.
+    ``detail`` carries the transport failure text when there was no answer.
+    """
+
+    status_code: int = 0
+    body: str = ""
+    location: str = ""
+    transport_failed: bool = False
+    detail: str = ""
+
+
 @dataclass(frozen=True)
 class RestartOutcome:
     """The classified result of `POST /api/kernel/restart_session`.
@@ -95,6 +155,25 @@ class RestartOutcome:
     token_used: bool = False
     token_refreshed: bool = False
     token_fingerprint: str = ""
+
+
+@dataclass(frozen=True)
+class InstantiateOutcome:
+    """The classified result of `POST /api/kernel/instantiate`.
+
+    ``reason`` is empty exactly when ``ok``. A 200 is only ``ok`` when the
+    server's own body reports ``success`` — the status alone is not taken as
+    proof. ``token_used`` records whether a scraped skew-protection token was
+    sent, ``token_refreshed`` whether the single retry after an
+    `Invalid server token` used a re-scraped one.
+    """
+
+    ok: bool
+    reason: str = ""
+    status_code: int = 0
+    detail: str = ""
+    token_used: bool = False
+    token_refreshed: bool = False
 
 
 @dataclass
@@ -362,16 +441,56 @@ class MarimoClient:
             await self.skew_protection_token(refresh=refresh)
         )
 
+    async def probe_version(self) -> ProbeResponse:
+        """Read the unauthenticated read-scope endpoint, never raising.
+
+        ``GET /api/version`` is the probe the auth/scope classifier builds on:
+        on a run-mode server the session census is denied for lack of edit
+        scope while this answers 200, so a 200 here proves the server is
+        reachable and readable without auth. An auth-gated server denies it
+        with the same body it uses for the census (401
+        ``{"detail":"Authorization header required"}``). A 404/500 or a
+        transport failure is reported as-is, never guessed at.
+        """
+        client = await self._get_client()
+        try:
+            response = await client.get(f"{self._url}{VERSION_PATH}")
+        except (httpx.TransportError, OSError) as exc:
+            return ProbeResponse(transport_failed=True, detail=str(exc))
+        return ProbeResponse(
+            status_code=response.status_code, detail=response.text[:400]
+        )
+
+    async def probe_root_page(self) -> RootPageResponse:
+        """Fetch the served landing page for semantic classification.
+
+        ``follow_redirects=False`` on purpose: an auth-enabled server answers
+        ``303`` with ``location: /auth/login?…`` (measured on 0.24.0), and that
+        redirect *is* the login-page evidence — following it would swap the
+        app-shell marker for a login form and lose the distinction. A
+        transport failure is reported, never raised.
+        """
+        client = await self._get_client()
+        try:
+            response = await client.get(f"{self._url}/", follow_redirects=False)
+        except (httpx.TransportError, OSError) as exc:
+            return RootPageResponse(transport_failed=True, detail=str(exc))
+        return RootPageResponse(
+            status_code=response.status_code,
+            body=response.text[:20000],
+            location=response.headers.get("location", ""),
+        )
+
     async def _post_restart(self, session_id: str, token: str) -> RestartOutcome:
         """One POST to the restart endpoint, classified from its status/body.
 
         Verified rows (marimo 0.24.0): 200 `{"success": true}`; 401
         `Missing server token` / `Invalid server token`; 500
-        `Invalid session id: …` / `Missing Marimo-Session-Id header`; 403
-        (`edit_required` — the endpoint is served in `edit` mode only); any
-        other status is `restart_failed`; a transport error is
-        `server_unreachable`. A 500 kills that HTTP connection, so the caller
-        must verify on a fresh client.
+        `Invalid session id: …` / `Missing Marimo-Session-Id header`; a literal
+        403 (`edit_required` — defensive: 0.24.0 converts an API 403 into the
+        401 auth body); any other status is `restart_failed`; a transport error
+        is `server_unreachable`. A 500 kills that HTTP connection, so the
+        caller must verify on a fresh client.
         """
         headers = {SESSION_HEADER: session_id}
         if token:
@@ -435,8 +554,10 @@ class MarimoClient:
         token` (the server was relaunched and the token rotated) triggers
         exactly one re-scrape and retry. A 500 is classified rather than
         retried, because marimo poisons that HTTP connection — verify on a
-        fresh client. A 403 is classified `edit_required` (the endpoint is
-        served in `edit` mode only) and is not retried.
+        fresh client. A literal 403 is classified `edit_required` (defensive:
+        the endpoint is served in `edit` mode only, but 0.24.0 serves an API
+        403 as the 401 auth body instead, and a run-mode server is normally
+        refused earlier with `edit_scope_required`) and is not retried.
 
         This endpoint only **closes** the session: no replacement kernel is
         spawned until a client reconnects through `/sse`, so a caller must
@@ -465,6 +586,191 @@ class MarimoClient:
                     token_fingerprint="",
                 )
             retry = await self._post_restart(session_id, token)
+            return replace(retry, token_refreshed=True)
+
+        if outcome.reason == "skew_token_unavailable" and scrape_error:
+            return replace(outcome, detail=f"{outcome.detail} ({scrape_error})")
+        return outcome
+
+    async def _post_instantiate(
+        self,
+        session_id: str,
+        token: str,
+        *,
+        object_ids: list[str],
+        values: list[Any],
+        auto_run: bool,
+    ) -> InstantiateOutcome:
+        """One POST to the instantiate endpoint, classified from status/body.
+
+        Verified rows (marimo 0.24.0, `POST /api/kernel/instantiate`): 200
+        `{"success": true}`; 401 `{"error": "Missing server token"}` /
+        `{"error": "Invalid server token"}` (the skew-protection middleware);
+        500 `{"detail": "Invalid session id: …"}` /
+        `{"detail": "Missing Marimo-Session-Id header"}`; 400
+        `{"detail": "Object missing required field ``objectIds``"}` when the
+        body omits a required field; a literal 403 is `edit_required`
+        (defensive — the endpoint is `edit` scope only and measured 0.24.0
+        serves an API 403 as the 401 auth body); any other status is
+        `instantiate_failed`; a transport error is `server_unreachable`.
+
+        The body uses the request model's camelCase wire names
+        (`objectIds`, `values`, `autoRun`): marimo's msgspec struct renames its
+        snake_case fields, and an unknown `auto_run` key is silently *ignored*
+        — harmless only while marimo's own default for it is `True`.
+        """
+        headers = {SESSION_HEADER: session_id}
+        if token:
+            headers[SKEW_TOKEN_HEADER] = token
+
+        body: dict[str, Any] = {
+            "objectIds": list(object_ids),
+            "values": list(values),
+            "autoRun": auto_run,
+        }
+
+        client = await self._get_client()
+        try:
+            response = await client.post(
+                f"{self._url}{INSTANTIATE_PATH}", json=body, headers=headers
+            )
+        except (httpx.TransportError, OSError) as exc:
+            return InstantiateOutcome(
+                ok=False, reason="server_unreachable", detail=str(exc)
+            )
+
+        if response.status_code == 200:
+            try:
+                success = response.json().get("success") is True
+            except (ValueError, UnicodeDecodeError):
+                success = False
+            if success:
+                return InstantiateOutcome(
+                    ok=True,
+                    status_code=200,
+                    detail=response.text[:200],
+                    token_used=bool(token),
+                )
+            return InstantiateOutcome(
+                ok=False,
+                reason="instantiate_failed",
+                status_code=200,
+                detail=(
+                    "answered 200 but the body was not a success response: "
+                    f"{response.text[:200]}"
+                ),
+                token_used=bool(token),
+            )
+
+        detail = response.text[:400]
+        if response.status_code == 401:
+            reason = (
+                "skew_token_invalid"
+                if "Invalid server token" in detail
+                else "skew_token_unavailable"
+            )
+        elif response.status_code == 403:
+            reason = "edit_required"
+        elif response.status_code == 500:
+            if "Invalid session id" in detail:
+                reason = "session_not_found"
+            elif "Missing Marimo-Session-Id header" in detail:
+                reason = "session_header_missing"
+            else:
+                reason = "instantiate_failed"
+        else:
+            reason = "instantiate_failed"
+
+        return InstantiateOutcome(
+            ok=False,
+            reason=reason,
+            status_code=response.status_code,
+            detail=detail,
+            token_used=bool(token),
+        )
+
+    async def instantiate_notebook(
+        self,
+        session_id: str,
+        *,
+        object_ids: list[str] | None = None,
+        values: list[Any] | None = None,
+        auto_run: bool = True,
+    ) -> InstantiateOutcome:
+        """Execute a live session's own notebook cells (frontend instantiate).
+
+        `GET /sse` materializes a kernel session but runs **no** cell; a
+        frontend performs this second step. It scrapes the skew-protection
+        token from `GET /` and POSTs `/api/kernel/instantiate` with that token
+        as `Marimo-Server-Token` plus `Marimo-Session-Id`, body
+        `{"objectIds": [], "values": [], "autoRun": true}` — `objectIds` and
+        `values` are required by the request model (empty and equal length
+        here), and `auto_run` defaults to True. Verified against marimo 0.24.0:
+        the original file cells then genuinely execute.
+
+        `--no-token` disables **auth**, not skew protection, so the header is
+        required on a normal `--no-token` headless server; a server started
+        with `--mcp` or `--no-skew-protection` ignores the value. If the token
+        cannot be scraped, the POST is still attempted without it and a
+        `401 Missing server token` is reported as `skew_token_unavailable`
+        (with the scrape failure appended). A `401 Invalid server token`
+        (server relaunched, token rotated) triggers exactly one re-scrape and
+        retry.
+
+        The session must already exist — call `materialize_session` first; this
+        method never creates one. The kernel runs the cells asynchronously, so
+        a 200 means only that the instantiate request was *accepted*: a caller
+        that needs the executed state must poll the read tools until the cells
+        leave `stale`.
+
+        Args:
+            session_id: Session id from `list_active_notebooks`.
+            object_ids: UI element ids to set at instantiate time; must be the
+                same length as `values`. Empty by default.
+            values: Values for `object_ids`. Empty by default.
+            auto_run: Run the cells after wiring the UI values (marimo's own
+                default is True).
+
+        Returns:
+            InstantiateOutcome: `ok` only for a 200 whose body reports success.
+        """
+        object_ids = list(object_ids or [])
+        values = list(values or [])
+
+        token = ""
+        scrape_error = ""
+        try:
+            token = await self.skew_protection_token()
+        except SkewTokenUnavailable as exc:
+            scrape_error = str(exc)
+
+        outcome = await self._post_instantiate(
+            session_id,
+            token,
+            object_ids=object_ids,
+            values=values,
+            auto_run=auto_run,
+        )
+        if outcome.ok:
+            return outcome
+
+        if outcome.reason == "skew_token_invalid":
+            try:
+                token = await self.skew_protection_token(refresh=True)
+            except SkewTokenUnavailable as exc:
+                return replace(
+                    outcome,
+                    reason="skew_token_unavailable",
+                    detail=f"{outcome.detail} (re-scrape failed: {exc})",
+                    token_used=False,
+                )
+            retry = await self._post_instantiate(
+                session_id,
+                token,
+                object_ids=object_ids,
+                values=values,
+                auto_run=auto_run,
+            )
             return replace(retry, token_refreshed=True)
 
         if outcome.reason == "skew_token_unavailable" and scrape_error:

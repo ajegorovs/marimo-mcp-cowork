@@ -477,7 +477,7 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   requested targets **only**), `not_run_cell_ids` (everything else, incl.
   stale/disabled/unknown), `unverified_cell_ids`, `counts` and `status: ok`
   **only** when every requested target is idle (`partial` otherwise, `error` for
-  validation/planning/reporting failures — `cell_id_required`, `invalid_mode`,
+  validation/planning/reporting failures — `cell_id_required`,
   `cell_id_not_allowed`, `unknown_cell_ids`, `graph_unpopulated`,
   `planning_failed`, `reporting_failed`), plus `execution_error` / `stderr`
   when the run call itself failed. Every failure keeps the pre-modes top-level
