@@ -473,9 +473,8 @@ def _attributable_on_click(data: dict, value: Any) -> bool:
     narrowest case the marker can still cover, and it is never claimed for any
     other element or for the ``0`` sentinel.)
     """
-    return (
-        data.get("element_type") == _ON_CLICK_ELEMENT_TYPE
-        and not _same_json(value, 0)
+    return data.get("element_type") == _ON_CLICK_ELEMENT_TYPE and not _same_json(
+        value, 0
     )
 
 
@@ -536,13 +535,11 @@ def _button_interaction_payload(value: Any, data: dict, verified: bool) -> dict:
             "dependent re-run, then reset to False once they finished)"
         )
         sentinel_clause = (
-            "marimo's run_button conversion returns False and processes no "
-            "click"
+            "marimo's run_button conversion returns False and processes no click"
         )
         unknown_question = "this click was processed"
         repeated_clause = (
-            "marimo's runtime does process a repeated nonzero counter for a "
-            "run_button"
+            "marimo's runtime does process a repeated nonzero counter for a run_button"
         )
     else:
         value_shape = (

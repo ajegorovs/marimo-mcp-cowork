@@ -179,9 +179,7 @@ class TestListActiveNotebooks:
         def _client(url: str):
             inst = MagicMock()
             if url.endswith("8091"):
-                inst.list_sessions = AsyncMock(
-                    side_effect=ConnectionError("refused")
-                )
+                inst.list_sessions = AsyncMock(side_effect=ConnectionError("refused"))
             else:
                 inst.list_sessions = AsyncMock(
                     return_value=[
