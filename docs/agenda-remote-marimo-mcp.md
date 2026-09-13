@@ -1,6 +1,6 @@
 # Agenda (open issue): hosting marimo servers / the MCP server remotely
 
-> **Status:** **Open — thinking task, not yet a plan.** No decision taken.
+> **Status:** **R1 and R2 controlled prototypes proven; protected marimo is detected but unsupported; deployment decisions remain open.**
 > **Created:** 2026-09-07
 > **Related:** [harness-integration/README.md](harness-integration/README.md)
 > (gap #5 "version-skew policy" and gap #7 "remote/containerized servers"),
@@ -83,11 +83,12 @@ answers:
    an unauthenticated marimo server is remote code execution. This is the
    constraint that decides the whole design, and it is why "just expose port
    8090" is not an option.
-3. **`--no-token` is also why instantiation is missing.** The known
-   live-test coverage gap (see `AGENTS.md` §Live tests) is that
-   `/api/kernel/instantiate` needs a skew-protection token not exposed under
-   `--no-token`. Remote hosting cannot lean on `--no-token` the way loopback
-   does, so remote *forces* the token question that local defers.
+3. **`--no-token` does not block instantiation, but it is still a security
+   boundary.** The skew-protection token required by `/api/kernel/instantiate`
+   is exposed in the root-page `<marimo-server-token data-token="…">` marker
+   under `--no-token`; Task 03 and the R2 prototype materialized and
+   instantiated headless sessions through that flow. A token-authenticated
+   marimo server remains a separate unanswered question for `MarimoClient`.
 4. **The `server_url` parameterism is half-finished.** `server_url` is a
    per-call parameter on the tools, while `session_id` is a per-connection
    auto-bind. For a remote server that is fine, but nothing pins *which* server
@@ -145,12 +146,115 @@ result is worth keeping even though the probe file was deleted:
   side**, and the two-version split in item 6 is survivable *for 0.24.x-vs-0.24.x
   kernels*.
 - What this does **not** cover: a kernel running marimo **0.25+** (the real risk
-  in item 6), the execution-state templates (the session was never instantiated —
-  same token-gated gap as the live suite, item 3), or anything over a real
-  network (same host, loopback).
+  in item 6), or anything over a real network (same host, loopback).
 
 Implication: R1 (remote kernel) is less exotic than the list above suggests —
 but the *auth* question in item 2 remains the actual blocker, not Python versions.
+
+## R2 controlled-Tailnet prototype (2026-09-13) — PASS
+
+Two controlled machines were used, with identities and addresses deliberately
+scrubbed. Machine B cloned the provider repository at `bdc02d4`, then ran:
+
+```text
+marimo edit notebooks/widget_demo.py --headless --no-token \
+  --host 127.0.0.1 --port 2718
+marimo-inspect --transport streamable-http \
+  --host <machine-B-tailnet-ip> --port 8090
+```
+
+The processes were transient user-systemd units for the prototype. The marimo
+listener was loopback-only; the MCP listener was bound to the explicit Tailnet
+IPv4 only. Listener inspection confirmed no wildcard or LAN bind. This is an
+appropriate prototype mechanism, not a reboot-persistent service design.
+
+Because `--headless` suppresses a browser but does not create a session, Machine
+B used the measured Task 03 sequence: create an `/sse` session, fetch the root
+page's skew token, then POST `/api/kernel/instantiate`. The resulting orphan
+session had executed fixture cells (`idle` with outputs) and was discoverable by
+the MCP server without a browser.
+
+Machine A connected to Machine B's `/mcp` endpoint through a real FastMCP
+Streamable HTTP client. It verified the 15 advertised tools and three packaged
+resources, discovered one session, then explicitly supplied the returned
+`(session_id, server_url)` on every subsequent call. It successfully performed
+`get_cell_map`, `get_cell_data(include_errors=True)`, `get_variables`,
+`run_cell(mode="cell")`, `get_cell_outputs`, and `get_errors`; the run returned
+`status: ok`, its requested cell succeeded, and `has_errors` was false.
+
+The explicit pair is required for this client shape: FastMCP 4.0.3 HTTP calls
+may carry fresh MCP client sessions, and an argument-less request after more
+than one client session is correctly refused as `binding_ambiguous`. The
+`server_url` discovered from the remote MCP server was its local
+`http://127.0.0.1:2718`; that is correct because it is consumed by the MCP
+process on Machine B, not by Machine A.
+
+The fixture exposes an `anywidget.AnyWidget`, not a marimo `UIElement`, so it
+was not a valid safe target for `set_ui_value`; this prototype proves remote
+discovery, reads, and execution rather than the marimo-UI-element mutation
+contract. No public network exposure, tunnel, or source change was needed.
+
+## R1 explicit remote-marimo prototype (2026-09-13) — PASS
+
+Machine A used its local `MarimoClient` and local marimo-inspect handlers
+against an operator-supplied, controlled **non-loopback** marimo endpoint on
+Machine B. The endpoint itself, session identifier, and dead-endpoint control
+were supplied only through local environment variables and emitted only as
+short opaque fingerprints. The client-side evidence therefore proves the R1
+protocol path; the probe deliberately records non-loopback scope rather than
+claiming to audit Machine B's listener/ACL configuration.
+
+All six probe steps passed without retries:
+
+1. `discover_servers(base_url=...)` made the targeted census request, returned
+   one healthy server, and echoed only the supplied target; the local registry
+   was not a fallback.
+2. The supplied materialized session appeared in that server's census.
+3. `get_cell_map`, `get_cell_data(include_errors=True)`, `get_variables`, and
+   `get_errors` all succeeded with the explicit `(session_id, server_url)`
+   pair. The served fixture had pre-existing error rows; a successful read is
+   not a claim that the fixture was error-free.
+4. A non-mutating scratchpad execution returned `status: ok`, the expected
+   stdout marker, and the expected scalar value. On pinned marimo 0.24 that
+   scalar is rendered as an HTML output envelope rather than the text/plain
+   shape used in older client mocks; the probe validates the rendered value
+   without emitting its MIME type or payload.
+5. A deliberately failing scratchpad execution surfaced an error in its normal
+   error channel, without mutating notebook source or restarting the kernel.
+6. A separately supplied dead endpoint returned no discovered server, raised a
+   client transport error, and made `get_cell_map` refuse with
+   `reason: server_unreachable`, `operation_ran: false`, and
+   `state_changed: false`.
+
+This validates R1's manual explicit-URL path, not automatic remote discovery,
+authentication, an operator service model, or a public-network deployment.
+
+## Protected remote-marimo capability spike (2026-09-13) — BLOCKED AS DESIGNED
+
+A second controlled, non-loopback Machine B server ran headlessly in edit mode
+with marimo's default token authentication enabled. Machine A held no token,
+cookie, credential-bearing URL, or session identifier. The probe emitted only
+scrubbed status/result evidence and performed no write, execute, instantiate,
+restart, or authentication attempt.
+
+The result is an intentional, safe block rather than a transport failure:
+
+- `MarimoClient`'s source-level contract has only `server_url` as a constructor
+  input and no generic credential/header configuration channel.
+- `discover_servers(base_url=...)` returned no server because the protected
+  census was non-200, which is its documented health-check rule.
+- Direct census and the read-scope probe both returned HTTP 401.
+- `get_cell_map` and `set_active_session` both returned structured
+  `reason: auth_required`; no target was resolved, no operation ran, no state
+  changed, and no binding was created.
+- The root-page request was not followed: it returned HTTP 303 and was
+  semantically classified as a login page rather than an app shell.
+
+Therefore a protected remote marimo server is **detected but unsupported** by
+the current client. Do not work around this by putting a token in a URL, a
+repository file, an MCP configuration, or chat. Supporting it would require a
+separate security design for a vault-bound credential flow or upstream marimo
+integration; it is not a discovery, retry, or timeout fix.
 
 ## Design space (not decided)
 
@@ -201,36 +305,40 @@ but the *auth* question in item 2 remains the actual blocker, not Python version
   compatibility layer, that is the `NotebookBackend` trigger
   (`docs/notebook-backend-protocol.md`) and should be decided there.
 
-## Suggested first steps when we pick this up
+## Remaining prototype and design work
 
-1. **Answer the auth question first.** Determine whether a token-protected
-   marimo server is usable through `MarimoClient` at all (does it expose the
-   skew/session token?), because that single fact decides whether R1 is viable
-   or whether only R2 with a local kernel is on the table. Write the answer into
-   `docs/live-tests.md` — it also closes the instantiation coverage gap.
-2. **Prototype the smallest thing:** `marimo-inspect --transport
-   streamable-http --host <tailnet-ip> --port 8090` on one machine, one harness
-   `insert:` entry with `transport: streamable-http` + `url` on another. Verify
-   the 15 tools surface. No code change, no new discovery. This is a
-   half-afternoon and it converts most ❓ items above into facts.
-3. **Verify the composed URL shape** (integration draft gap #4) on the way — the
-   FastMCP defaults are `/mcp` and `/sse`, but nothing has exercised them
-   end-to-end.
-4. **Then decide the version-contract question.** If step 2 works, write down
-   whether the *server host* is now the thing that must hold 0.24.x, and update
-   `docs/marimo-version-support.md` + the integration doc's consumer story to
-   match.
-5. **Only after 1–4** touch `discovery.py` for multi-endpoint support, and only
-   with a live test that boots a second, explicitly-addressed server.
+The smallest R2 test, its `/mcp` URL shape, and no-token headless
+materialization are now proven above. Do not add remote discovery configuration
+or alter `discovery.py` merely because R2 works. The remaining questions are:
+
+1. **Credential design decision.** Decide whether protected remote marimo is a
+   supported product goal. If so, design a vault-bound credential flow or seek
+   upstream integration; do not add tokens to URLs, config, logs, or MCP tool
+   arguments. If not, retain Tailnet-only no-token as an explicit operational
+   policy rather than an accidental fallback.
+2. **Remote UI-element behaviour.** Use a purpose-built notebook exposing a
+   marimo `UIElement` (not the fixture's `anywidget.AnyWidget`) to test
+   `set_ui_value` plus an explicit dependent `run_cell` in headless operation.
+3. **Version and timeout policy.** Decide whether Machine B is the supported
+   owner of the pinned 0.24.x contract, then test the real long-cell timeout
+   boundary and an intentional marimo version-skew case before promising either
+   behaviour to consumers.
+4. **Shared-server and lifecycle policy.** Test multiple notebook checkouts on
+   one MCP process before describing it as multi-repo; separately decide whether
+   the prototype's transient user unit becomes an operator runbook or a managed
+   service. Neither is a reason to add remote process-control tools today.
+5. **Only after the above** consider `discovery.py` support for a configured
+   list of known remote endpoints, with a live multi-endpoint regression.
 
 ## Open questions for the next working session
 
-- Which of R1/R2 do we actually want, and for which repo? (The udv integration
-  is the next consumer — decide its topology *before* we grow the options.)
-- Is "one always-on marimo host per machine" a service we'd supervise (systemd
-  user unit), or hand-launched?
-- What is the minimum we need from upstream marimo to stop using `--no-token`,
-  and is it worth filing?
-- Does a remote MCP server change what we tell consumers to install at all
-  (URL-only, no `uv add`)? That would be the best outcome and deserves its own
-  doc if it holds.
+- Is R2 the supported topology for the next consumer, or does that consumer
+  specifically require the now-proven but still operationally distinct R1
+  arrangement?
+- Is "one always-on marimo host per machine" an operator-supervised service or
+  a hand-launched prototype? Do not infer a reboot/restart policy from the
+  transient-unit result.
+- Can `MarimoClient` support authenticated marimo without exposing credentials
+  to an MCP client, and is upstream work required?
+- Does an R2 server centralize the 0.24.x version contract enough to offer a
+  URL-only consumer path, or must consumers still install the package?

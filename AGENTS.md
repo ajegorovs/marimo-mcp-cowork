@@ -171,14 +171,15 @@ Commands, boot mechanics, verified counts and current status live in
 `docs/live-tests.md` — read it before changing the suite, and keep those
 numbers there rather than here. Two standing facts about the suite's shape:
 
-- **Instantiation is token-gated.** The `/sse`-created shared session is never
-  *instantiated* (its notebook cells do not run), because
-  `/api/kernel/instantiate` requires a skew-protection token that isn't exposed
-  under `--no-token`. The shared fixture can therefore only ever show
-  fresh/empty executed state for outputs, errors and variables. The write-tool
-  tests below get real execution by creating and running their own cells.
-  Executing the fixture's original cells as a frontend would remains the main
-  open bite of live coverage.
+- **Instantiation is token-gated, not token-auth-gated.** A shared `/sse`
+  session starts uninstantiated, but the skew-protection token is available in
+  the root page's `<marimo-server-token data-token="…">` marker even under
+  `--no-token`; `MarimoClient.instantiate_notebook()` performs the measured
+  `/api/kernel/instantiate` request. The live suite covers both a generated
+  sentinel and a byte-identical copied committed fixture, so original cells do
+  execute without a browser. The shared fixture remains unsuitable for tests
+  that need persistent frontend ownership or rendering; write-tool tests still
+  use isolated copied fixtures and created cells for hermetic mutation cases.
 - **Write-tool tests are hermetic.** `tests/marimo_inspect/live/test_mutation.py`
   drives the **real MCP handler functions** against a real 0.24 kernel, and
   `test_ui.py` does the same for the widget tool; each boots one isolated

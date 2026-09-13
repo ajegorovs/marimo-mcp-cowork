@@ -145,6 +145,25 @@ Endpoint paths come from the FastMCP defaults (`fastmcp.settings`) ✅:
 | `http` / `streamable-http` | `/mcp` (`streamable_http_path`) |
 | `sse` | `/sse` (`sse_path`) |
 
+#### Controlled Tailnet R2 topology ✅
+
+The shared HTTP server has been exercised between two controlled machines:
+marimo ran headlessly and **loopback-only** on the notebook host, while
+`marimo-inspect --transport streamable-http` bound to that host's specific
+Tailnet IPv4 address. A client on the other machine connected to `/mcp`, listed
+all 15 tools and three resources, discovered the API-instantiated session, read
+cells/variables/errors, and ran a fixture cell successfully. No public or LAN
+listener was used.
+
+For a headless, agent-only notebook, a server launch alone is insufficient:
+materialize an `/sse` session and call
+`MarimoClient.instantiate_notebook()` (the root-page skew-token flow) before
+expecting notebook tools to have a target. Under FastMCP 4.0.3's HTTP client
+behaviour, do not rely on an argument-less binding after discovery: pass the
+returned `session_id` and `server_url` on every later tool call. The returned
+loopback `server_url` is resolved by the MCP process on the notebook host; it is
+not a URL the remote harness should call directly.
+
 ❓ **Unverified:** whether the notebook sessions a shared server exposes are scoped
 by *discovery* (registry + `GET /api/sessions`) rather than by its cwd — which is
 what would let one HTTP server serve notebooks in several repos. Check before
@@ -325,9 +344,9 @@ hit each.
    Claude/Cursor/etc. is inference from generic MCP config keys.
 3. ❓ **Shared HTTP server across repos** (B2) — untested whether sessions from
    multiple repos are visible, or whether cwd/registry scoping limits it.
-4. ❓ **Exact HTTP URL shape** for `--transport http` (`http://127.0.0.1:8090/mcp`
-   vs another base path) — paths confirmed in FastMCP settings, the composed URL
-   not exercised end-to-end.
+4. ✅ **Exact HTTP URL shape** — `http` / `streamable-http` serves `/mcp` and a
+   two-machine Tailnet client completed the FastMCP handshake and real notebook
+   reads/execution through that endpoint. See the B2 R2 note above.
 5. ❓ **Version-skew policy for consumers.** What happens when the *notebook* repo
    runs marimo 0.25 while marimo-inspect is pinned `<0.25`?
    `docs/marimo-version-support.md` notes the two contracts (in-process installed
@@ -341,9 +360,14 @@ hit each.
    unconditionally for the demo. Should they move to an extra
    (`marimo-inspect[demo]`) so client-only repos don't inherit them? Design
    question, not a doc fix.
-7. ❓ **Remote or containerized marimo servers** — discovery is local-registry plus
-   `--no-token`, so those are out of scope. Worth stating as a non-goal rather
-   than leaving implicit.
+7. ⚠️ **Authenticated or containerized remote marimo kernels** — R1 is proven
+   for a controlled explicit non-loopback URL: targeted discovery, explicit
+   reads, safe scratchpad execution, and unreachable-server refusal all worked
+   from a second machine. A controlled token-protected server is detected and
+   refused as `auth_required`; it cannot be used today because `MarimoClient`
+   has no credential channel. Container lifecycle and the host listener/ACL
+   runbook remain untested as product contracts. See
+   `agenda-remote-marimo-mcp.md`.
 
 ## Related docs
 

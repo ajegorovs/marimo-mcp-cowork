@@ -203,6 +203,92 @@ class TestDiscoverServers:
 
 
 # -------------------------------------------------------------------
+# discover_servers(base_url=...) — targeted, registry-free health check
+# -------------------------------------------------------------------
+
+
+def _stub_httpx_async_client(*, status_code=None, error=None):
+    """A patched ``httpx2.AsyncClient`` class plus the single instance it builds."""
+    instance = MagicMock()
+    if error is not None:
+        instance.get = AsyncMock(side_effect=error)
+    else:
+        instance.get = AsyncMock(return_value=MagicMock(status_code=status_code))
+    instance.__aenter__ = AsyncMock(return_value=instance)
+    instance.__aexit__ = AsyncMock(return_value=None)
+    return MagicMock(return_value=instance), instance
+
+
+class TestDiscoverServersBaseUrl:
+    """``discover_servers(base_url=...)`` checks exactly the endpoint given.
+
+    ``test_discover_with_base_url`` replaces ``_check_server`` itself, so it
+    cannot observe the contract this branch is built on — the one R1 depends on:
+    a single ``GET {base_url}/api/sessions``, the server returned only for a
+    ``200``, and **no** marimo-registry lookup at all (a targeted check with an
+    explicit URL must never silently sweep local registry entries instead).
+
+    These cases pin that branch's logic against a stub HTTP client. They prove
+    the branch, never that any particular endpoint is reachable: no real
+    network is contacted and no address outside the ``.invalid`` reserved TLD
+    appears.
+    """
+
+    TARGET = "http://target.invalid:2718"
+
+    async def test_healthy_target_is_returned_and_registry_untouched(self):
+        """A 200 census returns the target as one healthy server, nothing else."""
+        from marimo_inspection.discovery import discover_servers
+
+        client_cls, instance = _stub_httpx_async_client(status_code=200)
+        with (
+            patch("marimo_inspection.discovery.httpx.AsyncClient", client_cls),
+            patch("marimo_inspection.discovery._get_registry_dir") as registry,
+        ):
+            servers = await discover_servers(base_url=self.TARGET)
+
+        assert [(s.url, s.healthy, s.pid) for s in servers] == [
+            (self.TARGET, True, None)
+        ]
+        client_cls.assert_called_once()
+        assert instance.get.await_count == 1
+        assert instance.get.await_args.args == (f"{self.TARGET}/api/sessions",)
+        assert registry.call_count == 0, "base_url must bypass the registry"
+
+    async def test_unreachable_target_returns_empty_and_registry_untouched(self):
+        """A transport failure yields [] — never a silent registry fallback."""
+        import httpx2 as httpx
+
+        from marimo_inspection.discovery import discover_servers
+
+        client_cls, instance = _stub_httpx_async_client(
+            error=httpx.ConnectError("connection refused")
+        )
+        with (
+            patch("marimo_inspection.discovery.httpx.AsyncClient", client_cls),
+            patch("marimo_inspection.discovery._get_registry_dir") as registry,
+        ):
+            servers = await discover_servers(base_url=self.TARGET)
+
+        assert servers == []
+        assert instance.get.await_count == 1
+        assert instance.get.await_args.args == (f"{self.TARGET}/api/sessions",)
+        assert registry.call_count == 0, "base_url must bypass the registry"
+
+    @pytest.mark.parametrize("status_code", [401, 404, 500])
+    async def test_non_200_target_is_dropped(self, status_code):
+        """Only a 200 census counts; a denied/failing one is not returned."""
+        from marimo_inspection.discovery import discover_servers
+
+        client_cls, instance = _stub_httpx_async_client(status_code=status_code)
+        with patch("marimo_inspection.discovery.httpx.AsyncClient", client_cls):
+            servers = await discover_servers(base_url=self.TARGET)
+
+        assert servers == []
+        assert instance.get.await_count == 1
+
+
+# -------------------------------------------------------------------
 # _check_server() helper tests
 # -------------------------------------------------------------------
 
