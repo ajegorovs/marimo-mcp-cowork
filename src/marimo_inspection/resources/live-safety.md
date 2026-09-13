@@ -22,7 +22,17 @@ connection takes it over — though a **configured `--session-ttl` can reap that
 orphan**. A human must **take over** and **re-run the notebook** before its
 widgets respond. A later reconnect can **re-key** the session id, and a second
 distinct client joins the same kernel as a **non-main, read-only consumer**.
-Run mode is out of scope for these rules.
+
+A `marimo run` server is a separate case: it is **not discoverable at all**. It
+registers under `--no-token` exactly as an edit server does, but
+`GET /api/sessions` requires `edit` scope and answers **`401`** in run mode, so
+the census-200 health check drops it and it never contributes to
+`servers_discovered`; only an explicit `server_url` reaches one, as a
+connection-failure **sentinel**. Nor does a launch ever create a session in the
+first place — only a client connect (`/ws`, or the browser's `/sse` stream)
+does — so a session listed before any client attached is an earlier client's
+**orphan**, never a startup artifact and never the on-disk `__marimo__` session
+cache (which stores cell outputs).
 
 The `summary` reports `total_notebooks` (`session_count`), `result_row_count`
 (every row, including a connection-failure sentinel) and `attached_client_count:

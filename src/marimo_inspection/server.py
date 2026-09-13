@@ -73,11 +73,24 @@ def create_server(
         it over, though a configured `--session-ttl` can reap that orphan. A
         human must take over and re-run the notebook before its widgets
         respond. A second distinct client joins the same kernel as a non-main,
-        read-only consumer and a later reconnect can re-key the session id; run
-        mode is out of scope. The re-key is separate from a page-vs-session
-        divergence observed once, which is not diagnosed — neither the re-key
-        nor any read-path explanation is confirmed as its cause, so do not
-        assume one.
+        read-only consumer and a later reconnect can re-key the session id. The
+        re-key is separate from a page-vs-session divergence observed once,
+        which is not diagnosed — neither the re-key nor any read-path
+        explanation is confirmed as its cause, so do not assume one.
+
+        Discovering a server is not discovering a session: a launch creates no
+        session (only a `/ws` or `/sse` client connect does), so a fresh
+        headless server is discoverable with an empty census. A `marimo run`
+        server is never discoverable at all — it registers in the same
+        registry under `--no-token`, but its `GET /api/sessions` census
+        requires edit scope and answers 401, so the health check drops it and
+        a discovery-based `servers_discovered` never counts it; only an
+        explicit `server_url` reaches one, as a connection-failure sentinel
+        (`session_count` 0). A session listed before any client attached is an
+        earlier client's orphan on a still-running server (or marimo's own
+        auto-opened browser when the launch was not headless) — never a launch
+        artifact and never the on-disk `__marimo__` session cache, which
+        stores cell outputs rather than sessions.
 
         Writes: use `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
         `edit_cell` refuses to overwrite a cell whose source changed since the

@@ -102,10 +102,24 @@ orphan (it outlives the stream) until a later connection takes it over — thoug
 a **configured `--session-ttl` can reap that orphan**. A human who opens the
 page must take over and re-run the notebook before its widgets respond, a
 second distinct client joins the same kernel as a **non-main, read-only
-consumer**, and a later reconnect can re-key the session id. Run mode is out of
-scope for these rules. The re-key is separate from a page-vs-session divergence
-observed once: its cause is not diagnosed, and neither the re-key nor any
-read-path explanation is confirmed as its cause — so do not assume one.
+consumer**, and a later reconnect can re-key the session id. The re-key is
+separate from a page-vs-session divergence observed once: its cause is not
+diagnosed, and neither the re-key nor any read-path explanation is confirmed as
+its cause — so do not assume one.
+
+**Discovering a server is not discovering a session.** Launching a server
+creates no session in marimo 0.24 — edit and run mode alike; only a client
+connect (`/ws`, or the browser's `/sse` stream) does. A fresh headless server is
+therefore discoverable with an empty census, and a session listed before any
+client attached is an earlier client's orphan on a still-running server (or the
+browser marimo auto-opened when the launch was not headless) — never a launch
+artifact, and never the on-disk `__marimo__` session cache, which stores cell
+outputs. A **`marimo run`** server is not discoverable at all: it registers under
+`--no-token` like an edit server, but `GET /api/sessions` requires `edit` scope
+and answers `401` in run mode, so the census-200 health check drops it and it is
+never counted by a discovery-based `servers_discovered`. Only an explicit
+`server_url` pointed at one reaches it, as a single connection-failure sentinel
+row (`session_count` 0, `servers_discovered` 1).
 
 ### Read before you edit
 
@@ -311,8 +325,10 @@ restore the pinned version. Do not commit a machine-local dependency source.
 ## Requirements
 
 - Python 3.12+
-- A running marimo server (start it with `--no-token` for registry-based
-  discovery; see `discover_servers`).
+- A running marimo **edit** server (start it with `--no-token` for
+  registry-based discovery; see `discover_servers` — a `marimo run` server
+  registers but is not discoverable, because its session census requires edit
+  scope).
 - marimo **0.24.x** (private APIs are version-bound — see
   [docs/marimo-version-support.md](docs/marimo-version-support.md) for the
   pinned range and the upgrade validation procedure).

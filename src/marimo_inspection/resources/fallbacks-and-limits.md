@@ -243,10 +243,28 @@ though a **configured `--session-ttl` can reap that orphan**. A human must
 **take over** and **re-run the notebook** before its widgets respond. One session
 per server in that mode, so a second distinct client joins the same kernel as a
 **non-main, read-only consumer**, and a later reconnect can **re-key** the id.
-Run mode is out of scope for these rules. The re-key behavior is real and
+The re-key behavior is real and
 *separate* from a page/session divergence observed once: its cause is **not
 diagnosed**, and **neither the re-key nor any read-path explanation is confirmed
 as its cause**, so treat it as unexplained and do not assume a mechanism.
+
+## Server discovery is not session discovery
+
+Launching a server creates **no session** in marimo 0.24 — edit and run mode
+alike; only a client connect (`/ws`, or the browser's `/sse` stream) does. A
+fresh headless server is therefore discoverable with an empty census, and a
+session listed before any client attached is an earlier client's **orphan** on a
+still-running server (or the browser marimo auto-opened on a non-headless
+launch) — never a launch artifact, and never the on-disk `__marimo__` session
+cache, which stores cell outputs.
+
+A **`marimo run`** server is not discoverable at all: `--no-token` registers it
+in the same registry an edit server uses, but `GET /api/sessions` requires
+`edit` scope and answers **`401`** in run mode, so the census-200 health check
+drops it. It is never counted by a discovery-based `servers_discovered`; only an
+explicit `server_url` pointed at one answers, with a single connection-failure
+**sentinel** row (`session_count` 0, `servers_discovered` 1, `result_row_count`
+1) — a row, not a session.
 
 ## Version pin
 

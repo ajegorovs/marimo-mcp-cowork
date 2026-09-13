@@ -2,8 +2,9 @@
 
 > Updated: 2026-09-13 — verified against the current working tree (live suite
 > green, incl. the hermetic mutation, widget, run-mode (T15), kernel-restart
-> (Wave 3), T-V3 dependency-completeness, T-V4 notebook-only-variables, T20
-> button-click and T22 session-census-field-limit regressions; see
+> (Wave 3), T-V3 dependency-completeness, T-V4 notebook-only-variables, T18
+> server-vs-session discovery, T20 button-click and T22
+> session-census-field-limit regressions; see
 > [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
 > is, the commands, the boot mechanics, and its *actual* status today.
@@ -95,9 +96,10 @@ All orchestration lives in `tests/marimo_inspect/live/conftest.py`
 
 3. **One session per server.** marimo edit mode allows exactly one session per
    server; a second connection replaces the first. So tests share the single
-   session rather than creating fresh ones per test — EXCEPT the hermetic
+   session rather than creating fresh ones — EXCEPT the hermetic
    mutation, widget and run-mode regressions, which boot one additional isolated
-   server per test (see below).
+   server per test, and the discovery regressions, which boot **sessionless**
+   edit/run servers through the `bare_server` factory (see below).
 
 4. **`live_client`** (function-scoped) — a **fresh** `MarimoClient` per
    test (function scope avoids SSE/connection-pool reuse problems), closed
@@ -136,10 +138,11 @@ instead: cells created through the write tools *do* run, which is what makes the
 dependency, variables and widget regressions behavioral rather than structural
 (see the hermetic sections below).
 
-## What's tested (60 tests, 12 files in `tests/marimo_inspect/live/`)
+## What's tested (62 tests, 13 files in `tests/marimo_inspect/live/`)
 
-The directory holds 11 test modules plus the shared `conftest.py` harness
-(`MarimoServerManager` + fixtures). Counts are stable as of the run in
+The directory holds 12 test modules plus the shared `conftest.py` harness
+(`MarimoServerManager` + fixtures, including the sessionless `bare_server`
+factory). Counts are stable as of the run in
 [Current status](#current-status).
 
 | File | Tests | Asserts |
@@ -155,6 +158,7 @@ The directory holds 11 test modules plus the shared `conftest.py` harness
 | `test_run_cell_modes.py` | 5 | **hermetic run-mode regressions**: `mode="all"` on a fresh `/sse` session runs every document cell and registers an unreferenced widget leaf (unreachable via `set_ui_value` before); `mode="descendants"` refuses `graph_unpopulated` on an unregistered target (nothing runs) and resolves target + descendants once `mode="all"` populated the graph; a mixed batch reports `exception` and `cancelled` per cell while the run call itself errored; unknown ids/names and `all` + non-empty `cell_id` abort before anything runs, and the default `mode="cell"` stays single-target; a cell NAME resolves like a cell id (pre-modes compat) for `cell` and `descendants`, with the resolved id reported — see [Hermetic run-mode regressions](#hermetic-run-mode-regressions) below |
 | `test_restart.py` | 3 | **hermetic kernel-restart regressions** (Wave 3): `restart_kernel` closes the kernel and **re-materializes** a replacement via the `/sse` handshake — never reporting success from the POST 200 alone — asserting `re_materialized: true`, one live session under the **expected** id, a genuinely new kernel (the scratchpad's `os.getpid()` changes), execution state reset (a kernel global is gone, every cell `stale`), the change tracker cleared (the first `edit_cell` of a file-parsed cell is `needs_read` again), the server process preserved (the skew token re-read from the page and unchanged), and a following `run_cell(mode="all")` re-running the document green; plus `session_id_stable: false` / `session_verification: "point_in_time"` with a later browser-like reconnect re-keying the id (the old id then answers `Invalid session id`); plus the zero-session/unknown-id guard (`reason: session_not_found`, `state_changed: false`, nothing closed, the live session named) — see [Hermetic kernel-restart regressions](#hermetic-kernel-restart-regressions) below |
 | `test_sessions.py` | 3 | **T22** — a raw `GET /api/sessions` census on a hermetic server publishes only `filename`/`path` per session (no creator, owner, creation time, or per-session client count), which is exactly why `list_active_notebooks` reports `provenance`/`owner` as `"unknown"` and `attached_client_count: null`; the **real handler** is then called against that server and pins `session_count`/`total_notebooks`/`active_connections` (deprecated alias) = 1, `attached_client_count: null`, `result_row_count` = 1; and `/api/status/connections.active` is measured to have main-consumer semantics — 1 while the session's main `/sse` stream is open, 0 after it is closed/orphaned — and is never reported as a client count |
+| `test_discovery.py` | 2 | **T18 server-vs-session discovery**: a freshly launched headless edit server is discoverable (census 200, empty) yet reports **zero** sessions — a launch creates no session, only a client connect does; one `/sse` connect materializes exactly one session, and closing that stream leaves it listed as an orphan with `/api/status/connections.active` 0 (no default TTL reaps it); a `marimo run` server registers in the same registry under `--no-token` but its `/api/sessions` census is **401** (the endpoint requires edit scope), so `discover_servers` returns nothing and the discovery path's `servers_discovered` is 0 — only an explicit `server_url` reaches it, as one connection-failure sentinel (`session_count` 0, `servers_discovered` 1, `result_row_count` 1) |
 | `test_ui.py` | 15 | **widget regressions**: `set_ui_value` moves a live widget and reactively re-runs its dependent cell (3→7 and 103→107, both idle); a scalar sent to a `dropdown` is refused with `did_you_mean` and changes nothing; the corrected one-element list applies, is verified by read-back, and re-runs the dependent cell; a repeat is a verified no-op; an unknown option key surfaces the kernel's own `ValueError` as `status: error` with the widget unmoved; a widget bound to a leading-underscore name is unreachable (`reason: unknown_variable`) because marimo keeps such names cell-private — and that same case pins the error-channel split: its failing run reports through the `run_cell` payload and the cell's `console_stderr`, while the structured channel stays silent (`has_errors: false`, no structured error counted); a widget whose `on_change` handler raises returns `reason: on_change_failed` with `applied: true` and the value genuinely moved (1 → 5, confirmed by an independent read); a repeat of the value the widget already holds whose handler raises reads back unmoved and is *still* `on_change_failed` — `applied: false` + `no_change: true` + `handler_ran: true`, classified from the traceback's call site, never `value_not_applied`; a dropdown built from numeric options stores the number and is addressed by its STRING transport key — sending scalar `4` is refused with `did_you_mean: ["4"]` (never `[4]`, which the kernel itself rejects), and applying `["4"]` moves the element to the numeric 4 (`value_after: 4`, confirmed by a dependent read `4 * 2 == 8`); **T20** — a side-effect-only `button` click is reported from the frontend click counter (0 → 1, `handler_invoked: true`) with the `mo.state` side effect confirmed by an independent read, the `0` counter sentinel reports `handler_invoked: false` and clicks nothing, a repeated nonzero counter reports `handler_invoked: null` while the runtime *did* run the handler again, a raising `on_click` returns `reason: on_click_failed` acknowledging the partial side effect it applied before raising, and `run_button` carries the same counter evidence; missing/non-UI names are refused with clear payloads. Widgets are materialized by *creating* the cell through the MCP tools, so this needs no browser — see [Hermetic widget regressions](#hermetic-widget-regressions) below |
 
 Lint tests (`test_lint_source.py`) moved out of here — they run in-process and
@@ -380,17 +384,55 @@ file, failed re-materialization, a foreign single session that is never adopted,
 an unknown-outcome transport failure, tracker reset, token-rotation honesty) are
 unit-tested without a kernel in `tests/marimo_inspect/test_lifecycle.py`.
 
+## Hermetic server-vs-session discovery regressions
+
+`test_discovery.py` pins the server-vs-session contract (T18) against real
+servers booted by the `bare_server` factory — which deliberately **does not**
+create a session, unlike every other factory here, because that is the fact
+under test: a launch does not create one either. Each test pins the isolated
+`XDG_STATE_HOME` it boots into, so `discover_servers()` (and the discovery path
+of `list_active_notebooks()`) sees exactly the servers that test started.
+
+- **A fresh headless edit server has a server, not a session.** The launch
+  writes its registry entry and `GET /api/sessions` answers 200 with `{}`, so
+  the fully launched server is discoverable and the listing it feeds reports
+  `servers_discovered` 1 while `session_count` and `result_row_count` are 0 with
+  an empty `notebooks` list. Exactly one `/sse` handshake then materializes
+  **exactly one** session — the id the handshake asked for — and closing that
+  stream leaves the session **listed as an orphan** with
+  `/api/status/connections.active` 0: marimo `edit` has no default
+  `--session-ttl`, so nothing reaps it. That is what a session seen "before any
+  client" actually is.
+- **A run-mode server registers but is not discoverable.** `--no-token`
+  registers it in the same registry an edit server uses (the entry is
+  asserted), yet `GET /api/sessions` is **401** — the census requires `edit`
+  scope — so `discover_servers()` returns nothing and the discovery path of
+  `list_active_notebooks()` reads `servers_discovered` 0, `session_count` 0 and
+  no rows: a registered run server is **never counted**, not "counted but
+  unlisted". Only an explicit `server_url` reaches it, and that returns the
+  connection-failure **sentinel** — `session_count`/`total_notebooks` 0,
+  `servers_discovered` 1, `result_row_count` 1, `session_id` `"error"`, the
+  message naming the 401, and no `provenance`/`owner` keys. The unit-level
+  counterpart (`test_run_mode_401_census_is_not_discoverable` in
+  `tests/marimo_inspect/test_discovery.py`) pins the same filter on
+  `_check_server`.
+
+TTL reaping (a configured `--session-ttl` closing an orphan) is deliberately
+**not** a live case here: it is slow, and it is already source-verified and
+recorded in the resolved T18 entry, while the default-TTL orphan above is the
+behaviour the contract rests on.
+
 ## Current status (verified 2026-09-13)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (545 tests collected in total):
+split (548 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 60 passed, 485 deselected
+=> 62 passed, 486 deselected
 
 uv run pytest -m "not live"
-=> 485 passed, 60 deselected
+=> 486 passed, 62 deselected
 ```
 
 (Elapsed times are machine-dependent and not part of the contract; the split and
@@ -437,6 +479,14 @@ purpose-built notebook):
 ```text
 uv run pytest tests/marimo_inspect/live/test_sessions.py -m live
 => 3 passed
+```
+
+The server-vs-session discovery regressions alone (a sessionless edit server,
+and a run server, each on its own isolated registry):
+
+```text
+uv run pytest tests/marimo_inspect/live/test_discovery.py -m live
+=> 2 passed
 ```
 
 What fixed the red suite (see [live-test-redesign-plan.md](live-test-redesign-plan.md) §0 for the verified marimo internals):

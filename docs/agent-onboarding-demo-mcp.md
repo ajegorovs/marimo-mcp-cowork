@@ -91,9 +91,10 @@ Key points:
   **not** pull either in — if you see that error, you're on a pre-fix tree or a
   stale venv: run `uv sync`.
 - **A marimo server materializes a session only when a client connects.** A
-  `--headless` launch never opens a browser and never creates a session on its
-  own, so `list_active_notebooks()` returns `total_notebooks: 0` (and
-  `GET /api/sessions` returns `{}`) until one exists. Two ways to get a session:
+  launch never creates a session on its own — in `edit` **or** `run` mode — so
+  `list_active_notebooks()` returns `total_notebooks: 0` (and
+  `GET /api/sessions` returns `{}`) until a client attaches, and a `--headless`
+  launch never opens a browser to do that. Two ways to get a session:
   - Launch **without `--headless`** (step 2 below) so the browser opens and
     performs the handshake for you.
   - Keep `--headless` and create the session yourself with the `/sse` handshake
@@ -128,7 +129,7 @@ Key points:
   opens the page later must **take over** the session and **re-run the
   notebook** before its widgets respond. A later reconnect can re-key the
   session id, and a second distinct client joins the same kernel as a
-  **non-main, read-only consumer** (run mode is out of scope). That re-key is
+  **non-main, read-only consumer**. That re-key is
   separate from a page-vs-session divergence observed once, which is not
   diagnosed — neither the re-key nor any read-path explanation is confirmed as
   its cause. `list_active_notebooks` cannot tell you which case you are in —
@@ -139,6 +140,14 @@ Key points:
   including a connection-failure sentinel that is a row but *not* a session),
   `attached_client_count: null`, and `active_connections` as only a deprecated
   alias for `session_count`. Binding is not ownership.
+- **A `marimo run` server is not discoverable at all.** It registers under
+  `--no-token` exactly as an edit server does, but `GET /api/sessions` requires
+  `edit` scope and answers `401` in run mode, so the census-200 health check
+  `discover_servers()` uses drops it: it never appears in
+  `list_active_notebooks` and a discovery-based `servers_discovered` never counts
+  it. Only an explicit `server_url` pointed at one reaches it, as a single
+  connection-failure **sentinel** row (`session_count` 0, `servers_discovered`
+  1, `result_row_count` 1) — a row, not a session. (This demo uses edit mode.)
 - **A materialized session is not necessarily a *run* one.** Creating the
   session starts a kernel; it does not execute the notebook. Until the cells
   have run there are no committed widget values, so the execution-state reads

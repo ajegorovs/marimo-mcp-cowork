@@ -54,11 +54,30 @@ orphan**. A human who opens the page afterwards must **take over** the session
 and **re-run the notebook** before its widgets respond. One session per server in
 that mode means a second distinct client does not get its own kernel: it joins
 the same kernel as a **non-main, read-only consumer**, and a later reconnect can
-**re-key** the session id. Run mode is out of scope for these rules. The re-key
-behavior is real and *separate* from a page-vs-session divergence observed once:
+**re-key** the session id. The re-key behavior
+is real and *separate* from a page-vs-session divergence observed once:
 the divergence's cause is **not diagnosed**, and **neither the re-key nor any
 read-path explanation is confirmed as its cause**. Treat a divergence as
 unexplained and prefer the browser-first order instead of assuming a mechanism.
+
+### Server discovery is not session discovery
+
+Launching a server creates **no session** in marimo 0.24 — edit and run mode
+alike. Only a client connect materializes one (`/ws`, or the `/sse` stream the
+browser opens), so a fresh headless server is discoverable while its census is
+empty. A session listed before any client attached is therefore an **orphan**
+from an earlier client on a still-running server (or marimo's own auto-opened
+browser when the launch was not headless) — never a launch artifact, and never
+the on-disk `__marimo__` session cache, which stores cell outputs, not sessions.
+
+A **`marimo run`** server is not discoverable at all: `--no-token` registers it
+in the same registry an edit server uses, but `GET /api/sessions` requires
+`edit` scope and answers **`401`** in run mode, so the census-200 health check
+`discover_servers` performs drops it. It is never counted by
+`servers_discovered` on the discovery path; only an explicit `server_url`
+pointed at it answers, with one connection-failure **sentinel** row
+(`session_count` 0, `servers_discovered` 1, `result_row_count` 1) — a row, not
+a session.
 
 ### Binding is not ownership
 
@@ -78,7 +97,7 @@ The `summary` counts are scoped deliberately:
 | `result_row_count` | `len(notebooks)` — every row, **including** a connection-failure sentinel |
 | `attached_client_count` | always `null`: marimo publishes no per-session client count (and `/api/status/connections.active` counts sessions with an open main consumer, not clients) |
 | `active_connections` | **DEPRECATED** alias for `session_count` — never a client count; read `session_count` |
-| `servers_discovered` | how many servers were queried |
+| `servers_discovered` | how many servers were queried — a registered `marimo run` server is never discovered (its census answers 401), so it is not counted |
 
 A server that cannot be queried adds one **sentinel row** whose keys are exactly
 `name`/`path`/`session_id` (`"error"`)/`server_url`/`error`. It is not a session,

@@ -8,7 +8,9 @@ Architecture:
   path; the shared session uses notebooks/test_marimo.py, the mutation suite
   boots its own servers on tmp_path copies)
 - One server + one session per pytest session for the shared fixtures; the
-  mutation regressions boot one additional isolated server per test
+  mutation regressions boot one additional isolated server per test, and the
+  discovery regressions boot sessionless edit/run servers (the `bare_server`
+  factory: launch creates no session, only a client connect does)
 - Session created via the `/sse` plain-HTTP handshake (no websocket
   library needed; see docs/live-test-redesign-plan.md)
 - Proper cleanup + log dumping on failure
@@ -56,7 +58,13 @@ class MarimoServerManager:
         # handshake so a manager can serve ANY notebook, not just the repo
         # fixture. Set in start(); required by create_session().
         self.notebook_path: str | None = None
+        # "edit" (default) or "run" - see start(). Recorded so a failing test
+        # can say which mode it booted.
+        self.mode: str = "edit"
         self._state_dir: Path | None = None
+        # False when the caller supplied state_dir (it owns the dir, so stop()
+        # must not reap it).
+        self._owns_state_dir = True
         self._log_lines: deque[str] = deque(maxlen=500)
         self._drain_task: asyncio.Task | None = None
 
@@ -70,8 +78,28 @@ class MarimoServerManager:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
 
-    async def start(self, notebook_path: str | None = None) -> str:
-        """Start a headless marimo edit server on a free port."""
+    async def start(
+        self,
+        notebook_path: str | None = None,
+        *,
+        mode: str = "edit",
+        state_dir: str | Path | None = None,
+    ) -> str:
+        """Start a headless marimo server on a free port.
+
+        ``mode`` selects the subcommand: ``"edit"`` (default) or ``"run"``.
+        Both write a registry entry under ``--no-token``, but a ``run``
+        server's ``GET /api/sessions`` census is refused with 401 (that
+        endpoint requires ``edit`` scope), so ``discover_servers()`` never
+        reports a run server — see ``tests/marimo_inspect/live/test_discovery.py``.
+
+        ``state_dir`` overrides the isolated ``XDG_STATE_HOME`` (and therefore
+        the marimo server registry). Omit it for the default per-boot temp
+        dir; pass one when several servers must share a registry.
+        """
+        if mode not in ("edit", "run"):
+            raise ValueError(f"mode must be 'edit' or 'run', got {mode!r}")
+        self.mode = mode
         # Remember which notebook this server owns: create_session() must
         # hand the SAME file back to the /sse handshake or the kernel opens
         # the default notebook instead.
@@ -83,8 +111,15 @@ class MarimoServerManager:
 
         # Isolate marimo's state (server registry, cli state) in a temp dir so
         # the suite neither pollutes the developer's real marimo state nor
-        # clashes with it; also keeps CI hermetic.
-        self._state_dir = Path(tempfile.mkdtemp(prefix="marimo-test-state-"))
+        # clashes with it; also keeps CI hermetic. A caller-supplied dir is
+        # used as-is and is NOT reaped by stop().
+        if state_dir is None:
+            self._state_dir = Path(tempfile.mkdtemp(prefix="marimo-test-state-"))
+            self._owns_state_dir = True
+        else:
+            self._state_dir = Path(state_dir)
+            self._state_dir.mkdir(parents=True, exist_ok=True)
+            self._owns_state_dir = False
         env = dict(os.environ)
         env["XDG_STATE_HOME"] = str(self._state_dir)
 
@@ -92,7 +127,7 @@ class MarimoServerManager:
             sys.executable,
             "-m",
             "marimo",
-            "edit",
+            mode,
             notebook,
             "--no-token",
             "--headless",
@@ -227,10 +262,12 @@ class MarimoServerManager:
                 self._log_lines.append("[stop] drain task cancelled")
             self._drain_task = None
         # Reap the isolated XDG_STATE_HOME so a long pytest session (or CI)
-        # does not accumulate one temp state dir per booted server.
-        if self._state_dir is not None:
+        # does not accumulate one temp state dir per booted server. A
+        # caller-supplied dir belongs to the caller (tmp_path) — leave it.
+        if self._state_dir is not None and self._owns_state_dir:
             shutil.rmtree(self._state_dir, ignore_errors=True)
-            self._state_dir = None
+        self._state_dir = None
+        self._owns_state_dir = True
 
 
 # ─── Session-Scoped Fixtures ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -271,10 +308,11 @@ def live_server_url(kernel_manager):
 def live_session_id(kernel_manager):
     """Return the shared session id used by all live tests.
 
-    marimo edit mode allows exactly one session per server; a new
-    connection with a different session id *replaces* the existing session
-    (verified, see docs/live-test-redesign-plan.md), so tests share one
-    session rather than creating fresh ones.
+    marimo edit mode keeps one kernel session per notebook file. While its main
+    consumer is open, a distinct client joins that kernel as a non-main
+    read-only consumer; after the session becomes orphaned, a new connection
+    may resume the same kernel and re-key its session id. Tests share the one
+    fixture session rather than changing that topology.
     """
     return kernel_manager.session_id
 
@@ -385,6 +423,61 @@ async def notebook_server(tmp_path):
     assert NOTEBOOK_PATH.read_bytes() == original_bytes, (
         "Hermeticity violation: notebooks/test_marimo.py changed under the "
         "notebook_server factory. Run `git status` and restore it."
+    )
+
+
+@pytest.fixture(scope="function")
+async def bare_server(tmp_path):
+    """Factory: boot an isolated headless server that stays **sessionless**.
+
+    Returns an async ``_boot(source, *, name="notebook.py", mode="edit",
+    state_dir=None) -> MarimoServerManager`` that writes ``source`` into
+    ``tmp_path``, starts a ``MarimoServerManager`` on it and does **not**
+    create a session — the caller decides whether and when a client
+    materializes one (launch never does; see
+    ``tests/marimo_inspect/live/test_discovery.py``).
+
+    ``mode`` selects ``marimo edit`` (default) or ``marimo run``.
+    ``state_dir`` pins the isolated ``XDG_STATE_HOME`` — and with it the marimo
+    server registry — so a test can point ``discover_servers()`` (and
+    ``list_active_notebooks()``' discovery path) at exactly the servers it
+    booted.
+
+    Teardown stops every server it started and re-checks that the repo fixture
+    ``notebooks/test_marimo.py`` is byte-identical to what it was at boot (the
+    same hermeticity gate the other factories apply).
+    """
+    managers: list[MarimoServerManager] = []
+    original_bytes = NOTEBOOK_PATH.read_bytes()
+
+    async def _boot(
+        source: str,
+        *,
+        name: str = "notebook.py",
+        mode: str = "edit",
+        state_dir: str | Path | None = None,
+    ) -> MarimoServerManager:
+        notebook = tmp_path / name
+        notebook.write_text(source)
+        manager = MarimoServerManager()
+        await manager.start(str(notebook), mode=mode, state_dir=state_dir)
+        managers.append(manager)
+        return manager
+
+    try:
+        yield _boot
+    except Exception:
+        for manager in managers:
+            manager.dump_logs()
+        raise
+    finally:
+        for manager in managers:
+            await manager.stop()
+
+    # Only reached when setup + the test body succeeded (see docstring).
+    assert NOTEBOOK_PATH.read_bytes() == original_bytes, (
+        "Hermeticity violation: notebooks/test_marimo.py changed under the "
+        "bare_server factory. Run `git status` and restore it."
     )
 
 

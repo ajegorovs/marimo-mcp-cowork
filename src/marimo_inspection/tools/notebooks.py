@@ -66,7 +66,23 @@ async def list_active_notebooks(
     divergence observed once; the divergence's cause is **not diagnosed**, and
     **neither the re-key nor any read-path explanation is confirmed as its
     cause** — treat a divergence as unexplained and prefer the browser-first
-    order rather than assuming a mechanism. Run mode is out of scope here.
+    order rather than assuming a mechanism.
+
+    **Server discovery is not session discovery.** Launching a server — edit
+    or run — creates no session in marimo 0.24; only a client connect (`/ws`,
+    or the `/sse` stream the browser opens) does. A fresh headless server is
+    therefore discoverable with an empty census. A `marimo run` server differs
+    at every level: it registers in the same registry under `--no-token`, but
+    `GET /api/sessions` requires `edit` scope and answers `401` in run mode,
+    so the census-200 health check drops it — it is never discovered and never
+    counted by `servers_discovered`. Only an explicit `server_url` pointed at
+    a run server reaches it, and that yields one connection-failure sentinel
+    row (`session_count` 0, `servers_discovered` 1, `result_row_count` 1), not
+    a discoverable session. A session listed before any client attached is an
+    earlier client's **orphan** on a still-running server (or the browser
+    marimo auto-opened when the launch was not headless) — never a launch
+    artifact, and never the on-disk `__marimo__` session cache, which stores
+    cell outputs rather than sessions.
 
     Counting semantics for `summary`:
       - `total_notebooks` — the number of real sessions, i.e. `session_count`.
@@ -88,7 +104,11 @@ async def list_active_notebooks(
       - `active_connections` — **DEPRECATED** compatibility alias equal to
         `session_count`. It was never a count of attached clients; read
         `session_count` instead. Kept so older callers keep working.
-      - `servers_discovered` — how many servers were queried.
+      - `servers_discovered` — how many servers were **queried**: the
+        discovered (healthy) servers, or the single explicit `server_url`. A
+        registered `marimo run` server is not a discovered server — its 401
+        census excludes it — so it is never counted here on the discovery
+        path.
 
     A server that cannot be queried contributes one **sentinel row** in
     `notebooks` — its keys are exactly `name`, `path`, `session_id` (the literal

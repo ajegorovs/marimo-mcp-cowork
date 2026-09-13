@@ -1,7 +1,18 @@
 """Server discovery from marimo's registry files.
 
-Marimo registers server instances in ~/.marimo/servers/*.json when started
-with `--no-token`. This module discovers those servers and health-checks them.
+Marimo registers a running server in its server registry when it is started
+with ``--no-token`` — in **both** modes, edit and run (the registration gate in
+``_server/api/lifespans.py`` is auth-disabled, not the session mode). POSIX:
+``$XDG_STATE_HOME/marimo/servers/<host>_<port>.json``; Windows:
+``%USERPROFILE%/.marimo/servers``.
+
+This module reads those entries and health-checks each with
+``GET /api/sessions``; only a ``200`` counts. That check is also what makes a
+``marimo run`` server undiscoverable: ``GET /api/sessions`` requires ``edit``
+scope and answers ``401`` in run mode, so a run server registers yet is never
+returned here. Registering, being discoverable, and having a live session are
+three different things: in marimo 0.24 a launch creates no session at all —
+only a client connect (``/ws`` or ``/sse``) does.
 """
 
 from __future__ import annotations
@@ -32,8 +43,11 @@ async def discover_servers(
 ) -> list[DiscoveredServer]:
     """Discover running marimo servers from the registry.
 
-    Scans ~/.marimo/servers/*.json for server registry files,
-    validates each via HTTP health check, and returns healthy servers.
+    Scans the registry for server entries, validates each via HTTP health
+    check (``GET /api/sessions`` must answer ``200``), and returns the healthy
+    ones. A ``marimo run`` server registers in the same registry but answers
+    ``401`` to that endpoint (it requires ``edit`` scope), so it is dropped
+    here and never counted by a discovery-based ``servers_discovered``.
 
     Args:
         base_url: Optional override for the registry base URL.

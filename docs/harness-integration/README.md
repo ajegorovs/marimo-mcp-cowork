@@ -184,20 +184,30 @@ session to point at. Two things bite:
 1. **Start marimo with `--no-token`** for registry-based discovery — the flag is
    present on every `marimo` subcommand (`--token/--no-token`). ✅
    `discovery.py` reads the registry and health-checks `GET /api/sessions`.
-2. **A server alone is not a session.** A `--headless` launch never creates a
-   session, so `list_active_notebooks` returns `total_notebooks: 0` until a client
-   connects. For human co-work the **browser-first** order is the default: launch
-   without `--headless` (the browser performs the handshake and, in marimo 0.24
+2. **A server alone is not a session.** Launching a server creates no session
+   in marimo 0.24 — edit and run mode alike; only a client connect (`/ws`, or
+   the browser's `/sse` stream) does. A `--headless` edit launch therefore never
+   creates one, so `list_active_notebooks` returns `total_notebooks: 0` until a
+   client connects; a session seen before any client attached is an earlier
+   client's orphan (or marimo's auto-opened browser on a non-headless launch),
+   never a startup artifact and never the `__marimo__` session cache. For human
+   co-work the **browser-first** order is the default: launch without
+   `--headless` (the browser performs the handshake and, in marimo 0.24
    edit mode without an explicit `--session-ttl`, **becomes/holds the main
-   consumer connection**), then discover and bind it. The `/sse` handshake is for
-   headless, agent-only work — without an explicit `--session-ttl` closing that
-   stream leaves the session an orphan (it outlives the stream) until a later
-   connection takes it over, though a configured `--session-ttl` can reap it —
-   and a human who later opens the page must take over and re-run the notebook
-   before its widgets respond. A second distinct client joins the same kernel as
-   a **non-main, read-only consumer**, a later reconnect can re-key the session
-   id, and run mode is out of scope; that re-key is separate from a
-   page-vs-session divergence observed once, which is not diagnosed.
+   consumer connection**), then discover and bind it. The `/sse` handshake is
+   for headless, agent-only work — without an explicit `--session-ttl` closing
+   that stream leaves the session an orphan (it outlives the stream) until a
+   later connection takes it over, though a configured `--session-ttl` can reap
+   it — and a human who later opens the page must take over and re-run the
+   notebook before its widgets respond. A second distinct client joins the same
+   kernel as a **non-main, read-only consumer**, a later reconnect can re-key
+   the session id, and that re-key is separate from a page-vs-session
+   divergence observed once, which is not diagnosed. A **`marimo run`** server
+   never appears at all: it registers under `--no-token` like an edit server,
+   but `GET /api/sessions` requires edit scope and answers `401` in run mode, so
+   the census-200 health check drops it and it is never counted by a
+   discovery-based `servers_discovered` — only an explicit `server_url` reaches
+   one, as a connection-failure **sentinel**, not a session.
    `list_active_notebooks` cannot tell you which case you are in: every
    **session** row reports `provenance: "unknown"` / `owner: "unknown"` (marimo
    publishes no creator or owning client, so the payload owner stays unknown),
@@ -213,8 +223,9 @@ Registry location (from `discovery.py::_get_registry_dir`): ✅
   `~/.local/state/marimo/servers`
 - Windows: `%USERPROFILE%\.marimo\servers`
 
-> `discovery.py`'s module docstring still says `~/.marimo/servers/*.json`
-> unqualified — that is the Windows path only. Stale comment, not a bug.
+> `discovery.py` documents both registry paths and why a registered `marimo run`
+> server is dropped by the census-200 health check; the old
+> `~/.marimo/servers/*.json` shorthand was the Windows path only.
 
 ## What the agent sees
 

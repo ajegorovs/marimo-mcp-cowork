@@ -1,10 +1,11 @@
 # Agenda (resolved): first-consumer integration findings (udv-echo-process)
 
-> **Status:** **Round 1 closed; Round 2 open (T15/T17/T19/T20/T21/T22 since
-> resolved — only T18 remains)** —
+> **Status:** **Round 1 closed; Round 2 closed (every item resolved)** —
 > T15–T22: added 2026-09-12, extended the same day with T20–T22 from a third
 > pass over that session (§Round 2). Round 2's T15 (execution modes), T17
-> (validation-before-bind), T19 (browser-first session recipe; the page/kernel
+> (validation-before-bind), T18 (server-vs-session discovery; the "session seen
+> at launch" observation was an earlier client's orphan, not a launch artifact),
+> T19 (browser-first session recipe; the page/kernel
 > divergence cause stays undiagnosed and is deliberately not invented), T20
 > (truthful button click reporting), T21 (row-level staleness) and T22
 > (truthful unknown provenance/ownership) are closed — the per-item state column
@@ -19,6 +20,7 @@
 > **Created:** 2026-09-07 · **Condensed to open items only:** 2026-09-10 ·
 > **T4 + T6 + T9-b + T10 + T11 + T12 + T13 closed:** 2026-09-10 ·
 > **T3 + T14 closed (agenda fully resolved):** 2026-09-10.
+> **Round 2 (T15–T22) fully resolved:** 2026-09-13.
 > **Evidence labels:** ✅ observed (consumer machine, Linux, Python **3.14.7**
 > kernel, marimo **0.24.0**, this repo's MCP server registered in the DSH
 > harness — or provider-side, as stated) · 📄 from provider docs · ❌ not done /
@@ -74,7 +76,7 @@ test that pins it.
 | T15 | No run-all / run-with-descendants, so an unreferenced cell never runs and its widgets never register | **resolved — `run_cell` execution modes; see Resolved log** |
 | T16 | A `mo.sidebar(...)` cell's content is unreadable (`visual_output: null`) | **revised 2026-09-12: no longer reproduces — see the T16 revision note** |
 | T17 | Session identity is unstable without an attached client; an invented id binds but is then "not found" | **resolved — validation-before-bind; see Resolved log** |
-| T18 | A server with no session is invisible, and two headless `marimo edit` launches disagreed about having one | open |
+| T18 | A server with no session is invisible, and two headless `marimo edit` launches disagreed about having one | **resolved — server-vs-session discovery pinned; see Resolved log** |
 | T19 | Recipe: which session a browser or `/sse` stream ends up on, and why a page-vs-kernel divergence happens | **resolved — browser-first recipe; divergence cause not diagnosed; see Resolved log** |
 | T20 | `set_ui_value` reports `applied: false / no_change: true` for a button whose `on_click` only sets state, though the click fired | **resolved — frontend click-counter evidence and `handler_invoked`; see Resolved log** |
 | T21 | `get_cell_outputs` carries no staleness signal, so a RESTORED cell output reads as current | **resolved — row-level state and stale flag; see Resolved log** |
@@ -124,7 +126,8 @@ T22's Resolved entry and the orphan contract in the packaged resources.)* Worse,
 `marimo edit` allows exactly **one** session per server, so the id to target is
 the one `/api/sessions` reports — never one invented by the caller.
 
-**T18 — discovering a server is not discovering a session.** `marimo run` (app
+**T18 — discovering a server is not discovering a session (as filed 2026-09-12;
+RESOLVED — see the Resolved log).** `marimo run` (app
 mode) never appeared in `list_active_notebooks`; its server was counted in
 `servers_discovered` but not listed in `notebooks`, and nothing could be attached
 to it. That is the mechanism T1 already corrected — the tool enumerates
@@ -135,6 +138,27 @@ client connected; the other listed none until an `/sse` handshake). Both
 observations are consistent with "enumerate sessions"; what created the first
 session is not. Treat "launch in edit mode *and* materialize a session" as the
 safe rule.
+
+**T18 revision (2026-09-13, verified probe — marimo 0.24.0, isolated registry).**
+Two claims in the filing were wrong and are corrected here. (1) The run server
+was **never counted** in `servers_discovered`: `GET /api/sessions` requires
+`edit` scope and answers **401** in run mode, so the census-200 health check
+drops it and the *discovery* path does not see it at all — only an explicit
+`server_url` reaches it, as the connection-failure sentinel row
+(`session_count` 0, `servers_discovered` 1, `result_row_count` 1) the filing
+read as "counted but unlisted". A run server *does* register under `--no-token`
+(registration is auth-gated, not mode-gated), which is what made it look
+present. (2) The launch inconsistency is **explained**: launch creates no
+session in either mode — the only `create_session` call site is a `/ws`/`/sse`
+client connect — and marimo persists no sessions to disk, so the session one
+launch listed before any client attached was an **orphan from an earlier
+client** on a still-registered server (a closed `/sse` stream is not reaped
+without an explicit `--session-ttl`; marimo's own auto-opened browser does the
+same when the launch was not actually headless) — never a startup artifact, and
+never the `__marimo__` cache, which stores cell outputs. The safe rule is
+unchanged, but its reason is now known: launch **and** let a client connect.
+Probe evidence: `.hermes/probes/t18-discovery-20260913/EVIDENCE.md`; live pins:
+`tests/marimo_inspect/live/test_discovery.py`.
 
 **T19 — recipe gotcha: which session does a client land on? (as filed
 2026-09-12; RESOLVED — browser-first recipe documented, the divergence cause not
@@ -486,6 +510,33 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   stdio/HTTP isolation regressions, and a real marimo-kernel probe preserved in
   `.hermes/probes/t17-prefix/`; the packaged fallback reference teaches the
   validation-before-write rule.
+- **T18** ✅ *Discovering a server is not discovering a session* — verified on
+  marimo 0.24.0 with an isolated registry (probe:
+  `.hermes/probes/t18-discovery-20260913/EVIDENCE.md`). **Launch creates no
+  session** in either mode: the single `create_session` call site is a `/ws` or
+  `/sse` client connect, nothing at startup touches the in-memory session
+  repository, and the on-disk `__marimo__/session/<notebook>.py.json` cache
+  stores cell outputs — so a session listed "before any client" was an earlier
+  client's **orphan** on a still-registered server (or marimo's own auto-opened
+  browser when the launch was not headless). Without an explicit
+  `--session-ttl`, closing that stream leaves the orphan in place; a configured
+  TTL reaps it. `--no-token` registers a server in **both** modes
+  (registration is auth-gated, not mode-gated), but a **`marimo run`** server is
+  never discoverable: `GET /api/sessions` requires `edit` scope and answers
+  **401** in run mode, so the census-200 health check in `discovery.py` drops it
+  and a discovery-based `servers_discovered` never counts it — the filing's
+  "counted in `servers_discovered`, but not listed" was the **explicit
+  `server_url`** path, which returns one connection-failure sentinel row
+  (`session_count` 0, `servers_discovered` 1, `result_row_count` 1), never a
+  session. The corrected contract is stated in `discovery.py`,
+  `list_active_notebooks`' docstring, the server instructions, `README.md`, all
+  three packaged resources, and the harness/onboarding docs; pinned live by
+  `tests/marimo_inspect/live/test_discovery.py` (a fresh headless edit server is
+  discoverable with an empty census; one `/sse` connect materializes exactly one
+  session; closing it leaves the listed orphan with `connections.active` 0; a
+  registered run server is excluded by `discover_servers` and by the discovery
+  path's `servers_discovered`, while an explicit `server_url` yields the
+  sentinel) and non-live by `test_run_mode_401_census_is_not_discoverable`.
 - **T19** ✅ *Which session a client lands on — browser-first recipe; the
   divergence cause stays undiagnosed* — the safe order is **browser-first**: let
   the page create the session and, in marimo 0.24 **edit mode without an
@@ -499,7 +550,9 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   a later human must **take over** the session and **re-run the notebook** before
   its widgets respond, and a second distinct client joins the same kernel as a
   **non-main, read-only consumer** whose later reconnect can re-key the session
-  id. Run mode is out of scope. The rekey is real and **separate** from the
+  id. (Run mode is a different case, resolved under T18: a run server registers
+  but is never discoverable, its census answering 401.) The rekey is real and
+  **separate** from the
   page-vs-kernel divergence T19 recorded, which stays **undiagnosed**: the recipe
   is documented and a page/session disagreement is stated as unexplained rather
   than given an invented cause, and neither the rekey nor any read-path

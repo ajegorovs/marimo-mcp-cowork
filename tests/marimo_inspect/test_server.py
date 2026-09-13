@@ -296,6 +296,11 @@ class TestToolRegistration:
             assert "session-ttl" in description
             assert "main consumer" in description
             assert "read-only" in description
+            # T18: server discovery vs session discovery, and run mode.
+            assert "marimo run" in description
+            assert "401" in description
+            assert "edit scope" in description
+            assert "launch" in description
 
     async def test_server_instructions_state_browser_first_and_unknown_provenance(
         self, mcp_server
@@ -315,6 +320,11 @@ class TestToolRegistration:
         assert "main consumer" in instructions
         assert "session-ttl" in instructions
         assert "non-main" in instructions
+        # T18: server discovery vs session discovery, and run mode.
+        assert "marimo run" in instructions
+        assert "401" in instructions
+        assert "edit scope" in instructions
+        assert "launch" in instructions
 
     async def test_lint_notebook_signature(self, mcp_server):
         """lint_notebook signature (session_id optional)."""

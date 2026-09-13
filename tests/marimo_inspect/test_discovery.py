@@ -243,6 +243,28 @@ class TestCheckServerHelper:
             server = await _check_server("http://127.0.0.1:8090")
             assert server is None
 
+    async def test_run_mode_401_census_is_not_discoverable(self):
+        """A census refused for lack of edit scope drops the server (T18).
+
+        ``marimo run`` registers in the marimo server registry like ``edit``
+        does under ``--no-token``, but its ``GET /api/sessions`` answers 401
+        (the endpoint requires edit scope). The health check accepts only 200,
+        so a run-mode server is never returned by discovery and never counted
+        by ``servers_discovered`` on the discovery path.
+        """
+        from marimo_inspection.discovery import _check_server
+
+        with patch("marimo_inspection.discovery.httpx.AsyncClient") as mock_client_cls:
+            instance = MagicMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 401
+            instance.get = AsyncMock(return_value=mock_response)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = instance
+
+            assert await _check_server("http://127.0.0.1:8090") is None
+
     async def test_network_error(self):
         """Returns None when health check throws."""
         from marimo_inspection.discovery import _check_server

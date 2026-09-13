@@ -487,6 +487,11 @@ class TestResourceContent:
         assert "total_notebooks" in text
         assert "result_row_count" in text
         assert "sentinel" in text
+        # T18: server discovery vs session discovery, and run mode's exclusion.
+        assert "not discoverable" in text
+        assert "401" in text
+        assert "edit scope" in text
+        assert "launch" in text
 
     async def test_live_safety_documents_that_a_session_may_not_be_yours(
         self, mcp_server
@@ -509,6 +514,10 @@ class TestResourceContent:
         assert "main consumer" in text
         assert "non-main" in text
         assert "result_row_count" in text
+        # T18: a run server is not discoverable (its census answers 401).
+        assert "not discoverable" in text
+        assert "401" in text
+        assert "edit scope" in text
 
     async def test_fallbacks_documents_session_provenance_and_counts(self, mcp_server):
         """T22: the limits reference names the honest fields and counts."""
@@ -532,6 +541,10 @@ class TestResourceContent:
         assert "sentinel" in text
         assert "session-ttl" in text
         assert "main consumer" in text
+        # T18: a run server is not discoverable (its census answers 401).
+        assert "not discoverable" in text
+        assert "401" in text
+        assert "edit scope" in text
 
 
 # ---------------------------------------------------------------------------
