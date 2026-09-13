@@ -8,7 +8,7 @@ import logging
 from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient
-from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
+from marimo_inspection.tools.session import resolve_target
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +65,14 @@ async def get_dependency_graph(
             ],
         }
 
-    sid = await resolve_session_id(session_id, ctx)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
     if ctx:
         await ctx.info("Getting full dependency graph...")
-
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
 
     from marimo_inspection.templates.dependency import build_dependency_graph_template
 
@@ -119,12 +121,3 @@ async def get_dependency_graph(
             "raw_output": stdout_text,
             "stderr": result.stderr,
         }
-
-
-async def _get_client(
-    server_url: str,
-    ctx: Context | None = None,
-) -> MarimoClient:
-    """Create a MarimoClient, using explicit server_url or the bound one."""
-    url = await resolve_server_url(server_url, ctx)
-    return MarimoClient(url)

@@ -10,6 +10,10 @@ The code-mode snapshot exposes ONE main output per cell plus console events —
 not every frontend UI registration. If something rendered in the notebook is
 missing from `get_cell_outputs`, inspect the cell's variables instead.
 
+`get_cell_data` returns each selected cell's source and live runtime state; its
+`data[].variables` field is a compatibility placeholder that is always `null`
+(it has never carried variable data). Read live variables with `get_variables`.
+
 ## Widget value shape
 
 `set_ui_value` expects a widget-specific JSON value shape; a shape the element
@@ -212,6 +216,35 @@ anything, so `status: OK` means the binding can actually reach the session:
   to bind it to is `reason: binding_context_unavailable`.
 
 See `workflow://marimo-inspect/co-work-loop` §1.
+
+### Target errors are payloads, not tool exceptions
+
+Every cell/session-targeting tool (`get_cell_map`, `get_cell_data`,
+`get_cell_outputs`, `get_variables`, `get_dependency_graph`, `get_errors`,
+`lint_notebook`, `create_cell`, `edit_cell`, `run_cell`, `delete_cell`,
+`set_ui_value`) resolves its target through one shared step, so a target
+problem comes back as a structured refusal instead of a raw exception:
+`status: error` with `target_resolved: false`, `operation_ran: false`,
+`state_changed: false`, and **no read or write operation runs on a refusal**
+(the refusal is built before any scratchpad or mutation call).
+
+| `reason` | meaning |
+| --- | --- |
+| `session_required` | No explicit **and** no bound `session_id`/`server_url`. Discover/bind with `list_active_notebooks`, or pass both explicitly. |
+| `binding_ambiguous` (passed through) | A binding exists but this server process has served more than one client session, so the process-global fallback was withheld — never guessed. |
+| `session_not_found` | The requested id is not live on the selected server, and the census was **read**: `available_sessions` is that **same** server's truthful census — never another server's and never an invented id — and `available_sessions_readable` is `true`. |
+| `server_unreachable` | The session census could not be reached (transport failure). |
+| `server_query_failed` | The census answered with a non-auth HTTP error (HTTP `500` included) or an **unreadable** body (truncated JSON, invalid UTF-8, a non-object body). |
+
+An explicit `session_id`/`server_url` pair that does not exist on the selected
+server is `session_not_found` plus that server's real `available_sessions`,
+with `available_sessions_readable: true`. Absence is concluded **only** from a
+census that was successfully read: an unreadable census is
+`server_query_failed`, never `session_not_found`, and
+`available_sessions_readable: false` marks an empty `available_sessions` as
+"could not be read" rather than "no sessions live there".
+`restart_kernel` and `list_active_notebooks` speak their own refusal
+vocabularies.
 
 ### Binding is not ownership, and the counts are scoped
 

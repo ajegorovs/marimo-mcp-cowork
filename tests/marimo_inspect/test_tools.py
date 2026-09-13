@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 # -------------------------------------------------------------------
 # list_active_notebooks tool tests
 # -------------------------------------------------------------------
@@ -254,7 +252,7 @@ class TestGetCellMap:
     """Test the get_cell_map tool handler."""
 
     async def test_requires_session_id(self):
-        """session_id is required."""
+        """A missing server_url refuses structurally, not with a bare ValueError."""
         from marimo_inspection.tools.cells import get_cell_map
 
         with patch("marimo_inspection.tools.cells.MarimoClient") as mock_client_cls:
@@ -264,9 +262,15 @@ class TestGetCellMap:
             )
             mock_client_cls.return_value = mock_instance
 
-            # Should raise because server_url is missing
-            with pytest.raises(ValueError):
-                await get_cell_map(session_id="abc123")
+            # No server_url and no bound URL: the shared resolver refuses.
+            result = await get_cell_map(session_id="abc123")
+
+            assert result["status"] == "error"
+            assert result["reason"] == "session_required"
+            assert result["operation_ran"] is False
+            # The client is never built, let alone used.
+            mock_client_cls.assert_not_called()
+            mock_instance.execute.assert_not_called()
 
     async def test_calls_client_with_session(self):
         """Calls client.resolve_session with correct ID."""
@@ -357,7 +361,7 @@ class TestGetCellData:
     """Test the get_cell_data tool handler."""
 
     async def test_requires_session_id(self):
-        """session_id is required."""
+        """A missing server_url refuses structurally, not with a bare ValueError."""
         from marimo_inspection.tools.cells import get_cell_data
 
         with patch("marimo_inspection.tools.cells.MarimoClient") as mock_client_cls:
@@ -367,8 +371,13 @@ class TestGetCellData:
             )
             mock_client_cls.return_value = mock_instance
 
-            with pytest.raises(ValueError):
-                await get_cell_data(session_id="abc123")
+            result = await get_cell_data(session_id="abc123")
+
+            assert result["status"] == "error"
+            assert result["reason"] == "session_required"
+            assert result["operation_ran"] is False
+            mock_client_cls.assert_not_called()
+            mock_instance.execute.assert_not_called()
 
     async def test_returns_cell_data(self):
         """Returns cell runtime data."""
@@ -424,6 +433,50 @@ class TestGetCellData:
                 server_url="http://127.0.0.1:8090",
             )
             assert "data" in result
+
+    async def test_include_errors_reaches_the_generated_template(self):
+        """include_errors travels into the scratchpad code; default omits it.
+
+        The default generated code must not carry the extractor (and so cannot
+        leak the optional fields); the opt-in code must carry exactly the four
+        per-row keys.
+        """
+        from marimo_inspection.tools.cells import get_cell_data
+
+        with patch("marimo_inspection.tools.cells.MarimoClient") as mock_client_cls:
+            mock_instance = MagicMock()
+            mock_session = MagicMock(
+                session_id="abc123",
+                file="/test.py",
+                basename="test.py",
+            )
+            mock_instance.resolve_session = AsyncMock(return_value=mock_session)
+            mock_execute_result = MagicMock()
+            mock_execute_result.status = "ok"
+            mock_execute_result.stdout = [
+                '{"data": [{"cell_id": "0", "code": "x = 1"}]}'
+            ]
+            mock_instance.execute = AsyncMock(return_value=mock_execute_result)
+            mock_client_cls.return_value = mock_instance
+
+            await get_cell_data(session_id="abc123", server_url="http://127.0.0.1:8090")
+            default_code = mock_instance.execute.call_args[0][1]
+            assert "_extract_cell_errors" not in default_code
+            assert "structured_errors" not in default_code
+
+            result = await get_cell_data(
+                session_id="abc123",
+                cell_ids=["0"],
+                include_errors=True,
+                server_url="http://127.0.0.1:8090",
+            )
+            assert "data" in result
+            opt_in_code = mock_instance.execute.call_args[0][1]
+            assert "_extract_cell_errors" in opt_in_code
+            assert '"structured_errors"' in opt_in_code
+            assert '"console_stderr"' in opt_in_code
+            assert '"has_console_exception"' in opt_in_code
+            assert '"console_exception_evidence"' in opt_in_code
 
 
 class TestGetCellDataChangeTracking:
@@ -602,6 +655,50 @@ class TestGetCellDataChangeTracking:
             assert "error" in result
             assert tracker.get_cell_fingerprint(self.SID, "B").code_hash == "bhash"
             assert tracker.get_cell_fingerprint(self.SID, "0") is None
+        finally:
+            tracker.clear_session(self.SID)
+
+    async def test_include_errors_read_still_records_the_baseline(self):
+        """The opt-in flag must not change read-baseline tracking."""
+        import json
+
+        from marimo_inspection.tools.cells import get_cell_data
+        from marimo_inspection.tools.change_tracking import get_tracker
+
+        code = "x = 1\n"
+        tracker = get_tracker()
+        tracker.clear_session(self.SID)
+        try:
+            with self._patch_client(
+                [
+                    json.dumps(
+                        {
+                            "data": [
+                                {
+                                    "cell_id": "0",
+                                    "code": code,
+                                    "runtime_state": "idle",
+                                    "variables": None,
+                                    "structured_errors": [],
+                                    "console_stderr": [],
+                                    "has_console_exception": False,
+                                    "console_exception_evidence": None,
+                                }
+                            ]
+                        }
+                    )
+                ]
+            ):
+                result = await get_cell_data(
+                    session_id=self.SID,
+                    include_errors=True,
+                    server_url="http://127.0.0.1:8090",
+                )
+            assert "error" not in result
+            fp = tracker.get_cell_fingerprint(self.SID, "0")
+            assert fp is not None
+            assert fp.code_hash == self._code_hash(code)
+            assert fp.state == "idle"
         finally:
             tracker.clear_session(self.SID)
 

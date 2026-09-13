@@ -492,6 +492,200 @@ class TestCellDataTemplate:
         assert data["missing_cell_ids"] == []
         assert [row["cell_id"] for row in data["data"]] == ["0"]
 
+    async def test_default_rows_keep_the_legacy_shape(self, monkeypatch):
+        """Default (include_errors=False) rows carry ONLY the legacy keys.
+
+        The opt-in mode must not leak error fields into the default payload —
+        even for a cell that actually has structured errors.
+        """
+        from marimo_inspection.templates.cell_data import (
+            build_cell_data_template,
+        )
+
+        data = await _exec_template(
+            build_cell_data_template([], include_errors=False),
+            SimpleNamespace(
+                cells={
+                    "clean": _FakeCell("clean"),
+                    "boom": _FakeCell(
+                        "boom",
+                        errors=[_FakeCellError(kind="runtime", msg="boom")],
+                    ),
+                }
+            ),
+            monkeypatch,
+            "get_cell_data",
+        )
+
+        for row in data["data"]:
+            assert set(row) == {
+                "cell_id",
+                "code",
+                "runtime_state",
+                "variables",
+            }, row
+
+    async def test_opt_in_adds_the_error_channels_to_every_row(self, monkeypatch):
+        """include_errors=True adds the four per-row fields to EVERY selected row.
+
+        A clean cell reports explicit empty/false/null values (it must not
+        disappear the way it does from the filtered get_errors payload), and an
+        erroring cell reports the same two-channel semantics get_errors uses.
+        """
+        from marimo_inspection.templates.cell_data import (
+            build_cell_data_template,
+        )
+
+        data = await _exec_template(
+            build_cell_data_template([], include_errors=True),
+            SimpleNamespace(
+                cells={
+                    "clean": _FakeCell("clean"),
+                    "boom": _FakeCell(
+                        "boom",
+                        errors=[_FakeCellError(kind="runtime", msg="ValueError: boom")],
+                    ),
+                    "console": _FakeCell(
+                        "console", console_outputs=[_FakeStderrTracebackEvent()]
+                    ),
+                }
+            ),
+            monkeypatch,
+            "get_cell_data",
+        )
+
+        by_id = {row["cell_id"]: row for row in data["data"]}
+        assert set(by_id) == {"clean", "boom", "console"}
+        for row in data["data"]:
+            assert set(row) == {
+                "cell_id",
+                "code",
+                "runtime_state",
+                "variables",
+                "structured_errors",
+                "console_stderr",
+                "has_console_exception",
+                "console_exception_evidence",
+            }, row
+
+        # A clean cell keeps its explicit empty/false/null error fields.
+        clean = by_id["clean"]
+        assert clean["structured_errors"] == []
+        assert clean["console_stderr"] == []
+        assert clean["has_console_exception"] is False
+        assert clean["console_exception_evidence"] is None
+
+        # Structured errors land on the structured channel only.
+        boom = by_id["boom"]
+        assert [e["kind"] for e in boom["structured_errors"]] == ["runtime"]
+        assert boom["structured_errors"][0]["msg"] == "ValueError: boom"
+        assert boom["has_console_exception"] is False
+        assert boom["console_exception_evidence"] is None
+
+        # A console-only traceback is visible without any structured error.
+        console = by_id["console"]
+        assert console["structured_errors"] == []
+        assert console["has_console_exception"] is True
+        assert console["console_exception_evidence"] == "traceback"
+        assert [e["channel"] for e in console["console_stderr"]] == ["stderr"]
+
+    async def test_opt_in_matches_get_errors_marker_semantics(self, monkeypatch):
+        """The opt-in path reuses get_errors' conservative evidence rules.
+
+        An ordinary ``Error:`` log label is NOT evidence, while a bare
+        exception line is; an unreadable private field stays conservative
+        (never flagged) rather than raising.
+        """
+        from marimo_inspection.templates.cell_data import (
+            build_cell_data_template,
+        )
+
+        data = await _exec_template(
+            build_cell_data_template([], include_errors=True),
+            SimpleNamespace(
+                cells={
+                    "label": _FakeCell(
+                        "label", console_outputs=[_FakeErrorLabelEvent()]
+                    ),
+                    "line": _FakeCell(
+                        "line", console_outputs=[_FakeExceptionLineEvent()]
+                    ),
+                    "broken": _UnreadableCell(),
+                }
+            ),
+            monkeypatch,
+            "get_cell_data",
+        )
+
+        by_id = {row["cell_id"]: row for row in data["data"]}
+        # `Error: 3 rows skipped` is a message, not an exception type.
+        assert by_id["label"]["has_console_exception"] is False
+        assert by_id["line"]["has_console_exception"] is True
+        assert by_id["line"]["console_exception_evidence"] == "exception_line"
+        # An unreadable private field is never treated as evidence.
+        broken = by_id["broken"]
+        assert broken["structured_errors"] == []
+        assert broken["console_stderr"] == []
+        assert broken["has_console_exception"] is False
+        assert broken["console_exception_evidence"] is None
+
+    def test_opt_in_embeds_the_shared_error_extractor(self):
+        """Both templates embed the SAME extraction source, verbatim.
+
+        The opt-in cell-data path must not re-implement the error semantics
+        (or they would drift from get_errors, which is covered above), and
+        ``get_errors`` must consume the same constant, not a copy of it.
+
+        The shared helpers must also stay PRIVATE: scratchpad code runs in the
+        KERNEL's namespace, so a public generated name would overwrite a
+        same-named notebook global on every call (``extract_cell_errors``
+        without the underscore is exactly the shape that must never return).
+        """
+        from marimo_inspection.templates.cell_data import (
+            build_cell_data_template,
+        )
+        from marimo_inspection.templates.errors import (
+            CELL_ERROR_EXTRACTION_SRC,
+            build_errors_template,
+        )
+
+        opt_in = build_cell_data_template([], include_errors=True)
+        assert CELL_ERROR_EXTRACTION_SRC in opt_in
+        assert "def _extract_cell_errors" in opt_in
+
+        # The errors template embeds the SAME constant verbatim: one source of
+        # truth, so the two tools cannot drift apart.
+        errors_code = build_errors_template()
+        assert CELL_ERROR_EXTRACTION_SRC in errors_code
+        assert "def _extract_cell_errors" in errors_code
+
+        # ...and the default path carries no extractor at all.
+        default = build_cell_data_template([], include_errors=False)
+        assert "_extract_cell_errors" not in default
+        assert "structured_errors" not in default
+
+        # Every name the shared source binds (defs and assignments) is private.
+        bound: set[str] = set()
+        for node in ast.parse(CELL_ERROR_EXTRACTION_SRC).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                bound.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        bound.add(target.id)
+        assert "_extract_cell_errors" in bound
+        assert {name for name in bound if not name.startswith("_")} == set(), bound
+
+    def test_generated_code_is_valid_python_for_both_modes(self):
+        """Both generated snippets parse."""
+        from marimo_inspection.templates.cell_data import (
+            build_cell_data_template,
+        )
+
+        for include_errors in (False, True):
+            code = build_cell_data_template(["0", "1"], include_errors=include_errors)
+            ast.parse(code)  # must not raise
+
 
 class TestCellOutputsTemplate:
     """Test build_cell_outputs_template()."""

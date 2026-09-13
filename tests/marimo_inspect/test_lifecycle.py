@@ -778,9 +778,7 @@ class TestRestartKernelGuardRails:
         _fast_poll(monkeypatch)
         pre = FakeClient(
             [_session()],
-            outcome=RestartOutcome(
-                ok=False, reason="edit_required", status_code=403
-            ),
+            outcome=RestartOutcome(ok=False, reason="edit_required", status_code=403),
         )
         post = FakeClient([])
         with _patch_clients(pre, post):

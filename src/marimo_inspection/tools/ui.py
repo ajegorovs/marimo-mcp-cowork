@@ -47,7 +47,7 @@ from typing import Any
 from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient
-from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
+from marimo_inspection.tools.session import resolve_target
 
 logger = logging.getLogger(__name__)
 
@@ -96,15 +96,6 @@ _ON_CLICK_ELEMENT_TYPE = "button"
 def _is_button(data: dict) -> bool:
     """Whether the updated element is a ``button`` or ``run_button``."""
     return data.get("element_type") in _BUTTON_TYPES
-
-
-async def _get_client(
-    server_url: str,
-    ctx: Context | None = None,
-) -> MarimoClient:
-    """Create a MarimoClient, using explicit server_url or the bound one."""
-    url = await resolve_server_url(server_url, ctx)
-    return MarimoClient(url)
 
 
 async def _execute_json(client: MarimoClient, sid: str, code: str) -> tuple[dict, str]:
@@ -847,9 +838,12 @@ async def set_ui_value(
             "error": "variable_name is required",
         }
 
-    sid = await resolve_session_id(session_id, ctx)
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
     sid = session.session_id
     if ctx:
         await ctx.info(f"Setting UI element '{variable_name}' in session {sid}...")

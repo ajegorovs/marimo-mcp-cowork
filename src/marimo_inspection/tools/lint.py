@@ -16,7 +16,7 @@ from pathlib import Path
 from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient
-from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
+from marimo_inspection.tools.session import resolve_target
 
 logger = logging.getLogger(__name__)
 
@@ -119,12 +119,15 @@ async def lint_notebook(
     Returns:
         Dictionary with lint diagnostics and summary.
     """
-    sid = await resolve_session_id(session_id, ctx)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    # lint reads the notebook file in-process; it never executes on the client.
+    _, session = resolved.unwrap()
     if ctx:
         await ctx.info("Linting notebook...")
-
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
 
     file_path = session.file
     if not file_path:
@@ -172,12 +175,3 @@ async def lint_notebook(
     if data.get("error"):
         result["error"] = data["error"]
     return result
-
-
-async def _get_client(
-    server_url: str,
-    ctx: Context | None = None,
-) -> MarimoClient:
-    """Create a MarimoClient, using explicit server_url or the bound one."""
-    url = await resolve_server_url(server_url, ctx)
-    return MarimoClient(url)

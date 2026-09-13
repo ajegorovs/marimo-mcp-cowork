@@ -13,9 +13,9 @@ ledger.
 
 | Area | Current state | Canonical detail |
 | --- | --- | --- |
-| MCP upgrade roadmap | `restart_kernel` is implemented; notebook-server start/stop/switch remain operator-owned | [`mcp-upgrade-roadmap.md`](mcp-upgrade-roadmap.md) |
+| MCP upgrade roadmap | Composite cell reads and structured target refusals are implemented; `restart_kernel` is implemented; notebook-server start/stop/switch remain operator-owned | [`mcp-upgrade-roadmap.md`](mcp-upgrade-roadmap.md) |
 | Consumer findings | Round 2 fully closed — T18 resolved: server discovery is not session discovery (a launch creates no session; a `marimo run` server registers but is never discoverable, its census answering 401), on top of the browser-first recipe (marimo 0.24 edit mode without `--session-ttl`) and truthful `provenance`/`owner: "unknown"` with scoped counts | [`agenda-udv-consumer-findings.md`](agenda-udv-consumer-findings.md) |
-| Remote topology | Design investigation remains open | [`agenda-remote-marimo-mcp.md`](agenda-remote-marimo-mcp.md) |
+| Remote topology | Design investigation remains open; session/server mismatch handling is resolved, while the 401 auth-versus-edit-scope taxonomy is the next decision | [`agenda-remote-marimo-mcp.md`](agenda-remote-marimo-mcp.md) |
 | Live tests | Current commands, mechanics, and exact counts | [`live-tests.md`](live-tests.md) |
 
 ## Closed work and decision trails

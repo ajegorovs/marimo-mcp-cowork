@@ -126,6 +126,40 @@ class TestToolRegistration:
             cell_data_tool = next(t for t in tools if t.name == "get_cell_data")
             assert cell_data_tool.name == "get_cell_data"
 
+    async def test_get_cell_data_include_errors_schema_and_description(
+        self, mcp_server
+    ):
+        """include_errors is an optional boolean False; the description names fields.
+
+        The consumer-visible schema must expose ``include_errors`` as a
+        non-required boolean defaulting to false (backward compatibility), and
+        the exposed description must name the exact per-row error-field paths
+        and point variable inspection at ``get_variables``.
+        """
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            tool = next(t for t in tools if t.name == "get_cell_data")
+
+        schema = tool.input_schema
+        props = schema.get("properties", {})
+        assert "include_errors" in props, schema
+        include_errors = props["include_errors"]
+        assert include_errors.get("type") == "boolean", include_errors
+        assert include_errors.get("default") is False, include_errors
+        assert "include_errors" not in set(schema.get("required", [])), schema
+
+        description = " ".join((tool.description or "").lower().split())
+        assert "include_errors" in description
+        for field in (
+            "structured_errors",
+            "console_stderr",
+            "has_console_exception",
+            "console_exception_evidence",
+        ):
+            assert field in description, description
+        # Variable inspection lives in get_variables, not here.
+        assert "get_variables" in description
+
     async def test_get_cell_outputs_signature(self, mcp_server):
         """get_cell_outputs requires session_id, optional cell_ids."""
         async with Client(transport=mcp_server) as client:

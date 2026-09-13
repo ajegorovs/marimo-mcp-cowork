@@ -37,6 +37,33 @@ always win, and they cost one line. The refusal tells you which case you hit:
 call, so it withheld it. This is a limitation of client-session handling, not
 of the notebook session.
 
+### Target refusals are structured payloads
+
+Every cell/session-targeting tool resolves its target through one shared step,
+so a target problem comes back as a structured refusal — `status: error` with
+`operation_ran: false` and `state_changed: false`, and **nothing was read or
+written** — rather than as a raw exception. The reasons are:
+
+- `session_required` — there is no explicit and no bound `session_id` /
+  `server_url`; discover and bind one, or pass both explicitly.
+- `binding_ambiguous` — passed through from the binding rules above (the
+  process-global fallback was withheld, never guessed).
+- `session_not_found` — the requested id is not live on the **selected**
+  server. `available_sessions` is that same server's truthful census and
+  `available_sessions_readable` is `true` (that census was read), so correct
+  the pair from it instead of retrying a mismatched one.
+- `server_unreachable` — the session census could not be reached.
+- `server_query_failed` — the census answered with a non-auth HTTP error (a
+  `500` included) or an unreadable body (truncated JSON or invalid UTF-8
+  included).
+
+An explicit `session_id`/`server_url` pair that does not exist on the selected
+server is the `session_not_found` case. Absence is concluded **only** from a
+census that was successfully read: an unreadable census is `server_query_failed`
+and never `session_not_found`, and `available_sessions_readable` says whether
+the list is a real census (`true`, an empty successful census included) or
+empty because nothing could be read (`false`).
+
 ### Browser-first: let the page hold the main consumer connection
 
 For co-work with a person, let the **browser** create the session: launch the
@@ -113,6 +140,16 @@ cell. Previews only: this does **not** record an `edit_cell` read baseline.
 
 `get_cell_data` — full source and runtime data for chosen cells. This is the
 read that records the `edit_cell` baseline.
+
+Error channels are **opt-in**: `get_cell_data(include_errors=True)` adds
+`data[].structured_errors` and `data[].console_stderr` (the same two channels
+`get_errors` reports) plus `data[].has_console_exception` and
+`data[].console_exception_evidence` to **every** returned row — a clean cell
+reports `[]` / `[]` / `false` / `null`. The default read omits all four keys,
+so its row shape is unchanged. `data[].variables` is a deprecated
+compatibility placeholder that is always `null`: live variable inspection is
+`get_variables`.
+
 `get_cell_outputs` and `get_variables` cover execution state.
 
 A requested `cell_id` that resolves to nothing (deleted or mistyped) is reported

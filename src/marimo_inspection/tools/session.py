@@ -52,15 +52,20 @@ See ``lookup_session`` for the read-only validator the tool builds on.
 
 from __future__ import annotations
 
+import inspect
+import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import httpx2
 from fastmcp import Context
 
-from marimo_inspection.client import MarimoClient
+from marimo_inspection.client import MarimoClient, SessionInfo
 from marimo_inspection.discovery import discover_servers
+
+logger = logging.getLogger(__name__)
 
 _SESSION_KEY = "active_session_id"
 _SERVER_URL_KEY = "active_server_url"
@@ -300,11 +305,20 @@ async def bind_active_session(
 # Validation before binding (T17)
 # ---------------------------------------------------------------------------
 
+# Public, shared refusal-reason vocabulary for the targeting tools (Wave A).
+# `session_not_found` / `server_unreachable` / `server_query_failed` are reused
+# by the bind validator below (they are the same classes there); the private
+# aliases keep the existing internal names without a second source of truth.
+REASON_SESSION_REQUIRED = "session_required"
+REASON_SESSION_NOT_FOUND = "session_not_found"
+REASON_SERVER_UNREACHABLE = "server_unreachable"
+REASON_SERVER_QUERY_FAILED = "server_query_failed"
+
 _REASON_INVALID_SESSION_ID = "invalid_session_id"
-_REASON_SESSION_NOT_FOUND = "session_not_found"
+_REASON_SESSION_NOT_FOUND = REASON_SESSION_NOT_FOUND
 _REASON_SESSION_AMBIGUOUS = "session_ambiguous"
-_REASON_SERVER_UNREACHABLE = "server_unreachable"
-_REASON_SERVER_QUERY_FAILED = "server_query_failed"
+_REASON_SERVER_UNREACHABLE = REASON_SERVER_UNREACHABLE
+_REASON_SERVER_QUERY_FAILED = REASON_SERVER_QUERY_FAILED
 _REASON_BINDING_CONTEXT_UNAVAILABLE = "binding_context_unavailable"
 
 
@@ -729,3 +743,398 @@ async def set_active_session(
             "client."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Structured target resolution for the targeting tools (Wave A)
+# ---------------------------------------------------------------------------
+#
+# Every cell/session-targeting tool used to resolve session_id/server_url and
+# then call MarimoClient.resolve_session itself. A mismatched explicit pair
+# raised a bare ValueError, a missing target raised ValueError, and
+# transport/query failures escaped as httpx2 errors — none of them the
+# structured refusal the rest of the surface already speaks (`restart_kernel`,
+# `set_active_session`). `resolve_target` centralizes exactly that step: it
+# returns either the resolved (client, session) pair or one common refusal
+# payload, and **every refusal is built before any read or write operation**.
+#
+# Deliberately out of scope here: HTTP 401/403. The auth/scope taxonomy is a
+# follow-up decision (does a run-mode scope failure share `auth_required` with a
+# true auth failure, or get its own reason?), so this resolver closes the client
+# and re-raises `HTTPStatusError` unchanged rather than picking one.
+
+
+@dataclass(frozen=True)
+class TargetResolution:
+    """Outcome of resolving a tool's session/server target.
+
+    Exactly one of ``refusal`` / (``client``, ``session``) is set: a non-None
+    ``refusal`` means nothing was read or written and the caller must return it
+    verbatim; otherwise the caller owns ``client`` and must use ``session``.
+    """
+
+    client: MarimoClient | None = None
+    session: SessionInfo | None = None
+    refusal: dict[str, Any] | None = None
+
+    @property
+    def refused(self) -> bool:
+        """True when the caller must return ``refusal`` and do nothing else."""
+        return self.refusal is not None
+
+    def unwrap(self) -> tuple[MarimoClient, SessionInfo]:
+        """The resolved ``(client, session)`` pair, or raise on a refusal.
+
+        Callers must have already returned ``refusal``; this exists so the happy
+        path is a plain non-optional unpack for both readers and type checkers.
+        """
+        if self.client is None or self.session is None:
+            raise RuntimeError("resolve_target refused; return the refusal instead")
+        return self.client, self.session
+
+
+_OPERATION_NOT_RUN = "Nothing was read or written."
+
+
+def _target_refusal(
+    reason: str,
+    message: str,
+    *,
+    session_id: str,
+    server_url: str,
+    available_sessions: list[dict[str, str]] | None = None,
+    available_sessions_readable: bool = False,
+    next_steps: list[str] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build the one refusal payload every targeting tool returns.
+
+    The envelope (``status``/``reason``/``target_resolved``/``operation_ran``/
+    ``state_changed``/``next_steps``) follows the same structured-refusal
+    conventions as ``restart_kernel``'s refusals, but the rows are this
+    resolver's own ``{server_url, session_id}`` pair — ``restart_kernel``
+    reports ``{session_id, file}`` rows for the kernel it just handled, so the
+    two must not be read as one shape.
+
+    ``available_sessions_readable`` is the truthfulness flag for the census:
+    true **only** when this refusal followed a census that was successfully
+    read (a successful but empty census included), false when there is no
+    census at all (no target, a withheld binding, a transport or query
+    failure). An empty ``available_sessions`` therefore means "this server
+    reports no live sessions" exactly when this flag is true, and
+    "unknown/unreadable" when it is false.
+    """
+    payload: dict[str, Any] = {
+        "status": "error",
+        "reason": reason,
+        "error": message,
+        "message": message,
+        "session_id": session_id,
+        "server_url": server_url,
+        "target_resolved": False,
+        "operation_ran": False,
+        "state_changed": False,
+        "available_sessions": list(available_sessions or []),
+        "available_sessions_readable": available_sessions_readable,
+        "next_steps": list(next_steps or []),
+    }
+    payload.update(extra)
+    return payload
+
+
+async def _close_quietly(client: MarimoClient) -> None:
+    """Best-effort close of a client the resolver refused to hand off.
+
+    A refusal must not leak the HTTP client it built. The close is tolerant on
+    purpose: a test double's ``close`` may not be awaitable, and closing must
+    never replace the refusal with a new exception.
+    """
+    close = getattr(client, "close", None)
+    if close is None:
+        return
+    try:
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # a close failure never masks the refusal
+        logger.debug("Failed to close a refused client", exc_info=True)
+
+
+async def _census_of(
+    client: MarimoClient, url: str
+) -> tuple[list[dict[str, str]], str]:
+    """Read *that* client's server census, only to report it truthfully.
+
+    Called when ``resolve_session`` reports the requested id absent: the same
+    client/server is asked which sessions it does report, so the refusal carries
+    the truth instead of a guess. Its outcome is also the discriminator between
+    a real absence (the census reads fine and simply does not contain the id)
+    and an unreadable census (the read fails — including a JSON decode error or
+    invalid UTF-8, which ``resolve_session`` surfaces as the same ``ValueError``
+    it raises for a missing id, so the type alone cannot tell them apart).
+
+    Returns ``(rows, "")`` on a successful read — an empty census included —
+    and ``([], error)`` on a failed one: never a different server and never an
+    invented id.
+    """
+    try:
+        sessions = await client.list_sessions()
+    except (httpx2.HTTPError, OSError, ValueError, AttributeError, TypeError) as exc:
+        return [], str(exc)
+    return (
+        [{"server_url": url, "session_id": s.session_id} for s in sessions],
+        "",
+    )
+
+
+def _missing_target_refusal(
+    session_id: str, server_url: str, message: str
+) -> TargetResolution:
+    """A no-target refusal: session_required, nothing attempted."""
+    return TargetResolution(
+        refusal=_target_refusal(
+            REASON_SESSION_REQUIRED,
+            message,
+            session_id=session_id,
+            server_url=server_url,
+            next_steps=[
+                "Use list_active_notebooks to discover and bind a live session.",
+                "Or pass session_id and server_url explicitly on this call.",
+            ],
+        )
+    )
+
+
+async def resolve_target(
+    session_id: str,
+    server_url: str,
+    *,
+    ctx: Context | None = None,
+    client_factory: Callable[[str], MarimoClient] = MarimoClient,
+) -> TargetResolution:
+    """Resolve a tool's target session/server, or return a common refusal.
+
+    The single choke point for every cell/session-targeting tool. It resolves
+    the binding pair (explicit value first, then the bound state / scoped
+    process-global fallback), builds the caller-supplied client, and resolves
+    the session on it. On any failure it returns a structured refusal instead of
+    raising, so a target error is a payload rather than a tool-level exception.
+
+    Refusal classes (all `status: error`, `operation_ran: false`):
+
+    - `session_required` — no explicit or bound `session_id`/`server_url`.
+    - `binding_ambiguous` (or any other `SessionBindingError.reason`) — passed
+      through unchanged from the binding resolver.
+    - `session_not_found` — the requested id is not live on the selected
+      server; the same server's `available_sessions` census is included, with
+      `available_sessions_readable: true` because that census was read.
+    - `server_unreachable` — the session census transport failed.
+    - `server_query_failed` — the census answered with a non-auth HTTP error
+      (a 500 included) or could not be read: an unreadable body (truncated
+      JSON, invalid UTF-8, a non-object body) or a failing discriminating
+      re-read. A census that cannot be read is **never** reported as "the
+      session is absent": absence is concluded only from a census that was
+      successfully read, so a malformed census body is a query failure, not
+      `session_not_found`.
+    - HTTP 401/403 is **not** classified here: it propagates unchanged so the
+      follow-up auth-taxonomy decision is not pre-empted.
+
+    Every refusal carries `available_sessions` plus
+    `available_sessions_readable`, which is true only when a census was
+    successfully read (an empty successful census included) and false when the
+    list is empty because nothing was read.
+
+    The `client_factory` is a parameter so each tool module can keep passing its
+    own `MarimoClient` import — the per-module patch seam existing tests rely on
+    — rather than the resolver hard-coding one construction path.
+
+    Args:
+        session_id: The caller's explicit session id (empty to use the binding).
+        server_url: The caller's explicit server URL (empty to use the binding).
+        ctx: The FastMCP context carrying the binding state, if any.
+        client_factory: Callable building the client for a resolved URL.
+
+    Returns:
+        A `TargetResolution`: `refusal` set (return it verbatim), or `client`
+        and `session` set for the caller to use.
+    """
+    try:
+        sid = await resolve_session_id(session_id, ctx)
+    except SessionBindingError as exc:
+        return TargetResolution(
+            refusal=_target_refusal(
+                exc.reason,
+                f"{exc} {_OPERATION_NOT_RUN}",
+                session_id=session_id,
+                server_url=server_url,
+                next_steps=[
+                    "Pass session_id and server_url explicitly on this call.",
+                    (
+                        "Or run the server over stdio, where one process serves "
+                        "one client and the process-global fallback is never "
+                        "withheld."
+                    ),
+                ],
+            )
+        )
+    except ValueError as exc:
+        return _missing_target_refusal(
+            session_id,
+            server_url,
+            (
+                f"reason: {REASON_SESSION_REQUIRED} — no target session could "
+                f"be resolved: {exc} {_OPERATION_NOT_RUN}"
+            ),
+        )
+
+    try:
+        url = await resolve_server_url(server_url, ctx)
+    except SessionBindingError as exc:
+        return TargetResolution(
+            refusal=_target_refusal(
+                exc.reason,
+                f"{exc} {_OPERATION_NOT_RUN}",
+                session_id=sid,
+                server_url=server_url,
+                next_steps=[
+                    "Pass session_id and server_url explicitly on this call.",
+                    (
+                        "Or run the server over stdio, where one process serves "
+                        "one client and the process-global fallback is never "
+                        "withheld."
+                    ),
+                ],
+            )
+        )
+    except ValueError as exc:
+        return _missing_target_refusal(
+            sid,
+            server_url,
+            (
+                f"reason: {REASON_SESSION_REQUIRED} — no target session could "
+                f"be resolved: {exc} {_OPERATION_NOT_RUN}"
+            ),
+        )
+
+    client = client_factory(url)
+    try:
+        session = await client.resolve_session(session_id=sid)
+    except httpx2.HTTPStatusError as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", 0)
+        await _close_quietly(client)
+        if status in (401, 403):
+            # Deliberately unclassified: the follow-up wave decides whether a
+            # run-mode scope failure and a true auth failure share a reason.
+            raise
+        return TargetResolution(
+            refusal=_target_refusal(
+                REASON_SERVER_QUERY_FAILED,
+                (
+                    f"reason: {REASON_SERVER_QUERY_FAILED} — {url} answered "
+                    f"GET /api/sessions with {status} ({exc}), so the requested "
+                    f"session could not be resolved. {_OPERATION_NOT_RUN}"
+                ),
+                session_id=sid,
+                server_url=url,
+                next_steps=[
+                    "Check the marimo server's health, then retry.",
+                    "Use list_active_notebooks to see which servers answer.",
+                ],
+            )
+        )
+    except (httpx2.TransportError, OSError) as exc:
+        await _close_quietly(client)
+        return TargetResolution(
+            refusal=_target_refusal(
+                REASON_SERVER_UNREACHABLE,
+                (
+                    f"reason: {REASON_SERVER_UNREACHABLE} — {url} did not answer "
+                    f"GET /api/sessions ({exc}), so the requested session could "
+                    f"not be resolved. {_OPERATION_NOT_RUN}"
+                ),
+                session_id=sid,
+                server_url=url,
+                next_steps=[
+                    "Check the marimo server is running and reachable at `server_url`.",
+                    "Use list_active_notebooks to see which servers answer.",
+                ],
+            )
+        )
+    except ValueError as exc:
+        # `resolve_session(session_id=…)` raises ValueError when the id is not
+        # in this server's census — but an unreadable census raises ValueError
+        # too (a JSON decode error *is* one, and so is invalid UTF-8). So the
+        # absence may not be concluded here: the same client re-reads its own
+        # census, and only a *successful* read may classify the miss.
+        #   * census read -> the id really is absent from it: session_not_found
+        #     with this server's real sessions (never another server's, never a
+        #     guess).
+        #   * census unreadable -> absence is unknown, so this is a query
+        #     failure; an empty list is never reported as "no sessions". A
+        #     transport failure of this second read lands in the same
+        #     query-failure class (the census could not be read at all) and its
+        #     error text is carried in the message.
+        available, census_error = await _census_of(client, url)
+        await _close_quietly(client)
+        if census_error:
+            return TargetResolution(
+                refusal=_target_refusal(
+                    REASON_SERVER_QUERY_FAILED,
+                    (
+                        f"reason: {REASON_SERVER_QUERY_FAILED} — the session "
+                        f"census at {url} could not be read ({census_error}), so "
+                        "whether the requested session is live there is "
+                        "unknown: absence is never inferred from an unreadable "
+                        f"census. {_OPERATION_NOT_RUN}"
+                    ),
+                    session_id=sid,
+                    server_url=url,
+                    next_steps=[
+                        "Check the marimo server's health, then retry.",
+                        "Use list_active_notebooks to see which servers answer.",
+                    ],
+                )
+            )
+        return TargetResolution(
+            refusal=_target_refusal(
+                REASON_SESSION_NOT_FOUND,
+                (
+                    f"reason: {REASON_SESSION_NOT_FOUND} — no live session on "
+                    f"{url} reports session id {sid!r} ({exc}). {_OPERATION_NOT_RUN}"
+                ),
+                session_id=sid,
+                server_url=url,
+                available_sessions=available,
+                available_sessions_readable=True,
+                next_steps=[
+                    (
+                        "Use list_active_notebooks to list live session ids and "
+                        "their server_urls."
+                    ),
+                    (
+                        "Pass an id exactly as that listing reports it — never "
+                        "an invented one."
+                    ),
+                ],
+            )
+        )
+    except (httpx2.HTTPError, AttributeError, TypeError) as exc:
+        await _close_quietly(client)
+        return TargetResolution(
+            refusal=_target_refusal(
+                REASON_SERVER_QUERY_FAILED,
+                (
+                    f"reason: {REASON_SERVER_QUERY_FAILED} — the session census "
+                    f"at {url} could not be used ({exc}), so the requested "
+                    f"session could not be resolved. {_OPERATION_NOT_RUN}"
+                ),
+                session_id=sid,
+                server_url=url,
+                next_steps=[
+                    "Check the marimo server's health, then retry.",
+                    "Use list_active_notebooks to see which servers answer.",
+                ],
+            )
+        )
+
+    return TargetResolution(client=client, session=session)

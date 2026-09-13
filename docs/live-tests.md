@@ -3,9 +3,14 @@
 > Updated: 2026-09-13 — verified against the current working tree (live suite
 > green, incl. the hermetic mutation, widget, run-mode (T15), kernel-restart
 > (Wave 3), T-V3 dependency-completeness, T-V4 notebook-only-variables, T18
-> server-vs-session discovery, T20 button-click and T22
-> session-census-field-limit regressions, and the example-notebook smoke +
-> interaction regressions; see
+> server-vs-session discovery, T20 button-click, T22
+> session-census-field-limit regressions, the composite-read `include_errors`
+> regression, and the example-notebook smoke +
+> interaction regressions; the non-live tier also carries the
+> structured-target-resolution (Wave A) regressions — every targeting-tool
+> refusal reports `available_sessions_readable`, and an unreadable census body
+> is a query failure, never a not-found — and pins the re-measured split below;
+> see
 > [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
 > is, the commands, the boot mechanics, and its *actual* status today.
@@ -139,7 +144,7 @@ instead: cells created through the write tools *do* run, which is what makes the
 dependency, variables and widget regressions behavioral rather than structural
 (see the hermetic sections below).
 
-## What's tested (68 tests, 14 files in `tests/marimo_inspect/live/`)
+## What's tested (69 tests, 14 files in `tests/marimo_inspect/live/`)
 
 The directory holds 13 test modules plus the shared `conftest.py` harness
 (`MarimoServerManager` + fixtures, including the sessionless `bare_server`
@@ -150,7 +155,7 @@ factory). Counts are stable as of the run in
 | --- | --- | --- |
 | `conftest.py` | — | harness only: boots the session-scoped headless server, creates its session via the `/sse` handshake, and exposes the per-test `mutation_server` and `notebook_server` fixtures |
 | `test_cell_map.py` | 5 | map reports the fixture's 6 cells incl. hidden setup (`def _double` preview) and the intentional error cell; preview truncated to 3 lines; truthfulness flags (`has_output`/`has_console_output`/`has_errors`) are bool or None, never faked |
-| `test_cell_data.py` | 4 | per-cell code round-trips (computed-value cell, error cell); count agrees with cell map |
+| `test_cell_data.py` | 5 | per-cell code round-trips (computed-value cell, error cell); count agrees with cell map; **composite read** — `get_cell_data(include_errors=True)` reports a created raising cell's structured runtime error inline while a clean row carries explicit empty/false/null error fields, and the default call adds none of the four optional keys — via `mutation_server` |
 | `test_cell_outputs.py` | 5 | every cell is listed with the documented output keys; `runtime_state` matches the cell map and `output_stale` marks a stale cell while preserving its prior rendering, then clears after a verified re-run (T21) |
 | `test_variables.py` | 4 | runs against a live kernel and returns the documented structure; **T-V4** — an unfiltered call reports executed notebook-defined **public** names only, excluding kernel-injected globals (`input`, `spec_from_loader`), the template's own scaffolding and private leading-underscore names, with the allowance derived from the notebook graph's cell definitions and exercised via `mutation_server` cells that actually execute (explicit filtered lookup of a public name is preserved; a private/absent name reports nothing); degrades gracefully without numpy/pandas (regression for the unguarded numpy import) |
 | `test_dependency.py` | 3 | template executes against a live kernel and returns the documented structure/types; **T-V3** — cell completeness: one dependency entry per live notebook cell with `set(cells ids) == set(get_cell_map ids)`, `cell_name` agreement for *every* cell, a real parent/child edge between a created import cell and its dependent, and a never-run fixture cell present with empty graph-derived lists (no invented edges, no dropped cells) — all through the real handlers against `mutation_server` |
@@ -492,15 +497,24 @@ manual (see the widget section above).
 ## Current status (verified 2026-09-13)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (554 tests collected in total):
+split (636 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 68 passed, 486 deselected
+=> 69 passed, 567 deselected
 
 uv run pytest -m "not live"
-=> 486 passed, 68 deselected
+=> 567 passed, 69 deselected
 ```
+
+The Wave A target-resolution module (`tests/marimo_inspect/test_target_resolution.py`,
+69 tests) keeps its full twelve-handler fan-out wherever the case exercises
+`MarimoClient.resolve_session` itself (mismatch/not-found, unreachable, query
+failure, the mocked execution seam) and its loopback census stub, and runs one
+read plus one mutation handler for the shared pre-resolution matrices
+(`session_required`, `binding_ambiguous`, 401/403) whose coverage the module's
+source-inventory gate already proves for all twelve. The stub's server polls at
+0.05s, so per-test shutdown is not the module's dominant cost.
 
 (Elapsed times are machine-dependent and not part of the contract; the split and
 the counts are. Re-derive them with `--collect-only` after adding tests.)

@@ -35,7 +35,7 @@ from marimo_inspection.tools.change_tracking import (
     CellFingerprint,
     get_tracker,
 )
-from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
+from marimo_inspection.tools.session import resolve_target
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +60,6 @@ _KERNEL_SCHEDULING_NOTE = (
     "independent cells is unspecified. requested_cell_ids is the set of targets, "
     "never an execution order."
 )
-
-
-async def _get_client(
-    server_url: str,
-    ctx: Context | None = None,
-) -> MarimoClient:
-    """Create a MarimoClient, using explicit server_url or the bound one."""
-    url = await resolve_server_url(server_url, ctx)
-    return MarimoClient(url)
 
 
 async def _execute_json(client: MarimoClient, sid: str, code: str) -> dict:
@@ -181,9 +172,12 @@ async def create_cell(
     if not source.strip():
         return {"error": "source must not be empty", "status": "error"}
 
-    sid = await resolve_session_id(session_id, ctx)
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
     sid = session.session_id
     if ctx:
         await ctx.info(f"Creating cell in session {sid}...")
@@ -257,9 +251,12 @@ async def edit_cell(
     if not source.strip():
         return {"error": "source must not be empty", "status": "error"}
 
-    sid = await resolve_session_id(session_id, ctx)
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
     sid = session.session_id
 
     from marimo_inspection.templates.mutation import build_cell_hashes_template
@@ -463,9 +460,12 @@ async def run_cell(
             "message": f"mode={mode!r} requires cell_id. Nothing was run.",
         }
 
-    sid = await resolve_session_id(session_id, ctx)
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
     sid = session.session_id
     if ctx:
         await ctx.info(f"Running cells (mode={mode}) in session {sid}...")
@@ -713,9 +713,12 @@ async def delete_cell(
     if not cell_id:
         return {"error": "cell_id is required", "status": "error"}
 
-    sid = await resolve_session_id(session_id, ctx)
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
     sid = session.session_id
     if ctx:
         await ctx.info(f"Deleting cell {cell_id} in session {sid}...")

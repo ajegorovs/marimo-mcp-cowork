@@ -20,10 +20,11 @@
   discovered session; all tools accept optional `session_id` falling back to
   bound state; `set_active_session` for explicit switching. (Phase 1 ✓)
 - **Change detection** — `get_cell_map` reports `changes_since_last`. (Phase 2 ✓)
+- **Composite cell read** — `get_cell_data(include_errors=True)` folds the two
+  per-cell error channels into the selected rows (opt-in; the default row shape
+  is unchanged). (Phase 2 ✓)
 - **Terminal scripts are fallback only**: `execute-code.sh` for arbitrary probes
   and complex multi-op `cm` blocks; `discover-servers.sh` is human/debug only
-- **266 unit tests** pass on this tree (measured 2026-09-10;
-  `uv run pytest -m "not live" -q`)
 
 ### Where Friction Lives
 
@@ -66,13 +67,18 @@ get_cell_map("def456")  →  explicit override still works
 
 **Impact:** Zero repeated `session_id` parameters after the initial discovery call.
 
-### Phase 2: Composite Read Tools
+### Phase 2: Composite Read Tools (Done — opt-in `include_errors`)
 
 **Problem:** `get_cell_data()` returns cell code; `get_errors()` returns errors separately.
 Agents often need both to decide next action.
 
-**Solution:** Add `include_errors` flag to `get_cell_data()`, or create `read_cell_with_status()`
-that returns code + error state + staleness in one call.
+**Implemented (2026-09):** `get_cell_data(include_errors=True)` adds the four
+per-row error fields — `structured_errors`, `console_stderr`,
+`has_console_exception`, `console_exception_evidence` — to **every** returned
+row, sharing `get_errors`' two-channel extraction helpers (a clean cell reports
+`[]`/`[]`/`false`/`null`). The default (`include_errors=False`) emits none of
+those keys, so the existing row shape is unchanged. `data[].variables` stays a
+compatibility `null` placeholder; variable inspection is `get_variables`.
 
 **Impact:** Reduces round trips for the read-verify loop. One call instead of two.
 
@@ -226,8 +232,9 @@ the staleness guard.
 ## Recommendation
 
 1. **Phase 1 done ✓** — Default session binding implemented. Parameter noise eliminated.
-2. **Phase 2 done ✓** — Change detection in `get_cell_map` (`changes_since_last`);
-   composite `include_errors` read remains a small optional win.
+2. **Phase 2 done ✓** — Change detection in `get_cell_map` (`changes_since_last`),
+   plus the opt-in composite `include_errors` read on `get_cell_data` (code +
+   both error channels in one call, default shape unchanged).
 3. **Phase 3 done ✓** — Unified write surface (`create_cell`/`edit_cell`/
    `run_cell`/`delete_cell`) with an `edit_cell` staleness guard, plus
    `set_ui_value` for live widget interaction and three read-only MCP

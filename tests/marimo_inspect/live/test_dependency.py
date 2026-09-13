@@ -99,9 +99,7 @@ async def test_dependency_graph_covers_every_live_cell(mutation_server):
         assert ran["status"] == "ok", ran
 
         cell_map = await get_cell_map(session_id=session_id, server_url=server_url)
-        graph = await get_dependency_graph(
-            session_id=session_id, server_url=server_url
-        )
+        graph = await get_dependency_graph(session_id=session_id, server_url=server_url)
 
         map_ids = [c["cell_id"] for c in cell_map["cells"]]
         cells = graph["cells"]

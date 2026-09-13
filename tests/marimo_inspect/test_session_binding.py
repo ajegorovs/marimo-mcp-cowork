@@ -289,11 +289,21 @@ async def test_explicit_server_url_overrides_bound():
 
 
 async def test_server_url_still_required_without_binding():
-    """With no bind and no explicit server_url, tools still raise."""
+    """With no bind and no explicit server_url, the tool refuses structurally.
+
+    Upgraded from the pre-Wave-A expectation of a bare ``ValueError``: a
+    missing target is now the same structured refusal the rest of the surface
+    speaks, so the caller learns the reason and that nothing ran.
+    """
     from marimo_inspection.tools.cells import get_cell_map
 
-    with pytest.raises(ValueError, match="server_url is required"):
-        await get_cell_map(session_id="abc123", ctx=None)
+    result = await get_cell_map(session_id="abc123", ctx=None)
+
+    assert result["status"] == "error"
+    assert result["reason"] == "session_required"
+    assert result["operation_ran"] is False
+    assert result["session_id"] == "abc123"
+    assert "server_url is required" in result["message"]
 
 
 async def test_set_active_session_binds_both(stub_server):

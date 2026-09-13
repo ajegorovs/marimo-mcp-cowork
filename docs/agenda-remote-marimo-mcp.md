@@ -92,8 +92,19 @@ answers:
    per-call parameter on the tools, while `session_id` is a per-connection
    auto-bind. For a remote server that is fine, but nothing pins *which* server
    a bound session belongs to — cross-server session ids would be a live footgun
-   before long. ❓ unverified whether a stale `session_id` against a different
-   `server_url` fails cleanly.
+   before long. ✓ **Sub-question resolved (2026-09-13, Wave A):** the
+   *pair-mismatch* half is verified — a stale `session_id` against a different
+   `server_url` now fails cleanly: every targeting tool resolves its target
+   through one shared step and answers `status: error`,
+   `reason: session_not_found` with that server's truthful `available_sessions`
+   and `available_sessions_readable: true` (and `operation_ran: false`); no read
+   or write runs. An unreadable census is `server_query_failed`, never a
+   not-found, and transport failures are `server_unreachable`.
+   See `reference://marimo-inspect/fallbacks-and-limits` §"Target errors are
+   payloads, not tool exceptions". **The rest of this item remains open:**
+   nothing yet pins which server a *bound* session belongs to, and remote
+   hosting itself is an undecided design question (see Status above), so this
+   is not a closure of the remote topology.
 5. **Latency and timeouts.** Templates round-trip scratchpad execution over
    `POST /api/kernel/execute` and parse an SSE stream. Every tool call becomes a
    WAN round-trip. The harness default `toolCallTimeoutMs` is 60000 — long kernel

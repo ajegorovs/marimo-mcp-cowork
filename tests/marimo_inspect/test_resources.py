@@ -61,6 +61,7 @@ EXPECTED = {
             "get_errors",
             "lint_notebook",
             "read before edit",
+            "include_errors",
         ],
     },
     LIVE_SAFETY_URI: {
@@ -248,6 +249,55 @@ class TestResourceContent:
         assert "null" in text
         assert "requested targets only" in text
 
+    async def test_co_work_loop_documents_the_common_target_refusal(self, mcp_server):
+        """The loop teaches the shared target-refusal contract and its reasons.
+
+        A caller must be able to learn, from the packaged loop alone: that a
+        target error is a structured payload with nothing executed, the reason
+        vocabulary, that a mismatched explicit pair is ``session_not_found``
+        with that server's own ``available_sessions``, and that
+        ``available_sessions_readable`` tells a real census from an unreadable
+        one (an unreadable census being a query failure, never a not-found).
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(CO_WORK_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        for reason in (
+            "session_required",
+            "binding_ambiguous",
+            "session_not_found",
+            "server_unreachable",
+            "server_query_failed",
+        ):
+            assert reason in text, reason
+        assert "available_sessions" in text
+        assert "available_sessions_readable" in text
+        assert "operation_ran" in text
+        assert "nothing was read or written" in text
+
+    async def test_co_work_loop_documents_the_composite_error_read(self, mcp_server):
+        """The loop teaches the opt-in include_errors read and its exact fields.
+
+        A caller must be able to learn, from the packaged loop alone: that
+        ``get_cell_data(include_errors=True)`` adds the two per-cell error
+        channels plus the console-exception evidence fields to every returned
+        row, that the default read omits them (backward-compatible), and that
+        live variable inspection is ``get_variables``.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(CO_WORK_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "include_errors" in text
+        assert "structured_errors" in text
+        assert "console_stderr" in text
+        assert "has_console_exception" in text
+        assert "console_exception_evidence" in text
+        # The default read is unchanged, and variables come from get_variables.
+        assert "default" in text
+        assert "get_variables" in text
+
     async def test_live_safety_documents_the_bulk_run_blast_radius(self, mcp_server):
         """T15: a bulk run's blast radius and the empty-graph refusal are stated.
 
@@ -394,6 +444,50 @@ class TestResourceContent:
         # And that the confirmed id is point-in-time, not durable.
         assert "session_id_stable" in text
         assert "point_in_time" in text
+
+    async def test_fallbacks_documents_target_refusals_are_payloads(self, mcp_server):
+        """The limits reference pins the shared target-refusal contract.
+
+        It must name that a refusal is a payload with no operation run, the
+        reason vocabulary, the same-server `available_sessions` with its
+        `available_sessions_readable` truthfulness flag, and that an unreadable
+        census is a query failure rather than a not-found.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "target_resolved" in text
+        assert "operation_ran" in text
+        assert "no read or write operation runs on a refusal" in text
+        for reason in (
+            "session_required",
+            "binding_ambiguous",
+            "session_not_found",
+            "server_unreachable",
+            "server_query_failed",
+        ):
+            assert reason in text, reason
+        assert "available_sessions" in text
+        assert "available_sessions_readable" in text
+        assert "unreadable" in text
+
+    async def test_fallbacks_documents_the_cell_data_variables_placeholder(
+        self, mcp_server
+    ):
+        """get_cell_data carries no variable data; get_variables does.
+
+        The payload keeps a deprecated ``data[].variables`` field for
+        compatibility, so the limits reference must say it is a placeholder and
+        point live variable inspection at ``get_variables``.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "data[].variables" in text
+        assert "compatibility placeholder" in text
+        assert "get_variables" in text
 
     async def test_fallbacks_documents_one_main_output_limit(self, mcp_server):
         async with Client(transport=mcp_server) as client:

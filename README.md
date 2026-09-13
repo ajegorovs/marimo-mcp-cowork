@@ -91,6 +91,38 @@ main consumer, not attached clients), and `active_connections` is a
 **deprecated** compatibility alias for `session_count` that was never a client
 count.
 
+### Target resolution and the common refusal
+
+Every cell/session-targeting tool (`get_cell_map`, `get_cell_data`,
+`get_cell_outputs`, `get_variables`, `get_dependency_graph`, `get_errors`,
+`lint_notebook`, `create_cell`, `edit_cell`, `run_cell`, `delete_cell`,
+`set_ui_value`) resolves its target through one shared step. A target problem is
+therefore a **structured payload**, not a tool-level exception, and it is always
+`status: error` with `target_resolved: false`, `operation_ran: false`, and
+`state_changed: false` — **no read or write operation runs on a refusal**:
+
+- `session_required` — no explicit and no bound target (`session_id` /
+  `server_url`); discover/bind one with `list_active_notebooks` or pass both
+  explicitly.
+- `binding_ambiguous` — the bound target exists but this server process has
+  served more than one client session, so the process-global fallback was
+  withheld (see the binding rules above); `reason` is passed through unchanged.
+- `session_not_found` — the requested id is not live on the selected server;
+  the payload's `available_sessions` is that **same** server's truthful census
+  (never another server's, never a guess) and `available_sessions_readable` is
+  `true`, because that census was actually read.
+- `server_unreachable` — the session census could not be reached at all.
+- `server_query_failed` — the census answered with a non-auth error (HTTP 500
+  included) or an unreadable body (truncated JSON or invalid UTF-8 included).
+
+An explicit `session_id`/`server_url` pair that does not exist on the selected
+server is the `session_not_found` case, with the real session ids in
+`available_sessions` to correct it. Absence is concluded **only** from a census
+that was successfully read, so an unreadable census is `server_query_failed`
+and never `session_not_found`. `available_sessions_readable` reports which one
+you got: `true` when the list is a real census (a successful empty census
+counts), `false` when it is empty because nothing could be read.
+
 For human co-work, prefer **browser-first** (marimo 0.24 **edit mode without an
 explicit `--session-ttl`**): open the notebook so the page **becomes/holds the
 main consumer connection** for the session, then call
@@ -272,6 +304,15 @@ marimo's code-mode snapshot exposes **one main output per cell** plus console
 events — not every frontend UI registration. `get_cell_outputs` returns that
 main output and the serialized console events, so a widget rendered to the user
 may be absent from it; inspect the cell's variables instead.
+`get_cell_data` returns each cell's source and live `runtime_state`; its
+`data[].variables` is a deprecated compatibility placeholder (always `null`),
+so read live variables with `get_variables`. To fold the error read in, pass
+`include_errors=True`: every `data[]` row then also carries
+`structured_errors` and `console_stderr` (the same two separate channels
+`get_errors` reports) plus `has_console_exception` and
+`console_exception_evidence`, with `[]`/`[]`/`false`/`null` for a clean cell.
+The default (`include_errors=False`) omits those four keys, so the row shape
+is unchanged.
 `get_cell_map`'s `has_output` / `has_console_output` / `has_errors` flags are
 computed from live fields (`None` when a private field is unreadable, never
 faked). `get_errors` reports `cells[].structured_errors` (marimo `cell.errors`) and

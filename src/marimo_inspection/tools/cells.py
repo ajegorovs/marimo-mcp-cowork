@@ -10,7 +10,7 @@ from fastmcp import Context
 
 from marimo_inspection.client import MarimoClient
 from marimo_inspection.tools.args import normalize_list_arg
-from marimo_inspection.tools.session import resolve_server_url, resolve_session_id
+from marimo_inspection.tools.session import resolve_target
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +39,15 @@ async def get_cell_map(
     Returns:
         Dictionary with cell map and navigation info.
     """
-    sid = await resolve_session_id(session_id, ctx)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
+    sid = session.session_id
     if ctx:
         await ctx.info(f"Getting cell map for session {sid}...")
-
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
 
     from marimo_inspection.templates.cell_map import build_cell_map_template
 
@@ -113,12 +116,28 @@ async def get_cell_map(
 async def get_cell_data(
     session_id: str = "",
     cell_ids: str | list[str] | None = None,
+    include_errors: bool = False,
     server_url: str = "",
     ctx: Context | None = None,
 ) -> dict:
     """Get full runtime data for one or more cells.
 
-    Includes source code, errors, and variable information.
+    Always returns each selected cell's source (``data[].code``) and live
+    ``data[].runtime_state``.
+
+    Error channels are **opt-in**: with ``include_errors=True`` every returned
+    row also carries ``data[].structured_errors`` and
+    ``data[].console_stderr`` (the same two separate channels ``get_errors``
+    reports) plus ``data[].has_console_exception`` and
+    ``data[].console_exception_evidence``; a clean cell reports
+    ``[]`` / ``[]`` / ``false`` / ``null``. The default
+    (``include_errors=False``) emits none of those four keys, so the row shape
+    is backward compatible.
+
+    ``data[].variables`` is a deprecated compatibility placeholder that is
+    always ``null`` — this tool does not return variable information. Inspect
+    live variables with ``get_variables``.
+
     If cell_ids is empty, returns data for all cells.
 
     A requested id that resolves to nothing (deleted or mistyped) is reported
@@ -132,23 +151,27 @@ async def get_cell_data(
         cell_ids: Cell IDs from get_cell_map. Empty = all cells. Accepts a
             single ID, a native array, or a JSON-encoded array — a harness
             may deliver either of the latter two as a string.
+        include_errors: Add the four per-row error fields described above
+            (default: false, leaving the payload shape unchanged).
         server_url: Optional server URL override.
 
     Returns:
         Dictionary with cell runtime data plus ``missing_cell_ids``.
     """
     cell_ids = normalize_list_arg(cell_ids)
-    sid = await resolve_session_id(session_id, ctx)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
     if ctx:
         target = f"cells {cell_ids}" if cell_ids else "all cells"
         await ctx.info(f"Getting cell data for {target}...")
 
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
-
     from marimo_inspection.templates.cell_data import build_cell_data_template
 
-    code = build_cell_data_template(cell_ids=cell_ids)
+    code = build_cell_data_template(cell_ids=cell_ids, include_errors=include_errors)
     result = await client.execute(session.session_id, code)
 
     if result.status == "error":
@@ -191,14 +214,22 @@ async def get_cell_data(
         )
     get_tracker().record_cells(session.session_id, fingerprints)
 
+    if include_errors:
+        next_steps = [
+            "Review cell code for implementation details",
+            "Check structured_errors and console_stderr for execution issues",
+            "Use get_variables to inspect live variable values",
+        ]
+    else:
+        next_steps = [
+            "Review cell code for implementation details",
+            "Re-call with include_errors=True to read the error channels here",
+            "Use get_variables to inspect live variable values",
+        ]
     response = {
         "session_id": session.session_id,
         "data": rows,
-        "next_steps": [
-            "Review cell code for implementation details",
-            "Check errors for execution issues",
-            "Examine variables to understand cell state",
-        ],
+        "next_steps": next_steps,
     }
     # Report -- never silently drop -- the ids that matched no cell.
     missing = data.get("missing_cell_ids") or []
@@ -248,13 +279,15 @@ async def get_cell_outputs(
         Dictionary with cell outputs and console streams.
     """
     cell_ids = normalize_list_arg(cell_ids)
-    sid = await resolve_session_id(session_id, ctx)
+    resolved = await resolve_target(
+        session_id, server_url, ctx=ctx, client_factory=MarimoClient
+    )
+    if resolved.refusal is not None:
+        return resolved.refusal
+    client, session = resolved.unwrap()
     if ctx:
         target = f"cells {cell_ids}" if cell_ids else "all cells"
         await ctx.info(f"Getting cell outputs for {target}...")
-
-    client = await _get_client(server_url, ctx)
-    session = await client.resolve_session(session_id=sid)
 
     from marimo_inspection.templates.cell_outputs import build_cell_outputs_template
 
@@ -308,12 +341,3 @@ async def get_cell_outputs(
             "raw_output": stdout_text,
             "stderr": result.stderr,
         }
-
-
-async def _get_client(
-    server_url: str,
-    ctx: Context | None = None,
-) -> MarimoClient:
-    """Create a MarimoClient, using explicit server_url or the bound one."""
-    url = await resolve_server_url(server_url, ctx)
-    return MarimoClient(url)
