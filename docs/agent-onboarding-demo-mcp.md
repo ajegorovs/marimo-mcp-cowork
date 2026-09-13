@@ -118,6 +118,27 @@ Key points:
     (or straight to the read tools). `list_active_notebooks` takes only
     `server_url` — pass the handshake `session_id` to the read/write tools, or
     call `set_active_session(session_id)` to rebind explicitly.
+- **Prefer browser-first for human co-work.** Let the page create the session
+  (launch without `--headless`, step 2) and become/hold its **main consumer
+  connection**, then discover and bind it. The `/sse` route above is for
+  headless, agent-only work, and applies to marimo 0.24 **edit mode without an
+  explicit `--session-ttl`**: closing that stream leaves the session an
+  **orphan** (it outlives the stream) until a later connection takes it over —
+  though a **configured `--session-ttl` can reap that orphan** — and a human who
+  opens the page later must **take over** the session and **re-run the
+  notebook** before its widgets respond. A later reconnect can re-key the
+  session id, and a second distinct client joins the same kernel as a
+  **non-main, read-only consumer** (run mode is out of scope). That re-key is
+  separate from a page-vs-session divergence observed once, which is not
+  diagnosed — neither the re-key nor any read-path explanation is confirmed as
+  its cause. `list_active_notebooks` cannot tell you which case you are in —
+  every **session** row reports `provenance: "unknown"` / `owner: "unknown"`
+  (marimo publishes no creator or owning client; the payload owner stays unknown
+  because the public API does not publish that role), and the summary carries
+  `total_notebooks` (= `session_count`), `result_row_count` (`len(notebooks)`,
+  including a connection-failure sentinel that is a row but *not* a session),
+  `attached_client_count: null`, and `active_connections` as only a deprecated
+  alias for `session_count`. Binding is not ownership.
 - **A materialized session is not necessarily a *run* one.** Creating the
   session starts a kernel; it does not execute the notebook. Until the cells
   have run there are no committed widget values, so the execution-state reads
@@ -222,16 +243,31 @@ Create the notebook file (see above) and detach-launch `marimo edit`.
 **Result:**
 ```json
 {
-  "summary": {"servers_discovered": 1, "total_notebooks": 1},
+  "summary": {
+    "servers_discovered": 1,
+    "total_notebooks": 1,
+    "session_count": 1,
+    "result_row_count": 1,
+    "attached_client_count": null,
+    "active_connections": 1
+  },
   "notebooks": [
     {
       "session_id": "s_xhe4j1",
-      "path": "notebooks/function_plotting_demo.py"
+      "path": "notebooks/function_plotting_demo.py",
+      "provenance": "unknown",
+      "owner": "unknown"
     }
   ]
 }
 ```
 The first valid session is auto-bound — subsequent tools can omit `session_id`.
+`provenance`/`owner` are always `"unknown"` because marimo exposes neither, and
+`attached_client_count` is always `null` (no per-session client count is
+published). `active_connections` is the **deprecated** alias for
+`session_count` — it has never been a client count; `result_row_count` is
+`len(notebooks)`, which a connection failure can exceed `session_count` by one
+sentinel row.
 
 ### Step 3 — Verify initial state via MCP
 **Call:** `get_cell_map(session_id, server_url)`

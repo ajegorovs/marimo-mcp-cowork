@@ -446,6 +446,93 @@ class TestResourceContent:
         assert "bound: false" in text
         assert "state_changed: false" in text
 
+    async def test_co_work_loop_documents_browser_first_and_unknown_provenance(
+        self, mcp_server
+    ):
+        """T19/T22: the loop teaches browser-first, not a guessed mechanism.
+
+        A caller must be able to learn, from the packaged loop alone, that a
+        session's provenance/owner are not knowable (binding is not ownership),
+        that the summary counts are scoped (``session_count`` /
+        ``attached_client_count: null`` / a deprecated ``active_connections``
+        alias), that browser-first is the order to prefer, that a closed ``/sse``
+        stream leaves an orphan a human must take over and re-run, that a later
+        reconnect can re-key the id, and that a page/session divergence is not
+        diagnosed.
+        """
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(CO_WORK_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "provenance" in text
+        assert "owner" in text
+        assert "unknown" in text
+        assert "binding is not ownership" in text
+        assert "session_count" in text
+        assert "attached_client_count" in text
+        assert "deprecated" in text
+        assert "active_connections" in text
+        assert "browser" in text
+        assert "take over" in text
+        assert "re-run" in text
+        assert "orphan" in text
+        assert "re-key" in text
+        assert "not diagnosed" in text
+        # Scoping and the corrected counts: 0.24 edit mode w/o TTL, main
+        # consumer role, and the failure-path totals.
+        assert "edit mode" in text
+        assert "session-ttl" in text
+        assert "main consumer" in text
+        assert "non-main" in text
+        assert "total_notebooks" in text
+        assert "result_row_count" in text
+        assert "sentinel" in text
+
+    async def test_live_safety_documents_that_a_session_may_not_be_yours(
+        self, mcp_server
+    ):
+        """T22: the safety rules warn that binding is not ownership."""
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(LIVE_SAFETY_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "provenance" in text
+        assert "owner" in text
+        assert "binding is not ownership" in text
+        assert "browser" in text
+        assert "take over" in text
+        assert "orphan" in text
+        assert "attached_client_count" in text
+        assert "deprecated" in text
+        assert "not diagnosed" in text
+        assert "session-ttl" in text
+        assert "main consumer" in text
+        assert "non-main" in text
+        assert "result_row_count" in text
+
+    async def test_fallbacks_documents_session_provenance_and_counts(self, mcp_server):
+        """T22: the limits reference names the honest fields and counts."""
+        async with Client(transport=mcp_server) as client:
+            raw = _resource_text(await client.read_resource(FALLBACKS_URI))
+        text = " ".join(raw.lower().replace("`", "").split())
+
+        assert "provenance" in text
+        assert "owner" in text
+        assert "binding is not ownership" in text
+        assert "session_count" in text
+        assert "attached_client_count" in text
+        assert "deprecated" in text
+        assert "browser" in text
+        assert "take over" in text
+        assert "orphan" in text
+        assert "re-key" in text
+        assert "not diagnosed" in text
+        assert "total_notebooks" in text
+        assert "result_row_count" in text
+        assert "sentinel" in text
+        assert "session-ttl" in text
+        assert "main consumer" in text
+
 
 # ---------------------------------------------------------------------------
 # Privacy

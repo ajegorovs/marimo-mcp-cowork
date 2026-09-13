@@ -37,6 +37,53 @@ always win, and they cost one line. The refusal tells you which case you hit:
 call, so it withheld it. This is a limitation of client-session handling, not
 of the notebook session.
 
+### Browser-first: let the page hold the main consumer connection
+
+For co-work with a person, let the **browser** create the session: launch the
+notebook and open it in a page first, then `list_active_notebooks` and bind what
+the page already holds. In marimo 0.24 **edit mode without an explicit
+`--session-ttl`**, the page **becomes/holds the main consumer connection** for
+that session — the payload `owner` still reads `"unknown"`, because the public
+API does not publish who holds that role.
+
+Materializing a session yourself with the `/sse` handshake is for **headless,
+agent-only** work. Without an explicit `--session-ttl`, closing that handshake
+stream leaves the session an **orphan** (it outlives the stream) until a later
+connection takes it over — though a **configured `--session-ttl` can reap that
+orphan**. A human who opens the page afterwards must **take over** the session
+and **re-run the notebook** before its widgets respond. One session per server in
+that mode means a second distinct client does not get its own kernel: it joins
+the same kernel as a **non-main, read-only consumer**, and a later reconnect can
+**re-key** the session id. Run mode is out of scope for these rules. The re-key
+behavior is real and *separate* from a page-vs-session divergence observed once:
+the divergence's cause is **not diagnosed**, and **neither the re-key nor any
+read-path explanation is confirmed as its cause**. Treat a divergence as
+unexplained and prefer the browser-first order instead of assuming a mechanism.
+
+### Binding is not ownership
+
+Each **session** row carries `provenance: "unknown"` and `owner: "unknown"`.
+marimo 0.24's public API (`GET /api/sessions`) publishes only each session's
+`filename`/`path` — no creator, no owning client, no creation time, and no
+per-session client count — so these are honest placeholders, not claims that a
+session is unowned. Binding a session does not make you its owner; a bound
+session may be a human's page.
+
+The `summary` counts are scoped deliberately:
+
+| field | meaning |
+| --- | --- |
+| `total_notebooks` | real sessions — always equal to `session_count`; a connection-failure sentinel is a row, not a notebook |
+| `session_count` | sessions the servers report via `GET /api/sessions` — one per live kernel session |
+| `result_row_count` | `len(notebooks)` — every row, **including** a connection-failure sentinel |
+| `attached_client_count` | always `null`: marimo publishes no per-session client count (and `/api/status/connections.active` counts sessions with an open main consumer, not clients) |
+| `active_connections` | **DEPRECATED** alias for `session_count` — never a client count; read `session_count` |
+| `servers_discovered` | how many servers were queried |
+
+A server that cannot be queried adds one **sentinel row** whose keys are exactly
+`name`/`path`/`session_id` (`"error"`)/`server_url`/`error`. It is not a session,
+so it carries no `provenance`/`owner` and is counted only by `result_row_count`.
+
 ## 2. Orient
 
 `get_cell_map` — cell ids, previews, line counts, runtime state, and the

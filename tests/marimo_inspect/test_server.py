@@ -256,6 +256,66 @@ class TestToolRegistration:
             assert "fastmcp" not in description
             assert "per request" not in description
 
+    async def test_list_active_notebooks_description_states_truthful_provenance(
+        self, mcp_server
+    ):
+        """T19/T22: the exposed description is honest about what is knowable.
+
+        The consumer-visible description must state that per-session
+        provenance/owner are "unknown" (binding is not ownership), that
+        ``attached_client_count`` is unavailable while ``active_connections`` is
+        only a deprecated alias for ``session_count``, that browser-first is the
+        order to prefer, that a closed ``/sse`` stream leaves an orphan a human
+        must take over and re-run, and that a page/session divergence is not
+        diagnosed.
+        """
+        async with Client(transport=mcp_server) as client:
+            tools = await client.list_tools()
+            list_tool = next(t for t in tools if t.name == "list_active_notebooks")
+            description = " ".join(
+                (list_tool.description or "").lower().replace("`", "").split()
+            )
+
+            assert "provenance" in description
+            assert "owner" in description
+            assert "unknown" in description
+            assert "binding is not ownership" in description
+            assert "session_count" in description
+            assert "attached_client_count" in description
+            assert "deprecated" in description
+            assert "active_connections" in description
+            assert "browser" in description
+            assert "take over" in description
+            assert "orphan" in description
+            assert "re-run" in description
+            assert "re-key" in description
+            assert "not diagnosed" in description
+            # Scoped to 0.24 edit mode w/o TTL; counts corrected.
+            assert "total_notebooks" in description
+            assert "result_row_count" in description
+            assert "session-ttl" in description
+            assert "main consumer" in description
+            assert "read-only" in description
+
+    async def test_server_instructions_state_browser_first_and_unknown_provenance(
+        self, mcp_server
+    ):
+        """The server-level instructions carry the same honest session rules."""
+        instructions = " ".join((mcp_server.instructions or "").lower().split())
+
+        assert "provenance" in instructions
+        assert "owner" in instructions
+        assert "binding is not ownership" in instructions
+        assert "browser-first" in instructions
+        assert "take over" in instructions
+        assert "orphan" in instructions
+        assert "deprecated" in instructions
+        assert "not diagnosed" in instructions
+        assert "result_row_count" in instructions
+        assert "main consumer" in instructions
+        assert "session-ttl" in instructions
+        assert "non-main" in instructions
+
     async def test_lint_notebook_signature(self, mcp_server):
         """lint_notebook signature (session_id optional)."""
         async with Client(transport=mcp_server) as client:

@@ -186,8 +186,25 @@ session to point at. Two things bite:
    `discovery.py` reads the registry and health-checks `GET /api/sessions`.
 2. **A server alone is not a session.** A `--headless` launch never creates a
    session, so `list_active_notebooks` returns `total_notebooks: 0` until a client
-   connects. Either launch without `--headless` (the browser performs the
-   handshake) or do the `/sse` handshake yourself. 📄
+   connects. For human co-work the **browser-first** order is the default: launch
+   without `--headless` (the browser performs the handshake and, in marimo 0.24
+   edit mode without an explicit `--session-ttl`, **becomes/holds the main
+   consumer connection**), then discover and bind it. The `/sse` handshake is for
+   headless, agent-only work — without an explicit `--session-ttl` closing that
+   stream leaves the session an orphan (it outlives the stream) until a later
+   connection takes it over, though a configured `--session-ttl` can reap it —
+   and a human who later opens the page must take over and re-run the notebook
+   before its widgets respond. A second distinct client joins the same kernel as
+   a **non-main, read-only consumer**, a later reconnect can re-key the session
+   id, and run mode is out of scope; that re-key is separate from a
+   page-vs-session divergence observed once, which is not diagnosed.
+   `list_active_notebooks` cannot tell you which case you are in: every
+   **session** row reports `provenance: "unknown"` / `owner: "unknown"` (marimo
+   publishes no creator or owning client, so the payload owner stays unknown),
+   and its summary carries `total_notebooks` (= `session_count`),
+   `result_row_count` (`len(notebooks)`, including a connection-failure sentinel
+   that is a row but not a session), `attached_client_count: null`, and
+   `active_connections` only as a deprecated alias for `session_count`. 📄
    `docs/agent-onboarding-demo-mcp.md` §Prerequisites and `docs/live-tests.md`.
 
 Registry location (from `discovery.py::_get_registry_dir`): ✅
@@ -215,7 +232,9 @@ and `server_url` together; every other tool takes an optional `session_id` and
 server process/connection — a harness that respawns the server per call loses
 it. `edit_cell` refuses to overwrite a cell the agent has not freshly read
 (staleness guard: `needs_read` → re-read → retry). `set_ui_value` sets a live
-widget's value by kernel-global name and accepts no source code. Three
+widget's value by kernel-global name and accepts no source code. Binding is not
+ownership: sessions report `provenance: "unknown"` / `owner: "unknown"`, and
+browser-first is the recommended order for human co-work. Three
 read-only MCP resources (`workflow://marimo-inspect/co-work-loop`,
 `workflow://marimo-inspect/live-safety`,
 `reference://marimo-inspect/fallbacks-and-limits`) ship with the server.

@@ -53,6 +53,32 @@ def create_server(
         or pass `session_id`/`server_url` explicitly to any tool to override
         the bound values for a single call.
 
+        `list_active_notebooks` reports `provenance: "unknown"` and
+        `owner: "unknown"` per **session** row, and `attached_client_count:
+        null` in its summary, because marimo publishes neither a session's
+        creator/owner nor a per-session client count. `binding is not
+        ownership`: a bound session may still be held by a human's browser
+        page. The summary counts are scoped: `total_notebooks` equals the
+        truthful `session_count` (a connection-failure sentinel is a row, not a
+        notebook, so read `result_row_count` for `len(notebooks)`), and
+        `active_connections` is only a DEPRECATED alias for `session_count` (it
+        was never a client count).
+
+        For human co-work, prefer browser-first (marimo 0.24 edit mode, without
+        an explicit `--session-ttl`): open the notebook so the page
+        becomes/holds the main consumer connection for the session, then
+        discover and bind it. `/sse` materialization is for headless agent-only
+        work: without an explicit `--session-ttl`, closing that stream leaves
+        the session an orphan that outlives it until a later connection takes
+        it over, though a configured `--session-ttl` can reap that orphan. A
+        human must take over and re-run the notebook before its widgets
+        respond. A second distinct client joins the same kernel as a non-main,
+        read-only consumer and a later reconnect can re-key the session id; run
+        mode is out of scope. The re-key is separate from a page-vs-session
+        divergence observed once, which is not diagnosed — neither the re-key
+        nor any read-path explanation is confirmed as its cause, so do not
+        assume one.
+
         Writes: use `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
         `edit_cell` refuses to overwrite a cell whose source changed since the
         agent last read it. Read the cell's full source with `get_cell_data`

@@ -213,6 +213,41 @@ anything, so `status: OK` means the binding can actually reach the session:
 
 See `workflow://marimo-inspect/co-work-loop` §1.
 
+### Binding is not ownership, and the counts are scoped
+
+`list_active_notebooks` reports `provenance: "unknown"` and `owner: "unknown"`
+for every **session** row. marimo's public API (`GET /api/sessions`) publishes
+only a session's `filename`/`path`, so provenance and ownership are not knowable
+from here — these placeholders mean "unavailable", not "unowned". Binding a
+session never makes the caller its owner, and a bound session may be a human's
+page.
+
+The `summary` counts are deliberately scoped: `total_notebooks` is the truthful
+session count (always equal to `session_count`), `session_count` counts sessions
+reported by `GET /api/sessions`, and `result_row_count` is `len(notebooks)` —
+every row, including a connection-failure **sentinel** (keys exactly
+`name`/`path`/`session_id`/`server_url`/`error`, no `provenance`/`owner`), which
+is a row but not a session. `attached_client_count` is always `null` (marimo
+publishes no per-session client count, and the server-wide
+`/api/status/connections.active` counts sessions with an open main consumer,
+not attached clients); `active_connections` is a **DEPRECATED** alias for
+`session_count` and was never a client count.
+
+For human co-work, prefer **browser-first** (marimo 0.24 **edit mode, without an
+explicit `--session-ttl`**): open the notebook so the page **becomes/holds the
+main consumer connection** for the session, then discover and bind it.
+Materializing a session with the `/sse` handshake is for headless agent-only
+work: without an explicit `--session-ttl`, closing that stream leaves the session
+an **orphan** (it outlives the stream) until a later connection takes it over —
+though a **configured `--session-ttl` can reap that orphan**. A human must
+**take over** and **re-run the notebook** before its widgets respond. One session
+per server in that mode, so a second distinct client joins the same kernel as a
+**non-main, read-only consumer**, and a later reconnect can **re-key** the id.
+Run mode is out of scope for these rules. The re-key behavior is real and
+*separate* from a page/session divergence observed once: its cause is **not
+diagnosed**, and **neither the re-key nor any read-path explanation is confirmed
+as its cause**, so treat it as unexplained and do not assume a mechanism.
+
 ## Version pin
 
 marimo is pinned to 0.24.x because private APIs are used. Do not widen the

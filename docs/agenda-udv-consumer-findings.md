@@ -1,12 +1,15 @@
 # Agenda (resolved): first-consumer integration findings (udv-echo-process)
 
-> **Status:** **Round 1 closed; Round 2 open (T15/T17/T20/T21 since resolved)** —
+> **Status:** **Round 1 closed; Round 2 open (T15/T17/T19/T20/T21/T22 since
+> resolved — only T18 remains)** —
 > T15–T22: added 2026-09-12, extended the same day with T20–T22 from a third
 > pass over that session (§Round 2). Round 2's T15 (execution modes), T17
-> (validation-before-bind), T20 (truthful button click reporting) and T21
-> (row-level staleness) are closed — the per-item state column and the Resolved
-> log carry the decision trail; the prose below records each finding as it was
-> filed, not as it stands today.
+> (validation-before-bind), T19 (browser-first session recipe; the page/kernel
+> divergence cause stays undiagnosed and is deliberately not invented), T20
+> (truthful button click reporting), T21 (row-level staleness) and T22
+> (truthful unknown provenance/ownership) are closed — the per-item state column
+> and the Resolved log carry the decision trail; the prose below records each
+> finding as it was filed, not as it stands today.
 > T3, round 1's last item, was resolved by review on 2026-09-10: the DSH
 > list-argument mangling it reported does not reproduce, and the defensive types
 > it recorded as "no defensive type landed here" had in fact landed in `8a44b8c`
@@ -72,10 +75,10 @@ test that pins it.
 | T16 | A `mo.sidebar(...)` cell's content is unreadable (`visual_output: null`) | **revised 2026-09-12: no longer reproduces — see the T16 revision note** |
 | T17 | Session identity is unstable without an attached client; an invented id binds but is then "not found" | **resolved — validation-before-bind; see Resolved log** |
 | T18 | A server with no session is invisible, and two headless `marimo edit` launches disagreed about having one | open |
-| T19 | Recipe: which session a browser or `/sse` stream ends up on, and why a page-vs-kernel divergence happens | open |
+| T19 | Recipe: which session a browser or `/sse` stream ends up on, and why a page-vs-kernel divergence happens | **resolved — browser-first recipe; divergence cause not diagnosed; see Resolved log** |
 | T20 | `set_ui_value` reports `applied: false / no_change: true` for a button whose `on_click` only sets state, though the click fired | **resolved — frontend click-counter evidence and `handler_invoked`; see Resolved log** |
 | T21 | `get_cell_outputs` carries no staleness signal, so a RESTORED cell output reads as current | **resolved — row-level state and stale flag; see Resolved log** |
-| T22 | A session's provenance is invisible (agent-materialized vs frontend-owned), so a forced takeover is undiscoverable | open |
+| T22 | A session's provenance is invisible (agent-materialized vs frontend-owned), so a forced takeover is undiscoverable | **resolved — truthful `provenance`/`owner: "unknown"` and scoped counts; see Resolved log** |
 
 **T15 — no bulk execution (as filed 2026-09-12; RESOLVED — see the Resolved
 log).** `run_cell` ran a cell plus its *ancestors*, so a cell that nothing else
@@ -111,7 +114,11 @@ advertised by `list_active_notebooks` changed between two consecutive calls
 (`s_hbp1e0` → `s_mrh0bo`), and a call against the listed id then failed with
 *"Session not found"*. Related: a session exists only while a client holds it —
 a browser tab dying took its session with it, and so did killing the `/sse`
-stream. Worse, `set_active_session` **accepts** an invented id (an
+stream. *(**Correction 2026-09-13:** the "a session dies with its client/stream"
+half did **not** hold — closing a `/sse` stream leaves the session alive as an
+orphan, and a materialized session can outlive the stream that created it; see
+T22's Resolved entry and the orphan contract in the packaged resources.)* Worse,
+`set_active_session` **accepts** an invented id (an
 `/sse?session_id=<uuid>` id of one's own choosing) and later calls fail with
 "not found", so the bind step reports success for a session that does not exist.
 `marimo edit` allows exactly **one** session per server, so the id to target is
@@ -129,7 +136,9 @@ observations are consistent with "enumerate sessions"; what created the first
 session is not. Treat "launch in edit mode *and* materialize a session" as the
 safe rule.
 
-**T19 — recipe gotcha: which session does a client land on?** The working
+**T19 — recipe gotcha: which session does a client land on? (as filed
+2026-09-12; RESOLVED — browser-first recipe documented, the divergence cause not
+diagnosed; see the Resolved log).** The working
 verification (the one that produced trustworthy numbers) targeted
 `s_na3rph` — the session the *frontend already held* — which is what T9-b's
 recipe implies. Doing it the other way round (materialize a session with an
@@ -192,14 +201,15 @@ outputs payload, or an explicit `output_stale: true`, or at minimum a line in th
 tool description that a reported output may be restored from a prior run.
 
 **T22 — a session's provenance is invisible, so a forced takeover is
-undiscoverable.** A fresh `marimo edit` server reports **0 sessions**, and the
+undiscoverable (as filed 2026-09-12; RESOLVED — truthful `provenance`/`owner:`
+`"unknown"` fields and scoped counts; see the Resolved log).** A fresh `marimo edit` server reports **0 sessions**, and the
 agent bridged that with the documented `/sse?session_id=…&file=…` handshake. That
 made the session the *agent's*: the consumer's page then had to **take over** and
 re-run the notebook before its widgets responded — "I had to press take over ->
 run the notebook for sliders to work". `list_active_notebooks` reports
 `session_id` and `active_connections: 1` but never *who* holds the session, so an
-agent cannot tell whether binding is safe (a page owns it, per the T9-b order) or
-whether it is about to displace a human. Requested: a provenance/owner field per
+agent cannot tell whether binding is safe (a human's page may hold it, per the
+T9-b order) or whether it is about to displace a human. Requested: a provenance/owner field per
 session (which client holds it, or `agent_materialized: true`), or a stated rule
 that a session an agent had to materialize is one a human will have to take over.
 Same pass, one useful observation: after the agent's `/sse` stream was killed the
@@ -476,6 +486,33 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   stdio/HTTP isolation regressions, and a real marimo-kernel probe preserved in
   `.hermes/probes/t17-prefix/`; the packaged fallback reference teaches the
   validation-before-write rule.
+- **T19** ✅ *Which session a client lands on — browser-first recipe; the
+  divergence cause stays undiagnosed* — the safe order is **browser-first**: let
+  the page create the session and, in marimo 0.24 **edit mode without an
+  explicit `--session-ttl`**, **become/hold its main consumer connection**, then
+  `list_active_notebooks` and bind what the page already holds. The payload
+  `owner` stays `"unknown"` regardless, because the public API does not publish
+  that role. Materializing a session with the `/sse` handshake is for **headless,
+  agent-only** work: without an explicit `--session-ttl`, closing that stream
+  leaves the session an orphan (it outlives the stream) until a later connection
+  takes it over — though a **configured `--session-ttl` can reap that orphan** —
+  a later human must **take over** the session and **re-run the notebook** before
+  its widgets respond, and a second distinct client joins the same kernel as a
+  **non-main, read-only consumer** whose later reconnect can re-key the session
+  id. Run mode is out of scope. The rekey is real and **separate** from the
+  page-vs-kernel divergence T19 recorded, which stays **undiagnosed**: the recipe
+  is documented and a page/session disagreement is stated as unexplained rather
+  than given an invented cause, and neither the rekey nor any read-path
+  explanation is confirmed as its cause (the task boundary was explicit: do not
+  invent the T19 mechanism). Documented in
+  `README.md`, all three packaged resources
+  (`workflow://marimo-inspect/co-work-loop` §1,
+  `workflow://marimo-inspect/live-safety` §A session may not be yours,
+  `reference://marimo-inspect/fallbacks-and-limits` §Binding is not ownership),
+  `docs/agent-onboarding-demo-mcp.md` §Prerequisites and
+  `docs/harness-integration/README.md` §Runtime prerequisites; pinned by the
+  packaged-resource cases in `tests/marimo_inspect/test_resources.py` and the
+  tool/server-description cases in `tests/marimo_inspect/test_server.py`.
 - **T20** ✅ *A button click is reported truthfully* — `set_ui_value` no longer
   reads an unchanged `button`/`run_button` element value as "already held this
   value, nothing changed". The two types differ and the payloads say so: a
@@ -536,6 +573,37 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   `idle/false` with the new rendering. The headless `/sse` harness does not
   restore created cells from marimo's on-disk session cache, so that narrower
   restart flavour was probed and recorded but not claimed as CI coverage.
+- **T22** ✅ *Provenance and ownership are honestly unknown* —
+  `list_active_notebooks` now adds `provenance: "unknown"` and `owner:
+  "unknown"` to every **session** row instead of letting a bound session look
+  owned, and its summary carries honest counts: `total_notebooks` equals the
+  truthful `session_count` (sessions the queried servers report via
+  `GET /api/sessions`) — a connection-failure **sentinel** is a row, not a
+  session, and is exposed only by the new `result_row_count` (`len(notebooks)`,
+  keys exactly `name`/`path`/`session_id`/`server_url`/`error`, no
+  `provenance`/`owner`) — while `attached_client_count: null` records that
+  marimo publishes no per-session client count (the server-wide
+  `/api/status/connections.active` counts sessions with an open main consumer,
+  not clients), and `active_connections` is kept only as a **DEPRECATED**
+  compatibility alias for `session_count` (it was never a client count). No
+  PID/host/token or private metadata is added, and no in-memory materialization
+  tracker is built — that would go stale across rekey, process and client
+  boundaries. `binding is not ownership` and the browser-first order are stated
+  in the `list_active_notebooks` docstring, the server instructions, `README.md`,
+  all three packaged resources, and the onboarding/harness docs. Evidence: marimo
+  0.24's census exposes only `filename`/`path` (and no per-session client count),
+  so the placeholders are truthful rather than inferred. Pinned non-live by the
+  handler cases in `tests/marimo_inspect/test_tools.py` (a failed server yields a
+  bare sentinel and `total_notebooks == session_count`, not a fabricated row), the
+  description/instructions cases in `tests/marimo_inspect/test_server.py` and
+  the packaged-resource cases in `tests/marimo_inspect/test_resources.py`; live
+  by `tests/marimo_inspect/live/test_sessions.py`, which pins the raw
+  `/api/sessions` field limit, calls the **real handler** against a hermetic
+  server (`session_count`/`total_notebooks`/`active_connections` = 1,
+  `attached_client_count` null, `result_row_count` 1), and measures
+  `/api/status/connections.active` as 1 while a session's main stream is open and
+  0 after it is closed/orphaned — the counter is never reported as a client
+  count.
 
 ## Measured state (2026-09-10, after T4 + T6 + T9 + T9-b + T10 + T11 + T12 + T13 + T3 + T14)
 

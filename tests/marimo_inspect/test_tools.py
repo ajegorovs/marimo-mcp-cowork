@@ -33,6 +33,12 @@ class TestListActiveNotebooks:
         assert result["summary"]["total_notebooks"] == 0
         assert result["notebooks"] == []
         assert "next_steps" in result
+        # Honest counting: zero sessions, and an unavailable (not zero)
+        # attached-client count. `active_connections` is a deprecated alias.
+        assert result["summary"]["session_count"] == 0
+        assert result["summary"]["result_row_count"] == 0
+        assert result["summary"]["attached_client_count"] is None
+        assert result["summary"]["active_connections"] == 0
 
     async def test_returns_notebooks_when_servers_exist(self, mock_discover):
         """Returns notebooks when servers are discovered."""
@@ -56,6 +62,152 @@ class TestListActiveNotebooks:
             assert result["summary"]["total_notebooks"] == 1
             assert len(result["notebooks"]) == 1
             assert result["notebooks"][0]["session_id"] == "abc123"
+            assert result["notebooks"][0]["provenance"] == "unknown"
+            assert result["notebooks"][0]["owner"] == "unknown"
+
+    async def test_summary_counts_sessions_honestly(self, mock_discover):
+        """The summary counts sessions, never claims attached clients.
+
+        `session_count` (and `total_notebooks`) count the sessions
+        `GET /api/sessions` reports; `result_row_count` counts the rows;
+        `attached_client_count` is `None` because marimo publishes no
+        per-session client count (and `/api/status/connections.active` counts
+        sessions with an open main consumer, not clients); `active_connections`
+        survives only as a deprecated alias for `session_count`.
+        """
+        from marimo_inspection.tools.notebooks import (
+            list_active_notebooks,
+        )
+
+        with patch("marimo_inspection.tools.notebooks.MarimoClient") as mock_client_cls:
+            mock_instance = MagicMock()
+            mock_instance.list_sessions = AsyncMock(
+                return_value=[
+                    MagicMock(session_id="s1", file="/a.py", basename="a.py"),
+                    MagicMock(session_id="s2", file="/b.py", basename="b.py"),
+                ]
+            )
+            mock_client_cls.return_value = mock_instance
+
+            result = await list_active_notebooks()
+
+        summary = result["summary"]
+        assert summary["session_count"] == 2
+        assert summary["total_notebooks"] == 2
+        assert summary["result_row_count"] == 2
+        assert summary["attached_client_count"] is None
+        # The alias equals the session count, not a client count.
+        assert summary["active_connections"] == summary["session_count"]
+
+    async def test_every_notebook_row_states_unknown_provenance_and_owner(
+        self, mock_discover
+    ):
+        """Provenance and owner are unknown, not inferred from the binding.
+
+        marimo exposes only a session's filename/path, so the tool must say
+        "unknown" rather than let a caller read the auto-bind as ownership.
+        """
+        from marimo_inspection.tools.notebooks import (
+            list_active_notebooks,
+        )
+
+        with patch("marimo_inspection.tools.notebooks.MarimoClient") as mock_client_cls:
+            mock_instance = MagicMock()
+            mock_instance.list_sessions = AsyncMock(
+                return_value=[
+                    MagicMock(session_id="abc123", file="/t.py", basename="t.py")
+                ]
+            )
+            mock_client_cls.return_value = mock_instance
+
+            result = await list_active_notebooks()
+
+        row = result["notebooks"][0]
+        assert row["provenance"] == "unknown"
+        assert row["owner"] == "unknown"
+
+    async def test_connection_failed_sentinel_is_not_a_session(self, mock_no_servers):
+        """A failed server adds a bare sentinel row, never a fake session.
+
+        The sentinel's keys are exactly ``name``/``path``/``session_id``/
+        ``server_url``/``error``: it carries no ``provenance``/``owner`` (those
+        describe a session), it is excluded from ``session_count`` and
+        ``total_notebooks``, and it is visible only through ``result_row_count``.
+        """
+        from marimo_inspection.tools.notebooks import (
+            list_active_notebooks,
+        )
+
+        with patch("marimo_inspection.tools.notebooks.MarimoClient") as mock_client_cls:
+            mock_instance = MagicMock()
+            mock_instance.list_sessions = AsyncMock(
+                side_effect=ConnectionError("refused")
+            )
+            mock_client_cls.return_value = mock_instance
+
+            result = await list_active_notebooks(server_url="http://127.0.0.1:9999")
+
+        row = result["notebooks"][0]
+        assert set(row) == {"name", "path", "session_id", "server_url", "error"}
+        assert row["session_id"] == "error"
+        assert "provenance" not in row
+        assert "owner" not in row
+
+        summary = result["summary"]
+        assert summary["session_count"] == 0
+        assert summary["total_notebooks"] == 0
+        assert summary["result_row_count"] == 1
+        assert summary["active_connections"] == 0
+        assert summary["attached_client_count"] is None
+
+    async def test_total_notebooks_excludes_the_failure_sentinel(self):
+        """`total_notebooks` counts real sessions; `result_row_count` counts rows.
+
+        One server answers and one refuses: the summary reports one notebook
+        but two rows — the deliberate failure-path correction.
+        """
+        from marimo_inspection.discovery import DiscoveredServer
+        from marimo_inspection.tools.notebooks import (
+            list_active_notebooks,
+        )
+
+        servers = [
+            DiscoveredServer(url="http://127.0.0.1:8090", pid=1, healthy=True),
+            DiscoveredServer(url="http://127.0.0.1:8091", pid=2, healthy=True),
+        ]
+
+        def _client(url: str):
+            inst = MagicMock()
+            if url.endswith("8091"):
+                inst.list_sessions = AsyncMock(
+                    side_effect=ConnectionError("refused")
+                )
+            else:
+                inst.list_sessions = AsyncMock(
+                    return_value=[
+                        MagicMock(session_id="s1", file="/a.py", basename="a.py")
+                    ]
+                )
+            return inst
+
+        with (
+            patch(
+                "marimo_inspection.discovery.discover_servers",
+                new_callable=lambda: AsyncMock(return_value=servers),
+            ),
+            patch(
+                "marimo_inspection.tools.notebooks.MarimoClient",
+                side_effect=_client,
+            ),
+        ):
+            result = await list_active_notebooks()
+
+        summary = result["summary"]
+        assert summary["total_notebooks"] == 1
+        assert summary["session_count"] == 1
+        assert summary["result_row_count"] == 2
+        assert summary["active_connections"] == 1
+        assert len(result["notebooks"]) == 2
 
     async def test_with_explicit_server_url(self, mock_no_servers):
         """Accepts explicit server_url parameter."""

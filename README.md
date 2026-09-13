@@ -76,6 +76,37 @@ session appears, argument-less calls fail closed with `reason:
 binding_ambiguous`. When in doubt, pass `session_id`/`server_url` explicitly
 (or call `set_active_session`).
 
+**Binding is not ownership.** Each **session** row reports
+`provenance: "unknown"` and `owner: "unknown"` — marimo's public API exposes
+only a session's filename/path, so who created it and which client holds it are
+not knowable from here. The `summary` is scoped the same way: `total_notebooks`
+is the truthful session count (always equal to `session_count`), `session_count`
+counts sessions reported by `GET /api/sessions`, `result_row_count` is
+`len(notebooks)` — every row, including a connection-failure sentinel (keys
+exactly `name`/`path`/`session_id`/`server_url`/`error`, no
+`provenance`/`owner`), which is a row but not a session. `attached_client_count`
+is always `null` (marimo publishes no per-session client count, and the
+server-wide `/api/status/connections.active` value counts sessions with an open
+main consumer, not attached clients), and `active_connections` is a
+**deprecated** compatibility alias for `session_count` that was never a client
+count.
+
+For human co-work, prefer **browser-first** (marimo 0.24 **edit mode without an
+explicit `--session-ttl`**): open the notebook so the page **becomes/holds the
+main consumer connection** for the session, then call
+`list_active_notebooks` and bind it — the payload `owner` still reads
+`"unknown"` because the public API does not publish that role. Creating the
+session yourself with the `/sse` handshake is for headless, agent-only work:
+without an explicit `--session-ttl`, closing that stream leaves the session an
+orphan (it outlives the stream) until a later connection takes it over — though
+a **configured `--session-ttl` can reap that orphan**. A human who opens the
+page must take over and re-run the notebook before its widgets respond, a
+second distinct client joins the same kernel as a **non-main, read-only
+consumer**, and a later reconnect can re-key the session id. Run mode is out of
+scope for these rules. The re-key is separate from a page-vs-session divergence
+observed once: its cause is not diagnosed, and neither the re-key nor any
+read-path explanation is confirmed as its cause — so do not assume one.
+
 ### Read before you edit
 
 `edit_cell` carries a staleness guard (`check_fresh=True` by default) and

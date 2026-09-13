@@ -14,7 +14,7 @@ ledger.
 | Area | Current state | Canonical detail |
 | --- | --- | --- |
 | MCP upgrade roadmap | `restart_kernel` is implemented; notebook-server start/stop/switch remain operator-owned | [`mcp-upgrade-roadmap.md`](mcp-upgrade-roadmap.md) |
-| Consumer findings | T20 button truthfulness is resolved; Round 2 now focuses on session provenance/ownership and discovery guidance | [`agenda-udv-consumer-findings.md`](agenda-udv-consumer-findings.md) |
+| Consumer findings | T19/T22 resolved — browser-first session recipe (marimo 0.24 edit mode without `--session-ttl`) and truthful `provenance`/`owner: "unknown"` with scoped counts; Round 2's only open item is T18 (session discovery) | [`agenda-udv-consumer-findings.md`](agenda-udv-consumer-findings.md) |
 | Example notebooks | Contract and verification wiring remain open | [`agenda-example-notebooks.md`](agenda-example-notebooks.md) |
 | Remote topology | Design investigation remains open | [`agenda-remote-marimo-mcp.md`](agenda-remote-marimo-mcp.md) |
 | Live tests | Current commands, mechanics, and exact counts | [`live-tests.md`](live-tests.md) |

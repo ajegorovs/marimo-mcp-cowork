@@ -4,6 +4,35 @@ Applies to marimo-inspect 0.3.x / marimo 0.24.x.
 
 These tools act on a **live kernel**. Treat every write as production.
 
+## A session may not be yours
+
+`list_active_notebooks` cannot say who created a session or who holds it: every
+**session** row reports `provenance: "unknown"` and `owner: "unknown"`, because
+marimo's public API (`GET /api/sessions`) publishes only a session's
+filename/path — no creator, no owning client, no creation time, and no
+per-session client count. **Binding is not ownership** — a bound session may be
+a human's open page.
+
+Prefer **browser-first** (marimo 0.24 **edit mode, without an explicit
+`--session-ttl`**): open the notebook so the page **becomes/holds the main
+consumer connection** for the session, then bind it. `/sse` materialization is
+for headless agent-only work: without an explicit `--session-ttl`, closing that
+stream leaves the session an **orphan** (it outlives the stream) until a later
+connection takes it over — though a **configured `--session-ttl` can reap that
+orphan**. A human must **take over** and **re-run the notebook** before its
+widgets respond. A later reconnect can **re-key** the session id, and a second
+distinct client joins the same kernel as a **non-main, read-only consumer**.
+Run mode is out of scope for these rules.
+
+The `summary` reports `total_notebooks` (`session_count`), `result_row_count`
+(every row, including a connection-failure sentinel) and `attached_client_count:
+null` — `active_connections` is only a DEPRECATED alias for `session_count`,
+never a client count, and `/api/status/connections.active` counts sessions with
+an open main consumer, not clients. The re-key behavior is real and *separate*
+from a page/session divergence observed once: that divergence is **not
+diagnosed**, and **neither the re-key nor any read-path explanation is confirmed
+as its cause** — treat it as unexplained, don't assume one.
+
 ## Edits hit the running kernel
 
 `edit_cell` and `run_cell` mutate the session the server is attached to. The
