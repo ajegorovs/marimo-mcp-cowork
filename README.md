@@ -51,6 +51,10 @@ Or run it directly:
 marimo-inspect --transport stdio
 ```
 
+For the supported local, explicit-remote, and Tailnet shared deployment shapes,
+including URL-resolution and multi-client binding rules, see
+[`docs/deployment-topologies.md`](docs/deployment-topologies.md).
+
 ## MCP tools
 
 15 tools over the same live kernel.

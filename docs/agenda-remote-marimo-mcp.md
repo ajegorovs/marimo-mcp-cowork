@@ -1,16 +1,19 @@
 # Agenda (open issue): hosting marimo servers / the MCP server remotely
 
-> **Status:** **R1 and R2 controlled prototypes proven; protected marimo is detected but unsupported; deployment decisions remain open.**
+> **Status:** **Tailnet-only R2 is the supported shared co-work topology; R1 is a supported explicit-target escape hatch. Both controlled prototypes are proven; protected marimo is detected but unsupported.**
+>
+> The durable operating contract is [`deployment-topologies.md`](deployment-topologies.md).
+> This agenda retains prototype evidence and unresolved validation/design work.
 > **Created:** 2026-09-07
 > **Related:** [harness-integration/README.md](harness-integration/README.md)
 > (gap #5 "version-skew policy" and gap #7 "remote/containerized servers"),
 > `docs/marimo-version-support.md`, `src/marimo_inspection/discovery.py`,
 > `docs/live-tests.md`.
 >
-> This doc *supersedes* the "state it as a non-goal" suggestion in
-> harness-integration gap #7: remote hosting is now considered a candidate
-> feature, so gap #7 should be re-pointed here rather than closed as a
-> non-goal.
+> This doc supersedes the earlier "state it as a non-goal" suggestion in
+> harness-integration gap #7. Tailnet-only remote hosting is now a supported
+> operating scope; the remaining entries below track its unresolved validation
+> and operator-policy work.
 
 ## The question
 
@@ -111,11 +114,11 @@ answers:
    denied with the same body), `session_census_denied` (probes undecided,
    conservative). Target resolution, `set_active_session` and `restart_kernel`
    all speak that vocabulary, and a denied census reports
-   `available_sessions_readable: false` rather than an empty list. **The rest
-   of this item remains open:** nothing yet pins which server a *bound*
-   session belongs to, and remote hosting itself is an undecided design
-   question (see Status above), so this is not a closure of the remote
-   topology.
+   `available_sessions_readable: false` rather than an empty list. **The remaining
+   topology work is operational, not target-pair correctness:** the supported
+   R2/R1 contract and its URL-resolution rules are in
+   [`deployment-topologies.md`](deployment-topologies.md); remote hosting still
+   needs the validation and service-policy decisions tracked below.
 5. **Latency and timeouts.** Templates round-trip scratchpad execution over
    `POST /api/kernel/execute` and parse an SSE stream. Every tool call becomes a
    WAN round-trip. The harness default `toolCallTimeoutMs` is 60000 — long kernel
@@ -256,54 +259,51 @@ repository file, an MCP configuration, or chat. Supporting it would require a
 separate security design for a vault-bound credential flow or upstream marimo
 integration; it is not a discovery, retry, or timeout fix.
 
-## Design space (not decided)
+## Decisions and deferred design
 
-- **Transport.** `streamable-http` (`/mcp`) vs `sse` (`/sse`) for R2 — both
-  already selectable via `--transport`. Which does each harness speak?
-- **Network boundary.** Tailnet-only (WireGuard, no public listener) vs
-  reverse-proxy + auth vs SSH tunnel per session. Tailnet-only is by far the
-  cheapest honest answer, and we already run Tailscale — but it makes the
-  `--no-token` question a policy question about the tailnet ACL rather than a
-  technical one.
-- **R1 vs R2 vs both.** R2-with-the-kernel-local is a small change (one URL in
-  harness config). R1 with a *local* MCP server exercises every "what breaks"
-  item above. Decide which one we actually want before designing either.
-- **Session identity across hosts.** Do we need a
-  `(server_url, session_id)` composite key instead of a bare session id?
-- **Discovery for remotes.** An explicit `MARIMO_INSPECT_SERVER_URLS` (or
-  config file) list of known remote endpoints, health-checked the same way the
-  registry entries are — a small, contained addition to `discovery.py` that
-  reuses `_check_server()`.
-- **Auth.** If we must stop using `--no-token`: is there a way to pass marimo's
-  auth through `MarimoClient` at all today? ❓ unverified — probably the single
-  most important question in this doc, because it gates item 3 above. Partially
-  answered (2026-09-13, Task 01): the client can now *detect* an auth gate and
-  say so (`reason: auth_required`, from a refused read-scope probe) instead of
-  blaming a missing edit scope — but it still cannot authenticate, so remote
-  hosting behind auth remains open.
-- **Where the version contract lives.** If R2 is the answer to the pin problem,
-  the *host* needs 0.24.x and consumers need nothing — that flips the consumer
-  story in `harness-integration/README.md` (they'd configure a URL, not a
-  dependency). Worth writing down before it becomes implicit.
-- **Failure semantics.** What a tool call should return when the remote kernel is
-  unreachable vs authenticated-wrong vs slow-but-alive. ✓ **Partially resolved
-  (2026-09-13, Task 01):** unreachable (`server_unreachable`), auth-gated
-  (`auth_required`), and scope-denied (`edit_scope_required`) are now distinct
-  structured reasons, with `session_census_denied` as the conservative fallback;
-  slow-but-alive still has no dedicated reason.
-- **Multi-tenancy.** Two humans, one shared server: sessions are per-server, so
-  this needs a real answer or an explicit "single-user only" non-goal.
+- **Transport and topology (decided).** R2 uses `streamable-http` at `/mcp` for
+  shared Tailnet co-work: the MCP process is co-located with a loopback-only
+  marimo server. R1 remains a supported explicit-target escape hatch, not the
+  recommended shared-service path. The operating consequences are canonical in
+  [`deployment-topologies.md`](deployment-topologies.md).
+- **Network boundary (decided).** Tailnet-only operation between machines we
+  control is the supported scope. The R2 MCP listener binds one explicit
+  Tailnet address; marimo stays loopback-only. No public or LAN listener is a
+  supported contract. This makes `--no-token` an explicit policy relying on the
+  Tailnet ACL, not an accidental fallback.
+- **Session identity (implemented).** Active bindings retain both
+  `(server_url, session_id)`, and an explicit pair is validated against the
+  selected server before tools operate. Shared HTTP clients use explicit pairs
+  after fallback binding becomes ambiguous.
+- **Remote discovery (deferred).** A configured list of known remote endpoints
+  is not needed for R2, and R1 remains explicit-URL only. Consider it only
+  after the remaining operational decisions and a live multi-endpoint
+  regression.
+- **Authentication (unsupported by design).** The client detects an auth gate
+  and returns `auth_required`, but cannot authenticate. Supporting protected
+  marimo would require a separate vault-bound or upstream-backed design; do not
+  put credentials in URLs, configuration, logs, or tool arguments.
+- **Version ownership (open).** R2 centralizes the 0.24.x provider environment,
+  but the host-versus-consumer version contract and deliberate version-skew
+  behavior still need validation.
+- **Failure semantics (partially resolved).** `server_unreachable`,
+  `auth_required`, `edit_scope_required`, and conservative
+  `session_census_denied` are structured and distinct. Slow-but-alive behavior
+  has no dedicated remote-timeout contract yet.
+- **Multi-client co-work (open).** Target isolation fails closed, but marimo
+  provides neither ownership nor edit locking. Multi-checkout visibility and
+  the practical shared-session policy still require evidence.
 
-## Non-goals (proposed, needs ratifying)
+## Scope boundaries
 
-- No public-internet exposure of a marimo or MCP server, ever. Tailnet or tunnel
-  only.
-- No multi-user auth model of our own inventing — if we need auth beyond the
-  tailnet, that is an upstream marimo question.
-- Not a hosted/SaaS product; "remote" here means *a machine we control*.
-- No change to the private-API approach for remote's sake — if remote forces a
-  compatibility layer, that is the `NotebookBackend` trigger
-  (`docs/notebook-backend-protocol.md`) and should be decided there.
+- No public-internet exposure of marimo or MCP; Tailnet-only co-work is the
+  current supported boundary.
+- No local multi-user authentication model. Any need beyond the Tailnet boundary
+  is an upstream or separately designed credential problem.
+- Not a hosted/SaaS product; "remote" means a machine we control.
+- No compatibility layer solely for remote deployment. If remote operation
+  forces one, use the `NotebookBackend` decision trigger in
+  [`notebook-backend-protocol.md`](notebook-backend-protocol.md).
 
 ## Remaining prototype and design work
 

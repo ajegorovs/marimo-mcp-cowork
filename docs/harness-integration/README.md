@@ -96,6 +96,11 @@ Verified resolution on this machine: `fastmcp 4.0.3`, `marimo 0.24.0`,
 
 ## Axis B — how your agent reaches the tools
 
+For the canonical local, explicit-remote, and Tailnet shared operating shapes,
+including which host resolves a returned `server_url`, read
+[`../deployment-topologies.md`](../deployment-topologies.md) before selecting a
+transport. This section is the consumer configuration index for those modes.
+
 The console script is `marimo_inspection.server:main`:
 
 ```text

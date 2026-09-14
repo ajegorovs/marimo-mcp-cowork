@@ -206,6 +206,9 @@ The entries below are stable descriptions and read-before-acting pointers.
 
 - `docs/marimo-version-support.md` — supported marimo range and dependency
   upgrade validation. Read before changing marimo dependencies.
+- `docs/deployment-topologies.md` — supported local and Tailnet co-work
+  topologies, transport/binding rules, and the operator boundary. Read before
+  changing remote deployment behavior or its documentation.
 - `docs/live-tests.md` — live-kernel test mechanics, commands, and canonical
   current counts. Read before changing or running the live suite.
 - `docs/bug-hunt-protocol.md` — evidence and closure protocol for MCP surface
