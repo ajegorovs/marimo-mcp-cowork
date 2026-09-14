@@ -283,6 +283,18 @@ integration; it is not a discovery, retry, or timeout fix.
   and returns `auth_required`, but cannot authenticate. Supporting protected
   marimo would require a separate vault-bound or upstream-backed design; do not
   put credentials in URLs, configuration, logs, or tool arguments.
+  **Measured 2026-09-14 (controlled two-machine check):** the auth-gated server
+  behaved exactly as documented — `GET /` a 303 to `/auth/login`, `/api/version`
+  and the session census both 401 with the same auth body, and `get_cell_map`
+  refusing `auth_required` with `target_resolved`/`operation_ran`/`state_changed`
+  false and `available_sessions_readable: false`. However, the same *server*
+  answered **200** when its access token was passed as a **query parameter**
+  (`/api/version?access_token=…`, `/api/sessions?access_token=…`). The capability
+  gap is therefore client-side only: a credential channel is mechanically
+  available on the server today, so the open question is whether to design one
+  (vault-bound or upstream-backed) — not whether one is possible. Until that
+  decision, a token in a URL, configuration, log, or tool argument stays out of
+  contract.
 - **Version ownership (open).** R2 centralizes the 0.24.x provider environment,
   but the host-versus-consumer version contract and deliberate version-skew
   behavior still need validation.
