@@ -1,6 +1,6 @@
 # How we run live kernel tests
 
-> Updated: 2026-09-13 — verified against the current working tree (live suite
+> Updated: 2026-09-20 — verified against the current working tree (live suite
 > green, incl. the hermetic mutation, widget, run-mode (T15), kernel-restart
 > (Wave 3), T-V3 dependency-completeness, T-V4 notebook-only-variables, T18
 > server-vs-session discovery, T20 button-click, T22
@@ -12,7 +12,9 @@
 > interaction regressions; the non-live tier also carries the
 > structured-target-resolution (Wave A) regressions — every targeting-tool
 > refusal reports `available_sessions_readable`, and an unreadable census body
-> is a query failure, never a not-found — and pins the re-measured split below;
+> is a query failure, never a not-found — plus the explicit-`base_url`
+> discovery regressions (a healthy, an unreachable and three non-200 targets,
+> the registry untouched throughout), and pins the re-measured split below;
 > see
 > [Current status](#current-status)).
 > This is the canonical, current-truth doc for the **live** test suite: what it
@@ -619,18 +621,22 @@ browsers. It proves every example cell executes cleanly in a real 0.24.x kernel
 and that its documented reactivity happens in-kernel; the visual check stays
 manual (see the widget section above).
 
-## Current status (verified 2026-09-13)
+## Current status (verified 2026-09-20)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
-split (710 tests collected in total):
+split (715 tests collected in total):
 
 ```text
 uv run pytest -m live
-=> 75 passed, 635 deselected
+=> 75 passed, 640 deselected
 
 uv run pytest -m "not live"
-=> 635 passed, 75 deselected
+=> 640 passed, 75 deselected
 ```
+
+The five non-live tests beyond the previous 635 are
+`test_discovery.py::TestDiscoverServersBaseUrl` — the explicit-`base_url`
+discovery regressions added with the remote-topology work.
 
 The access-denial classifier (`src/marimo_inspection/tools/access.py`) is pinned
 by `tests/marimo_inspect/test_access.py` (24 tests: a scripted probe client for
