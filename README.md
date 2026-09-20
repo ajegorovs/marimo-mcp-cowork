@@ -466,3 +466,19 @@ uv run pytest -m live         # live kernel tests (boots its own headless server
 The `live` tests need a real marimo kernel and are deselected by default. See
 [docs/live-tests.md](docs/live-tests.md) for how the live suite is run and its
 current status.
+
+## Agent skills
+
+Repo-local agent skills live in `.agents/skills/` — one Markdown `SKILL.md` per
+skill.
+
+Hermes Agent does not auto-load skills from a cloned repo: a `SKILL.md` is a set
+of instructions the agent follows, so it requires explicit opt-in. Once per repo,
+per machine:
+
+```bash
+hermes skills trust
+```
+
+Run it from anywhere inside the repo. It takes effect in your **next** session.
+`hermes skills list` shows the loaded skills.
