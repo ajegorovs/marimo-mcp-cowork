@@ -288,7 +288,10 @@ def _registry(root: Path, *urls: str):
     previous = os.environ.get("XDG_STATE_HOME")
     os.environ["XDG_STATE_HOME"] = str(root)
     try:
-        yield
+        with patch(
+            "marimo_inspection.discovery._get_registry_dir", return_value=registry
+        ):
+            yield
     finally:
         if previous is None:
             os.environ.pop("XDG_STATE_HOME", None)
