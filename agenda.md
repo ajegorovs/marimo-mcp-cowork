@@ -9,7 +9,7 @@
 
 ## Open blockers and boundaries
 
-- **A4 blocker:** native CLI accepts combined selectors by documented session precedence; the benchmark-only guard now refuses them with no CLI call, but session-ID reuse was observed on the same server: after A rotated, its old ID was accepted for orphaned B, then read B's kernel. This is not a wrong-write demonstration through the guard, but the remaining identity/churn gap prevents a fail-closed target guarantee. **A5 stays held**. Authenticated behavior and version-normalized footprint remain unverified.
+- **A4 blocker:** native CLI accepts combined selectors by documented session precedence; the benchmark-only guard now refuses them with no CLI call, but session-ID reuse was observed on the same server: after A rotated, its old ID was accepted for orphaned B, then read B's kernel. This is not a wrong-write demonstration through the guard, but the remaining identity/churn gap prevents a fail-closed target guarantee. **A5 stays held**. Native auth-gated loopback execution was verified with a throwaway token; wrapper authenticated success and token rotation remain untested. Matched-version 0.24.0 install footprint was measured, but a 0.25.1 wrapper comparison remains outside the supported bound.
 - The Windows test baseline used an isolated, lock-exact environment because the checkout's existing `.venv` lacks pytest. The fixture fixes in the draft PR do not change product code or the dependency lock.
 - Remote services, auth/network exposure, implementation, migration, release and merge remain separate decision gates. See the canonical agenda for scope and safety constraints.
 
