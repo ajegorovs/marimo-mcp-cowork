@@ -3,8 +3,8 @@
 > **Status:** **Evidence wave in progress; no interface decision.** Task 1's
 > Windows baseline ran in an isolated locked environment after test-harness
 > portability repairs; the comparison fixture passed only static checks, and the
-> pinned native CLI received a source audit but has not been installed or
-> exercised. Tasks 4–6 remain separately gated. See the short
+> pinned native 0.25.1 CLI has passed a local Windows transport smoke, not an
+> A/B capability comparison. Tasks 4–6 remain separately gated. See the short
 > [current agenda](../agenda.md) for the next gate and blockers.
 > **Created:** 2026-10-05
 > **Related:** [project-status.md](project-status.md) ·
@@ -295,13 +295,14 @@ no repository rename, no wholesale client extraction, no service deployment.
 
 ## Next execution gate
 
-The Windows 0.24.x baseline is now exercised, but native arm B has only a
-source-grounded CLI contract. Next, validate an isolated 0.25.1 CLI install and
-its `help(cm)` path, review the external grader's runtime and saved-artifact
-checks, then run a bounded A4 comparison on disposable loopback notebooks.
-Do not use a green static fixture check as a live/durability result. Review the
-evidence before remote work or product implementation; **no repository-future
-outcome is selected in advance.**
+The Windows 0.24.x baseline is now exercised, and an isolated native 0.25.1
+CLI passed listing, explicit targeting, `help(cm)` and missing-target refusal
+on a disposable loopback notebook. Next, review the external grader's runtime
+and saved-artifact checks, then run a bounded A4 comparison on disposable
+loopback notebooks. The [benchmark runbook](native-pair-benchmark-runbook.md)
+records the smoke and blockers. Do not use a green static fixture check as a
+live/durability result. Review the evidence before remote work or product
+implementation; **no repository-future outcome is selected in advance.**
 
 ## Standing notes carried from planning
 
