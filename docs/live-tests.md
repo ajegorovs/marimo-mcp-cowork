@@ -621,6 +621,34 @@ browsers. It proves every example cell executes cleanly in a real 0.24.x kernel
 and that its documented reactivity happens in-kernel; the visual check stays
 manual (see the widget section above).
 
+## Windows baseline (2026-10-10; isolated lock-exact environment)
+
+The checkout's existing `.venv` lacked the optional `test` extra, so this run
+used a separate environment populated from the committed lock with
+`uv sync --all-extras --frozen`; the checkout environment and lockfile were not
+changed. On Windows, collection found **715** cases. After the test-only
+portability repairs in the Windows baseline PR:
+
+- `pytest -m "not live" -q`: **634 passed, 6 skipped, 75 deselected**. Two
+  POSIX-only registry-path tests are explicitly skipped on Windows; the other
+  skips were already marked. Before the repair, ten tests failed because
+  discovery tests read the real Windows registry instead of their XDG fixture.
+- The **75 live cases passed in bounded file groups**, not in one `-m live`
+  invocation. The first unbounded attempt was stopped after a single test had
+  passed but its pytest process did not exit. The live harness now drains both
+  server pipes on independent daemon threads, preventing an inherited Windows
+  pipe handle from blocking asyncio executor shutdown. A single-cell-map test
+  then exited normally, and the remaining file groups passed.
+- `ruff check .`, `ruff format --check .`, `marimo check notebooks examples`
+  and `git diff --check` passed. These results cover marimo **0.24.0** only;
+  they do not validate the proposed native 0.25.1 arm or frontend rendering.
+
+On Windows marimo uses `%USERPROFILE%/.marimo/servers`, not
+`XDG_STATE_HOME/marimo/servers`. The registry discovery tests isolate
+`USERPROFILE` in the test and server subprocess while POSIX continues using
+`XDG_STATE_HOME`. Byte-identical notebook copies use text writes with
+`newline=""` to preserve committed CRLF bytes.
+
 ## Current status (verified 2026-09-20)
 
 **The live suite is green.** On this tree the two tiers pin the same collection
