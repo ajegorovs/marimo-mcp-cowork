@@ -4,12 +4,12 @@
 
 | Workstream | Status | Next gate | Detail |
 | --- | --- | --- | --- |
-| Native-first marimo comparison | [Draft PR #4](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4), stacked on #3: both arms pass bounded metric/save/reopen and first missing-target/duplicate-refusal gates. No full A/B verdict. | Complete A4: independent-actor native stale edit, wrong-session binding, error channels, reconnect and bounded slow execution; then assess Task 3. | [Convergence agenda](docs/agenda-native-marimo-pair-convergence.md) · [benchmark runbook](docs/native-pair-benchmark-runbook.md) · [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4) |
+| Native-first marimo comparison | [Draft PR #4](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4), stacked on #3: **A4 no-go** — native `--file B --session A` accepted a write to A without warning. Both arms passed bounded happy path, basic refusals and fault channels; native independent-actor stale edit refused. | Publish and review the reproduced blocker; design and verify a fail-closed target-selection rule before A5. Other A4 probes remain open. | [Convergence agenda](docs/agenda-native-marimo-pair-convergence.md) · [benchmark runbook](docs/native-pair-benchmark-runbook.md) · [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4) |
 | Windows baseline harness | [Draft PR #3](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3): test-only portability repair; non-live and live tests verified in bounded groups on Windows. | Review/merge the PR; repeat the gate after any change. | [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3) |
 
 ## Open blockers and boundaries
 
-- Both arms passed local metric/reactivity/save/fresh-server and missing-target/duplicate-refusal gates on disposable copies. Native independent-actor stale-edit safety, wrong-session/error/reconnect/slow execution and A5 remain unverified; no interface decision follows.
+- **A4 blocker:** native combined selectors are not cross-checked. With B named by `--file` and A by `--session`, the CLI returned success and saved the new cell in A. This matches documented session precedence but fails the benchmark's fail-closed wrong-target criterion; A5 is held pending an explicit safety design and verification. Remaining A4 probes and version-confounded interface comparison are still open.
 - The Windows test baseline used an isolated, lock-exact environment because the checkout's existing `.venv` lacks pytest. The fixture fixes in the draft PR do not change product code or the dependency lock.
 - Remote services, auth/network exposure, implementation, migration, release and merge remain separate decision gates. See the canonical agenda for scope and safety constraints.
 

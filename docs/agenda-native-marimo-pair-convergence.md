@@ -2,10 +2,11 @@
 
 > **Status:** **Evidence wave in progress; no interface decision.** Task 1's
 > Windows baseline ran in an isolated locked environment after test-harness
-> portability repairs. Both pinned local arms now passed a bounded live metric,
-> slider, saved-copy and fresh-server reopen gate; the broader A4 safety/capability
-> matrix and A5 fresh-agent missions remain unrun. Tasks 4–6 are separately
-> gated. See the [current agenda](../agenda.md) for the next gate and blockers.
+> portability repairs. Both pinned local arms passed bounded metric/save/reopen
+> gates, but A4 found a **blocking combined-selector wrong-target write** in the
+> native CLI (`--file B --session A` saved to A without refusal). A5 is on hold;
+> Tasks 4–6 are separately gated. See the [current agenda](../agenda.md) for
+> measured evidence, next gate and blockers.
 > **Created:** 2026-10-05
 > **Related:** [project-status.md](project-status.md) ·
 > [marimo-version-support.md](marimo-version-support.md) ·
