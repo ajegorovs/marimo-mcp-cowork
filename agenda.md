@@ -5,7 +5,7 @@
 | Workstream | Status | Next gate | Detail |
 | --- | --- | --- | --- |
 | Native-first marimo comparison | A1 baseline and A2 source audit complete; A3 static fixture built. No interface decision. | Verify the pinned 0.25.1 CLI in an isolated environment, review the external oracle and persistence route, then run the equal-condition A4 protocol. | [Convergence agenda](docs/agenda-native-marimo-pair-convergence.md) |
-| Windows baseline harness | Draft PR: test-only portability repair; non-live and live tests verified in bounded groups on Windows. | Review/merge the PR; repeat the gate after any change. | PR linked here when created |
+| Windows baseline harness | [Draft PR #3](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3): test-only portability repair; non-live and live tests verified in bounded groups on Windows. | Review/merge the PR; repeat the gate after any change. | [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3) |
 
 ## Open blockers and boundaries
 
