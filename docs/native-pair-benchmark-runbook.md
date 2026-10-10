@@ -58,13 +58,19 @@ The benchmark's native loopback servers explicitly disable authentication **and*
 
 The two isolated Windows/Python 3.12.10 environments contained **142** distributions for the locked wrapper project (marimo 0.24.0, test extras and `marimo[recommended]`) and **35** for native 0.25.1 plus numpy/matplotlib (base install, no recommended or test extras), measured with `importlib.metadata.distributions()`. The lock contains 147 cross-platform entries; five were not materialized on Windows. **Do not call the 107-package difference wrapper overhead:** the marimo versions, extras, test dependencies, and installation recipes differ. Importing `marimo_inspection` on the client path did not import marimo or FastMCP, but import cost is distinct from installed or per-kernel runtime footprint. A controlled same-version, same-extras comparison is still needed before scoring dependency cost.
 
-## Mitigation decision (not yet made)
+## Target-selection mitigation gate (bounded; A5 still held)
+
+The approved **benchmark-only** `benchmark/target_selection.py` refuses *both* selectors (even an agreeing pair), neither selector, blank values and non-string values **before** constructing a CLI call. Its 12 unit cases pass. `benchmark/native_target_guard_probe.py` exercised the adapter on one loopback server with A/B disposable sessions: mismatched B+A, missing-file+A, agreeing A+A and blank+A caused zero CLI subprocesses and no notebook changes. File-only B produced a marker in B's live graph **and saved copy**, not A; session-only A read succeeded, and missing file-only returned exit 2 / `success=false`. This gate proves only calls routed through the adapter under stable bindings, **not** a fix to upstream's CLI or an atomic file/session binding.
+
+`benchmark/native_churn_probe.py` then observed a **remaining same-server hazard** without mutating notebook content. A new `/sse` connection for copy A rotated its old ID to a fresh ID; the old ID initially failed native execution as stale. Later presenting that *old A ID* in an `/sse` connection to orphaned copy B caused the server to bind the ID to **B**; a subsequent native **read-only** `--session <old A ID>` succeeded and read B's kernel. Both disposable copies remained unchanged. This proves session-ID reuse can change the target's meaning in this controlled sequence. It does **not** demonstrate a wrong write through the adapter or a file-only resolve→execute race, but the CLI's two-request file resolution remains non-atomic and the adapter cannot prevent a reused session-only ID from targeting a different notebook. Thus **A4 remains no-go and A5 remains on hold**. A robust target contract must address session binding and churn *before* a mutating call, not merely forbid two selectors; an after-write check detects harm but cannot prevent it. No product or upstream change is authorized by this gate.
+
+## Mitigation decision (partially tested; residual blocker)
 
 - **Single-selector adapter:** refuse calls supplying both `--file` and `--session` before invoking the CLI. This removes the mismatched-pair path; file-only resolution can still race a session reload, so stale-id refusal and post-call binding should be tested.
 - **Census preflight:** require the selected session ID to map to the supplied file in `/api/sessions` before executing. The census read and execute are separate requests with no shared epoch/file token; it is **not** an atomic guarantee under session churn.
 - **Post-write readback:** detects a wrong destination after mutation; **not prevention** and not sufficient to lift the A5 hold alone.
 
-The owner must choose and approve a fail-closed target contract, then verify a two-disposable-session mismatch, missing-file-plus-valid-session, and churn case with no write outside the intended copy. No product or upstream CLI change is authorized by this experiment.
+The owner approved evaluating the single-selector adapter; its stable-session mismatch gate passed, but the observed ID reuse leaves the larger fail-closed target contract unresolved. Do not lift A5 for this partial mitigation. A future binding/churn design needs separate owner review and a verified no-wrong-write gate. No product or upstream CLI change is authorized by this experiment.
 
 ## Review contract
 

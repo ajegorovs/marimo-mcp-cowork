@@ -4,9 +4,11 @@
 > Windows baseline ran in an isolated locked environment after test-harness
 > portability repairs. Both pinned local arms passed bounded metric/save/reopen
 > gates, but A4 found a **blocking combined-selector wrong-target write** in the
-> native CLI (`--file B --session A` saved to A without refusal). A5 is on hold;
-> Tasks 4–6 are separately gated. See the [current agenda](../agenda.md) for
-> measured evidence, next gate and blockers.
+> native CLI (`--file B --session A` saved to A without refusal). A benchmark-only
+> single-selector guard refuses that pair, but a same-server reconnect reused a
+> stale A ID for B and native read by that ID reached B. A4 remains no-go and A5
+> is on hold; Tasks 4–6 are separately gated. See the [current agenda](../agenda.md)
+> for measured evidence, next gate and blockers.
 > **Created:** 2026-10-05
 > **Related:** [project-status.md](project-status.md) ·
 > [marimo-version-support.md](marimo-version-support.md) ·
