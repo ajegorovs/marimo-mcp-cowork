@@ -1,6 +1,6 @@
 # Native-pair capability benchmark — execution record and gates
 
-> **Status:** draft protocol, transport smoke only. No A/B capability result or interface decision. Canonical scope: [native-first convergence agenda](agenda-native-marimo-pair-convergence.md); current gate: [root agenda](../agenda.md).
+> **Status:** A4 partial: both arms pass bounded runtime/save/reopen and missing-target/duplicate-definition refusal on disposable copies. No full A/B capability result or interface decision. Canonical scope: [native-first convergence agenda](agenda-native-marimo-pair-convergence.md); current gate: [root agenda](../agenda.md).
 
 ## Feature and bounded plan
 
@@ -11,7 +11,7 @@ Compare the existing structured MCP facade (marimo 0.24.x) with **core `marimo p
 | Baseline | Locked 0.24.x suite, isolated environment, fixture integrity | Complete on Windows in bounded groups; see [live-tests.md](live-tests.md). The test-harness repair is in a separate draft PR. |
 | Native transport smoke | Installed pinned CLI, help, listing, explicit file selection, real `help(cm)`, missing-target refusal | Complete on Windows, using a one-cell disposable notebook; details below. |
 | Fixture/oracle review | Identical initial bytes, independent metric, executable grader for reactive state **and saved artifact in a distinct fresh kernel** | Both arms passed bounded Windows runtime/save/reopen gates on disposable copies. Wrapper: 0.24.x live test; native: 0.25.1 core CLI through portable `benchmark/native_gate.py`, independently checking metric 1.25→2.5→1.25 and zero reopened cell errors. Full A4 safety matrix remains open. |
-| A4 capability protocol | [Equal-condition checks](agenda-native-marimo-pair-convergence.md#task-2-build-a-small-fair-comparison-experiment) on both arms; separate version-confound results; raw sanitized payloads and scorecard | Not started. |
+| A4 capability protocol | [Equal-condition checks](agenda-native-marimo-pair-convergence.md#task-2-build-a-small-fair-comparison-experiment) on both arms; separate version-confound results; raw sanitized payloads and scorecard | Partial: both arms refused missing-cell and duplicate-definition writes without changing live sources or saved copies. Native stale concurrency and the remaining matrix are open. |
 | A5 fresh-agent missions | Two independent zero-context agents with identical starting state and external scoring | Not started; requires A4 go decision. |
 | Remote/product/release | Separate owner decisions based on comparison | Not authorized by this benchmark. |
 
@@ -37,6 +37,18 @@ The probe terminated only its own server process tree. No credentials, tailnet l
 3. Native 0.25.1 runtime probe: after installing the same `numpy==2.5.3` and `matplotlib==3.11.1` as the locked baseline into the isolated native environment, a loopback headless editor opened a byte-identical disposable fixture copy. The **installed core `marimo pair execute` CLI** (no v0.0.20 shell scripts) read five cells, ran them, created a visible metric cell with `hide_code=False`, and observed `normalized` **1.25** at gain 2. `ctx.set_ui_value` changed the slider to 4; separate live readback observed gain 4 and metric **2.5**. The edited copy then contained the metric source; after stopping the first server, a new server PID and session on that same bound path reran the saved copy at gain 2 and metric **1.25**. This first local scratch run exited 0 with `NATIVE_GATE_PASS`; the canonical fixture bytes stayed unchanged. The portable `benchmark/native_gate.py` then repeated it with exact metrics computed by `benchmark/oracle.py`, verified the reopened census path and new server PID/session, and found six reopened cells with zero cell errors (exit 0, `NATIVE_GATE_PASS`). Run with an isolated Python 3.12 environment containing `marimo==0.25.1`, `numpy==2.5.3`, `matplotlib==3.11.1` and `psutil`: `python benchmark/native_gate.py`. The driver uses a temporary directory, loopback listener and only core `marimo pair execute`. No generalized error-channel, stale-write or structural-refusal verdict follows from this gate.
 4. Run the identical A4 probe sequence against A and B; classify `PASS`, `FAIL`, `UNSUPPORTED`, `UNVERIFIED`, or `SETUP_BLOCKED`. A wrong-target write or false-success payload blocks the next stage regardless of speed.
 5. Only after those checks, decide whether separate fresh-agent missions are justified. Remote topology and any product changes require their own approval.
+
+## A4 first safety checkpoint (Windows, disposable copies)
+
+Run the wrapper side with the isolated locked environment: `uv run --no-sync pytest tests/marimo_inspect/live/test_benchmark_fixture.py tests/marimo_inspect/live/test_mutation.py::test_external_conflict_reread_recover -m live -q` (4 passed). Run native with an isolated marimo 0.25.1 interpreter: `python benchmark/native_safety_gate.py` (`NATIVE_SAFETY_PASS`). Set `MARIMO_BENCHMARK_SCRATCH` to a private scratch directory when desired. Both scripts boot a loopback editor on a byte-identical copy, check exact session-to-copy binding and shut it down.
+
+| Probe | Wrapper 0.24.x | Native 0.25.1 | Scope of assertion |
+| --- | --- | --- | --- |
+| Unknown cell edit | Structured `unknown_cell_ids`, `operation_ran=false`, `state_changed=false` | CLI exit 1, `success=false`, `KeyError` | Live cell ID/source census and saved copy unchanged. |
+| Duplicate `input_vector` definition | Refused via raw `Execution failed` envelope, not structured `status/reason` | CLI exit 1, `success=false`, compile-time multiply-defined error | Original five-cell census and saved copy unchanged. Wrapper must instantiate/run the original notebook before probing the graph; otherwise a duplicate can be created before the original definitions register. |
+| Concurrent stale edit | Existing real-kernel wrapper regression `test_external_conflict_reread_recover` passes; tool reports `conflict` and preserves external source | **UNVERIFIED**: two CLI calls use a shared kernel read tracker; the writer's own update records a fresh baseline, so it is not an independent second actor | Requires separately controlled frontend edit before a native guard verdict. The first same-actor attempt returned success; it must not be scored as concurrency safety or failure. |
+
+This is a safety **checkpoint**, not the complete A4 matrix: wrong-session binding, cycle validation, full error-channel inventory, interrupted/unknown outcomes, slow cells, reconnect, auth inventory and dependency footprint remain open. The wrapper and native arms also run different marimo versions, so an interface-only conclusion remains confounded.
 
 ## Review contract
 

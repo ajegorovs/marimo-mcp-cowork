@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 
 from marimo_inspection.client import MarimoClient
+from marimo_inspection.tools.cells import get_cell_data
 from marimo_inspection.tools.errors import get_errors
-from marimo_inspection.tools.mutation import create_cell, run_cell
+from marimo_inspection.tools.mutation import create_cell, edit_cell, run_cell
 from marimo_inspection.tools.ui import set_ui_value
 from marimo_inspection.tools.variables import get_variables
 
@@ -109,4 +110,35 @@ async def test_wrapper_metric_survives_a_fresh_server(notebook_server):
         assert errors["has_errors"] is False, errors
     finally:
         await reopened.stop()
+    assert FIXTURE.read_bytes() == original
+
+
+@pytest.mark.live
+async def test_wrapper_a4_missing_target_and_duplicate_are_atomic(notebook_server):
+    """A refusal must neither claim a write nor alter the bound copy."""
+    original = FIXTURE.read_bytes()
+    _manager, url, sid, copy = await notebook_server(
+        FIXTURE.read_text(encoding="utf-8"), name="mission_a4_wrapper.py"
+    )
+    await _assert_bound(url, sid, copy)
+    boot = await run_cell(mode="all", session_id=sid, server_url=url)
+    assert boot["status"] == "ok", boot
+    before = await get_cell_data(session_id=sid, server_url=url)
+    source_by_id = {row["cell_id"]: row["code"] for row in before["data"]}
+    disk_before = copy.read_bytes()
+    missing = await edit_cell(
+        "missing-a4-cell", "gain = 99", session_id=sid, server_url=url
+    )
+    assert missing["status"] == "error" and missing["reason"] == "unknown_cell_ids", (
+        missing
+    )
+    assert missing["state_changed"] is False and missing["operation_ran"] is False, (
+        missing
+    )
+    duplicate = await create_cell("input_vector = 999", session_id=sid, server_url=url)
+    assert duplicate.get("status") != "ok", duplicate
+    assert duplicate.get("error") == "Execution failed", duplicate
+    after = await get_cell_data(session_id=sid, server_url=url)
+    assert {row["cell_id"]: row["code"] for row in after["data"]} == source_by_id
+    assert copy.read_bytes() == disk_before
     assert FIXTURE.read_bytes() == original
