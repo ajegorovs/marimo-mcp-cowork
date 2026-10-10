@@ -1,6 +1,6 @@
 # Current agenda
 
-> **Status:** evidence wave in progress. This is the dashboard-facing current-work pointer, not a history log. Update it when a gate changes; keep measured detail in the linked agenda and PRs.
+> **Status: paused at a verified A4 no-go checkpoint.** Start with [native-pair restart checkpoint](docs/native-pair-restart.md). This is the dashboard-facing current-work pointer, not a history log. Update it when a gate changes; keep measured detail in the linked agenda and PRs.
 
 | Workstream | Status | Next gate | Detail |
 | --- | --- | --- | --- |
