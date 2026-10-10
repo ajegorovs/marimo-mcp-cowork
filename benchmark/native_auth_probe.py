@@ -27,7 +27,8 @@ Expected (from installed marimo 0.25.1 source)
 Method (loopback only, no installation, bounded — one server run)
 -----------------------------------------------------------------
 1. Generate a throwaway credential with ``secrets``; write it to a private
-   temp file (mode 0600) OUTSIDE the repo. Never print or log its value.
+   temp file OUTSIDE the repo (0600 on POSIX; Windows uses inherited ACLs).
+   Never print its value.
 2. Copy the committed fixture byte-identically into a disposable dir.
 3. Boot one auth-gated server on the copy with DEFAULT skew protection (no
    ``--no-skew-protection``), using ``--token-password-file <private file>``.
@@ -40,12 +41,14 @@ Method (loopback only, no installation, bounded — one server run)
 7. Probe B: ``pair execute --file <copy> --token-file <private file>`` ->
    assert exit 0, ``success: true``, the read-only marker ran, and the
    resolved session id equals the live one.
-8. Assert the repo fixture stayed byte-identical and the throwaway token
-   never appears in any captured output (nor the wrong token).
+8. Assert the repo fixture stayed byte-identical and neither throwaway token
+   appears in captured session/client output.
 
 Exit 0 with ``NATIVE_AUTH_PROBE_PASS``, or non-zero with
 ``NATIVE_AUTH_PROBE_BLOCKER`` / ``NATIVE_AUTH_PROBE_FAIL``.
-No secret values are printed, logged, or committed.
+The probe does not print credential values; it passes one as an `/sse` query
+parameter, so server-side request logging is not ruled out. All probe state
+is disposable.
 """
 
 from __future__ import annotations

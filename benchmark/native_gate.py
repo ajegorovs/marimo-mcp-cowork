@@ -15,6 +15,16 @@ from pathlib import Path
 import psutil
 from oracle import expected_metric
 
+
+def require(condition, *diagnostics):
+    """Always-on verdict check; a bare ``assert`` is stripped under ``python -O``."""
+    if condition:
+        return
+    if not diagnostics:
+        raise AssertionError("required condition failed")
+    raise AssertionError(diagnostics[0] if len(diagnostics) == 1 else diagnostics)
+
+
 fixture = Path(__file__).resolve().parent / "notebooks" / "mission_clean.py"
 scratch = Path(
     os.environ.get(
@@ -84,11 +94,12 @@ def server_start():
                 raise RuntimeError("no kernel-ready")
         with urllib.request.urlopen(url + "/api/sessions", timeout=3) as r:
             sessions = json.load(r)
-        assert list(sessions) == [sid], sessions
+        require(list(sessions) == [sid], sessions)
         entry = sessions[sid]
-        assert (
-            Path(entry.get("path") or entry["filename"]).resolve() == copy.resolve()
-        ), entry
+        require(
+            Path(entry.get("path") or entry["filename"]).resolve() == copy.resolve(),
+            entry,
+        )
         return proc, url, sid
     except BaseException:
         server_stop(proc)
@@ -145,7 +156,7 @@ def measured_value(payload, label):
     """Require one exact numeric result line, not a substring in a traceback."""
     lines = str(payload.get("stdout", "")).splitlines()
     matches = [line for line in lines if line.startswith(label + " ")]
-    assert len(matches) == 1, (label, lines)
+    require(len(matches) == 1, label, lines)
     return float(matches[0].removeprefix(label + " "))
 
 
@@ -175,7 +186,7 @@ try:
         'import marimo._code_mode as cm\nasync with cm.get_context() as ctx:\n    print("metric", ctx.globals.get("normalized"))',
     )
     print("low:", str(low.get("stdout", ""))[:300])
-    assert measured_value(low, "metric") == expected_metric(2), low
+    require(measured_value(low, "metric") == expected_metric(2), low)
     moved = execute(
         url,
         'import marimo._code_mode as cm\nasync with cm.get_context() as ctx:\n    ctx.set_ui_value(ctx.globals["gain"], 4)',
@@ -186,22 +197,26 @@ try:
         'import marimo._code_mode as cm\nasync with cm.get_context() as ctx:\n    print("gain", ctx.globals["gain"].value)\n    print("metric", ctx.globals.get("normalized"))',
     )
     print("high:", str(high.get("stdout", ""))[:300])
-    assert measured_value(high, "gain") == 4, high
-    assert measured_value(high, "metric") == expected_metric(4), high
-    assert fixture.read_bytes() == initial
+    require(measured_value(high, "gain") == 4, high)
+    require(measured_value(high, "metric") == expected_metric(4), high)
+    require(fixture.read_bytes() == initial, "repo fixture mutated")
     deadline = time.monotonic() + 5
     while (
         time.monotonic() < deadline and b"normalized = float(" not in copy.read_bytes()
     ):
         time.sleep(0.1)
-    assert b"normalized = float(" in copy.read_bytes(), (
-        "edit not saved to disposable file"
+    require(
+        b"normalized = float(" in copy.read_bytes(),
+        "edit not saved to disposable file",
     )
     print("saved artifact present:", len(copy.read_bytes()) > len(initial))
     server_stop(first)
     first = None
     second, fresh_url, fresh_sid = server_start()
-    assert second.pid != original_pid and fresh_sid != sid
+    require(
+        second.pid != original_pid and fresh_sid != sid,
+        "reopened server is not a fresh process/session",
+    )
     rerun = execute(
         fresh_url,
         "import marimo._code_mode as cm\nasync with cm.get_context() as ctx:\n    for cell in ctx.cells.values():\n        ctx.run_cell(cell.id)",
@@ -211,15 +226,15 @@ try:
         'import marimo._code_mode as cm\nasync with cm.get_context() as ctx:\n    print("gain", ctx.globals["gain"].value)\n    print("metric", ctx.globals.get("normalized"))',
     )
     print("reopened:", str(fresh.get("stdout", ""))[:300])
-    assert measured_value(fresh, "gain") == 2, fresh
-    assert measured_value(fresh, "metric") == expected_metric(2), fresh
+    require(measured_value(fresh, "gain") == 2, fresh)
+    require(measured_value(fresh, "metric") == expected_metric(2), fresh)
     healthy = execute(
         fresh_url,
         'import marimo._code_mode as cm\nasync with cm.get_context() as ctx:\n    print("cells", len(ctx.cells))\n    print("errors", sum(len(c.errors) for c in ctx.cells.values()))\n    print("states", [c.status for c in ctx.cells.values()])',
     )
-    assert measured_value(healthy, "cells") == 6, healthy
-    assert measured_value(healthy, "errors") == 0, healthy
-    assert fixture.read_bytes() == initial
+    require(measured_value(healthy, "cells") == 6, healthy)
+    require(measured_value(healthy, "errors") == 0, healthy)
+    require(fixture.read_bytes() == initial, "repo fixture mutated")
     print("NATIVE_GATE_PASS")
 finally:
     if first is not None:

@@ -37,7 +37,8 @@ Phase 3 - a **session-only** read of A (no write): assert it resolves to A and
   mutates nothing.
 
 Phase 4 - a **missing file-only** selector: assert the native CLI itself
-  fails and nothing on disk changes.
+  fails with its exact structured-refusal exit code **2** (the same code the
+  stale-session and failed-auth refusals use) and nothing on disk changes.
 
 Finally assert the committed fixture is byte-unchanged and the server is
 stopped. No secrets or absolute user paths are printed.
@@ -455,20 +456,23 @@ def main() -> int:
             )
 
             # --- Phase 4: missing FILE-ONLY selector must fail in the CLI ----
+            # Exit 2 is the native CLI's structured-refusal code (`success`
+            # false), matching the stale-session and failed-auth refusals;
+            # require it exactly rather than any nonzero exit.
             b_before_missing = sha256(copy_b)
             rc, payload, raw, err = run_adapter_cli(
                 url, READ_ONLY_CODE, env, file_path=str(workspace / "absent_guard.py")
             )
-            if rc == 0 or not payload or payload.get("success") is not False:
+            if rc != 2 or not payload or payload.get("success") is not False:
                 raise AssertionError(
-                    "missing file-only selector lacked explicit CLI refusal: "
-                    f"rc={rc} payload={payload!r}"
+                    "missing file-only selector lacked the exact exit-2 CLI "
+                    f"refusal: rc={rc} payload={payload!r}"
                 )
             if sha256(copy_a) != a_before or sha256(copy_b) != b_before_missing:
                 raise AssertionError("missing file-only selector mutated saved bytes")
             print(
                 "MISSING_FILE_ONLY",
-                "rc",
+                "exit",
                 rc,
                 "success",
                 (payload or {}).get("success"),

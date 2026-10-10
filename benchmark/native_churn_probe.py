@@ -52,8 +52,14 @@ Method (loopback only, no installation, at most one server, no retry)
    Assert the census now holds ``new_id -> copy_a`` and NOT the old A id — the
    rotation is an in-place rename, so the OLD id is gone from the census.
 5. Old-id refusal: RUN-ONLY there is no ``/api/sessions`` post for this; drive
-   the native ``pair execute --session <OLD_A>`` and assert it is refused as
-   stale (nonzero exit, ``success: false``, stale wording, no kernel stdout).
+   the native ``pair execute --session <OLD_A>`` with a kernel sentinel print
+   and assert it is refused as stale (nonzero exit, ``success: false``, stale
+   wording) AND that the sentinel is absent from every stdout/payload channel
+   this probe captures. Only the CLI's stdout is captured here -- there is no
+   separate stderr stream in ``run_cli`` -- so absence is asserted across the
+   channels that exist (raw stdout, plus the JSON envelope's ``stdout`` and
+   ``output`` fields when present) and never over a channel that was not
+   observed.
 6. File-only read: ``pair execute --file copy_a`` with no ``--session``; assert
    it resolves to the NEW id, returns tag ``COPY_A`` and ``gain == 2`` — i.e.
    it landed A's renamed kernel, not B's.
@@ -105,6 +111,10 @@ TAG_A = "PROBE_CHURN_COPY_A"
 TAG_B = "PROBE_CHURN_COPY_B"
 
 EXPECTED_GAIN = 2
+
+# Kernel sentinel the stale call would print if its code ever ran; its absence
+# from every captured channel is the evidence the refusal short-circuited.
+STALE_SENTINEL = "PROBE_CHURN_WOULD_RUN"
 
 
 class Blocker(RuntimeError):
@@ -399,7 +409,7 @@ def main() -> int:
                 url,
                 session_id=sid_a,
                 file_path=None,
-                code="print('PROBE_CHURN_WOULD_RUN')",
+                code=f"print({STALE_SENTINEL!r})",
                 env=env,
             )
             stale_error = (stale_payload or {}).get("error")
@@ -420,6 +430,33 @@ def main() -> int:
             if stale_payload is None or "stale" not in str(stale_error).lower():
                 raise AssertionError(
                     f"stale refusal did not name a stale session: {stale_raw!r}"
+                )
+
+            # The sentinel must be absent from every stdout/payload channel
+            # this probe captures. run_cli captures the CLI's stdout only (no
+            # separate stderr stream), so the available channels are the raw
+            # stdout text and the JSON envelope's own ``stdout``/``output``
+            # fields. A channel the refusal does not carry is reported as
+            # unchecked rather than asserted clean.
+            stale_channels: dict[str, str] = {"raw_stdout": stale_raw}
+            if stale_payload.get("stdout") is not None:
+                stale_channels["payload.stdout"] = str(stale_payload["stdout"])
+            if stale_payload.get("output") is not None:
+                stale_channels["payload.output"] = json.dumps(stale_payload["output"])
+            leaked = [
+                name for name, blob in stale_channels.items() if STALE_SENTINEL in blob
+            ]
+            print(
+                "STALE_CHANNELS",
+                "checked",
+                sorted(stale_channels),
+                "sentinel_present",
+                sorted(leaked),
+            )
+            if leaked:
+                raise AssertionError(
+                    f"stale refusal leaked the sentinel {STALE_SENTINEL!r} in "
+                    f"{leaked}: the kernel may have run the code"
                 )
 
             # --- File-only read after rotation must land A ----------------

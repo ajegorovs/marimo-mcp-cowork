@@ -14,6 +14,16 @@ from pathlib import Path
 
 import psutil
 
+
+def require(condition, *diagnostics):
+    """Always-on verdict check; a bare ``assert`` is stripped under ``python -O``."""
+    if condition:
+        return
+    if not diagnostics:
+        raise AssertionError("required condition failed")
+    raise AssertionError(diagnostics[0] if len(diagnostics) == 1 else diagnostics)
+
+
 FIXTURE = Path(__file__).parent / "notebooks" / "mission_clean.py"
 SCRATCH = Path(
     os.environ.get(
@@ -117,13 +127,17 @@ def main():
             sid = str(uuid.uuid4())
             query = urllib.parse.urlencode({"session_id": sid, "file": str(copy)})
             with urllib.request.urlopen(f"{url}/sse?{query}", timeout=15) as stream:
-                assert any(b"kernel-ready" in line for line in stream)
+                require(
+                    any(b"kernel-ready" in line for line in stream),
+                    "no kernel-ready event in /sse stream",
+                )
             with urllib.request.urlopen(url + "/api/sessions", timeout=3) as response:
                 sessions = json.load(response)
-            assert list(sessions) == [sid], sessions
-            assert (
+            require(list(sessions) == [sid], sessions)
+            require(
                 Path(sessions[sid].get("path") or sessions[sid]["filename"]).resolve()
-                == copy.resolve()
+                == copy.resolve(),
+                "session normalized path does not match the disposable copy",
             )
             prefix = "import marimo._code_mode as cm\n"
             boot = (
@@ -131,13 +145,13 @@ def main():
                 + "async with cm.get_context() as ctx:\n    for cell in ctx.cells.values():\n        ctx.run_cell(cell.id)"
             )
             code, payload = execute(url, copy, env, boot)
-            assert code == 0 and payload.get("success"), (code, payload)
+            require(code == 0 and payload.get("success"), (code, payload))
             snapshot = (
                 prefix
                 + "async with cm.get_context() as ctx:\n    print('SNAPSHOT', sorted((str(c.id), c.code) for c in ctx.cells.values()))"
             )
             code, before = execute(url, copy, env, snapshot)
-            assert code == 0 and before.get("success"), before
+            require(code == 0 and before.get("success"), before)
             disk_before = copy.read_bytes()
             for label, operation in (
                 ("missing", 'ctx.edit_cell("missing-a4-cell", code="gain = 99")'),
@@ -157,16 +171,19 @@ def main():
                     "error",
                     next((line for line in reversed(error) if line.strip()), ""),
                 )
-                assert code != 0 and refusal.get("success") is False, refusal
+                require(code != 0 and refusal.get("success") is False, refusal)
                 code, after = execute(url, copy, env, snapshot)
-                assert code == 0 and after.get("success"), after
-                assert after.get("stdout") == before.get("stdout"), (before, after)
-                assert copy.read_bytes() == disk_before
+                require(code == 0 and after.get("success"), after)
+                require(after.get("stdout") == before.get("stdout"), (before, after))
+                require(
+                    copy.read_bytes() == disk_before,
+                    "refused mutation changed the disposable file",
+                )
             # The code-mode writer records its own read baseline process-wide;
             # a second CLI call cannot simulate an independent agent. Do not
             # score concurrent stale edits from this same-actor probe.
             print("stale", "UNVERIFIED: requires an independent frontend actor")
-            assert FIXTURE.read_bytes() == original
+            require(FIXTURE.read_bytes() == original, "repo fixture mutated")
             print("NATIVE_SAFETY_PASS")
         finally:
             stop(proc)
