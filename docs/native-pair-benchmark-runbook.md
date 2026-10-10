@@ -1,6 +1,6 @@
 # Native-pair capability benchmark — execution record and gates
 
-> **Status:** A4 safety blocker reproduced: native `pair execute --file B --session A` silently writes to A. Both arms passed bounded metric/save/reopen, but **A5 is on hold** and no interface decision is justified. Canonical scope: [native-first convergence agenda](agenda-native-marimo-pair-convergence.md); current gate: [root agenda](../agenda.md).
+> **Status:** A4 safety blocker reproduced: per documented `--session` precedence, native `pair execute --file B --session A` silently writes to A rather than checking the selectors agree. Both arms passed bounded metric/save/reopen, but **A5 is on hold** and no interface decision is justified. Canonical scope: [native-first convergence agenda](agenda-native-marimo-pair-convergence.md); current gate: [root agenda](../agenda.md).
 
 ## Feature and bounded plan
 
@@ -49,6 +49,14 @@ Run the wrapper side with the isolated locked environment: `uv run --no-sync pyt
 | Concurrent stale edit | Existing real-kernel wrapper regression `test_external_conflict_reread_recover` passes; tool reports `conflict` and preserves external source | `benchmark/native_stale_probe.py`: CLI read → independent `POST /api/document/transaction` `set-code` → guarded CLI edit exits 1 with `StaleCellError`; independent actor's source and saved file remain unchanged after refusal | The read tracker is kernel-global, so a second CLI code-mode write cannot model a second actor; a frontend document transaction does. |
 
 This is a safety **checkpoint**, not the complete A4 matrix. The equal-source raising-cell probe populates both structured runtime errors and console traceback on each arm (`test_benchmark_error_probe.py`, `benchmark/native_error_probe.py`). Native combined-selector targeting is an observed blocker: one directory server held sessions A and B on separate disposable copies; `pair execute --file B --session A` returned exit 0 / `success=true`, created `a4_wrong_target_marker` in A's live map and saved A's file, while B's map/file and the committed fixture remained unchanged. `benchmark/native_target_probe.py` tests the read-only precedence; `benchmark/native_wrong_write_probe.py` returns exit **4** with `NATIVE_WRONG_WRITE_FAIL` on this observed unsafe behavior. The CLI documents `--session` precedence, so this is not a claim that the CLI violated its documented selection rule; it is a fail-closed **combined-selector safety** failure for an agent that presents both identifiers and assumes they are cross-checked. Do not run A5, and do not treat a successful CLI envelope as proof the file selector was honored. Mitigation (for example, enforce a single selector or preflight and compare census binding) needs explicit design and a separate verified gate, not a silent benchmark adjustment. Cycle validation, interrupted/unknown outcomes, slow cells, reconnect, auth inventory and dependency footprint remain open. The wrapper and native arms also run different marimo versions, so an interface-only conclusion remains confounded.
+
+## Mitigation decision (not yet made)
+
+- **Single-selector adapter:** refuse calls supplying both `--file` and `--session` before invoking the CLI. This removes the mismatched-pair path; file-only resolution can still race a session reload, so stale-id refusal and post-call binding should be tested.
+- **Census preflight:** require the selected session ID to map to the supplied file in `/api/sessions` before executing. The census read and execute are separate requests with no shared epoch/file token; it is **not** an atomic guarantee under session churn.
+- **Post-write readback:** detects a wrong destination after mutation; **not prevention** and not sufficient to lift the A5 hold alone.
+
+The owner must choose and approve a fail-closed target contract, then verify a two-disposable-session mismatch, missing-file-plus-valid-session, and churn case with no write outside the intended copy. No product or upstream CLI change is authorized by this experiment.
 
 ## Review contract
 

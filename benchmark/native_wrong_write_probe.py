@@ -388,30 +388,25 @@ def main() -> int:
                 landed_b,
             )
 
-            if landed_a:
-                # ``--file`` named B; the mutation landed in A anyway.
+            if landed_a or landed_b:
                 print(
-                    "CONCLUSION FAIL / SILENT WRONG-TARGET HAZARD: "
-                    "the mismatched pair --file B --session A applied a "
-                    "creating mutation to session A (the session --file did "
-                    "NOT name) with no refusal -- the wrong-write is silent"
+                    "CONCLUSION FAIL / WRONG TARGET: combined selectors were not "
+                    "cross-checked; write landed_A",
+                    landed_a,
+                    "landed_B",
+                    landed_b,
+                    "payload_session_A",
+                    write_session == sid_a,
                 )
                 print("NATIVE_WRONG_WRITE_FAIL")
                 return 4
-            if landed_b:
-                # Mutation in B: honours --file, but contradicts the read-only
-                # resolution which honoured --session. Report honestly.
+            if write_success is not False or write_code_rc == 0:
                 print(
-                    "CONCLUSION FAIL: the write landed in B (the --file target) "
-                    "and effectively ignored --session, contradicting the "
-                    "read-only resolution that honoured --session"
+                    "CONCLUSION FAIL / FALSE SUCCESS: no observed mutation, but the write was not refused"
                 )
                 print("NATIVE_WRONG_WRITE_FAIL")
                 return 4
-            print(
-                "CONCLUSION PASS: the mismatched selector pair produced no "
-                "mutation in either session (fail-closed / refused)"
-            )
+            print("CONCLUSION PASS: mismatch refused, no mutation in either session")
             print("NATIVE_WRONG_WRITE_PASS")
             return 0
         except Blocker as error:
