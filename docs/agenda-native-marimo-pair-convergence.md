@@ -2,10 +2,10 @@
 
 > **Status:** **Evidence wave in progress; no interface decision.** Task 1's
 > Windows baseline ran in an isolated locked environment after test-harness
-> portability repairs; the comparison fixture passed only static checks, and the
-> pinned native 0.25.1 CLI has passed a local Windows transport smoke, not an
-> A/B capability comparison. Tasks 4–6 remain separately gated. See the short
-> [current agenda](../agenda.md) for the next gate and blockers.
+> portability repairs. Both pinned local arms now passed a bounded live metric,
+> slider, saved-copy and fresh-server reopen gate; the broader A4 safety/capability
+> matrix and A5 fresh-agent missions remain unrun. Tasks 4–6 are separately
+> gated. See the [current agenda](../agenda.md) for the next gate and blockers.
 > **Created:** 2026-10-05
 > **Related:** [project-status.md](project-status.md) ·
 > [marimo-version-support.md](marimo-version-support.md) ·
@@ -295,14 +295,14 @@ no repository rename, no wholesale client extraction, no service deployment.
 
 ## Next execution gate
 
-The Windows 0.24.x baseline is now exercised, and an isolated native 0.25.1
-CLI passed listing, explicit targeting, `help(cm)` and missing-target refusal
-on a disposable loopback notebook. Next, review the external grader's runtime
-and saved-artifact checks, then run a bounded A4 comparison on disposable
-loopback notebooks. The [benchmark runbook](native-pair-benchmark-runbook.md)
-records the smoke and blockers. Do not use a green static fixture check as a
-live/durability result. Review the evidence before remote work or product
-implementation; **no repository-future outcome is selected in advance.**
+The Windows 0.24.x baseline is exercised, and the isolated native 0.25.1
+CLI passed transport smoke. Both local arms now have bounded, reproducible
+metric/reactivity/saved-copy/fresh-server reopen checks on disposable copies;
+see the [benchmark runbook](native-pair-benchmark-runbook.md). Next run the
+A4 safety/capability matrix, with setup and version confounds reported
+separately, before deciding whether to launch Task 3 fresh-agent missions.
+Review the evidence before remote work or product implementation;
+**no repository-future outcome is selected in advance.**
 
 ## Standing notes carried from planning
 
