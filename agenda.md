@@ -4,7 +4,7 @@
 
 | Workstream | Status | Next gate | Detail |
 | --- | --- | --- | --- |
-| Native-first marimo comparison | [Draft PR #4](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4), stacked on #3: A1 baseline and A2 installed-CLI transport smoke complete on Windows; A3 static fixture built. No A/B capability result or interface decision. | Review and promote the independent live/saved-artifact oracle, then run the equal-condition A4 protocol. | [Convergence agenda](docs/agenda-native-marimo-pair-convergence.md) · [benchmark runbook](docs/native-pair-benchmark-runbook.md) · [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4) |
+| Native-first marimo comparison | [Draft PR #4](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4), stacked on #3: A1 baseline, A2 transport smoke, and published A3 clean fixture/static oracle verified on Windows. No A/B capability result or interface decision. | Prove live reactivity and saved-artifact reopening in a separate fresh kernel before A4. | [Convergence agenda](docs/agenda-native-marimo-pair-convergence.md) · [benchmark runbook](docs/native-pair-benchmark-runbook.md) · [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4) |
 | Windows baseline harness | [Draft PR #3](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3): test-only portability repair; non-live and live tests verified in bounded groups on Windows. | Review/merge the PR; repeat the gate after any change. | [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3) |
 
 ## Open blockers and boundaries
