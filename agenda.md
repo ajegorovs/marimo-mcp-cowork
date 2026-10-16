@@ -1,18 +1,6 @@
-# Current agenda
+# Work discovery
 
-> **Status: A4 no-go; bounded evidence work resumed, A5 held.** Start with [native-pair restart checkpoint](docs/native-pair-restart.md). This is the dashboard-facing current-work pointer, not a history log. Update it when a gate changes; keep measured detail in the linked agenda and PRs.
+The single repository work index is [docs/project-status.md](docs/project-status.md).
+Execution plans and checkpoints live in the effort issues linked there, not in this file or PR checklists.
 
-| Workstream | Status | Next gate | Detail |
-| --- | --- | --- | --- |
-| Native-first marimo comparison | [Draft PR #4](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4), stacked on #3: **A4 no-go**. The approved benchmark-only single-selector guard blocked combined selectors under stable A/B sessions, but a same-server reconnect reused stale A's ID for B; native read by that ID then reached B. | Review residual session-binding/churn hazard and design an atomic or otherwise fail-closed target contract before A5. Do not mistake the adapter for an upstream CLI fix. | [Convergence agenda](docs/agenda-native-marimo-pair-convergence.md) · [benchmark runbook](docs/native-pair-benchmark-runbook.md) · [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4) |
-| Windows baseline harness | [Draft PR #3](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3): test-only portability repair; non-live and live tests verified in bounded groups on Windows. | Review/merge the PR; repeat the gate after any change. | [PR plan and blockers](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3) |
-
-## Open blockers and boundaries
-
-- **A4 blocker:** native CLI accepts combined selectors by documented session precedence; the benchmark-only guard now refuses them with no CLI call, but session-ID reuse was observed on the same server: after A rotated, its old ID was accepted for orphaned B, then read B's kernel. This is not a wrong-write demonstration through the guard, but the remaining identity/churn gap prevents a fail-closed target guarantee. **A5 stays held**. Native auth-gated loopback execution was verified with a throwaway token; wrapper authenticated success and token rotation remain untested. Matched-version 0.24.0 install footprint was measured, but a 0.25.1 wrapper comparison remains outside the supported bound.
-- The Windows test baseline used an isolated, lock-exact environment because the checkout's existing `.venv` lacks pytest. The fixture fixes in the draft PR do not change product code or the dependency lock.
-- Remote services, auth/network exposure, implementation, migration, release and merge remain separate decision gates. See the canonical agenda for scope and safety constraints.
-
-## Working convention
-
-Use one draft PR per reviewable slice. Put its feature description, bounded plan, evidence and blockers in the PR body; update this file only when its status or next gate changes. Historical test counts and resolved findings belong in their owning documents, not here. Do not infer completion from an unchecked task or an agent's self-report.
+This path is retained for existing dashboard links. The shared work-organization guide owns the method; repository entry instructions bind access and navigation.

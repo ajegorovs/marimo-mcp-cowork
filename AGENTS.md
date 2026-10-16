@@ -7,10 +7,16 @@ Guidance for human and AI contributors working in this repository.
 `AGENTS.md` is stable contributor guidance, not a work log or scratchpad. Do
 not add progress notes, dates, test counts, finding states, release state, or
 resolved-item chronology here. Record mutable project state in
-[`docs/project-status.md`](docs/project-status.md), with implementation detail
-in the agenda or roadmap it links. Keep references from this file static: say
+[`docs/project-status.md`](docs/project-status.md), which links the authoritative
+effort issues. Keep references from this file static: say
 what a document is and when to read it, not whether its current items are open
 or closed.
+
+## Multi-session work
+
+The owner-designated method authority is `docs/knowledge-base/dev-and-deploy/WORK-ORGANIZATION.md` on the configured research share. Read it before planning, resuming or closing an effort; use the environment's share-access procedure, not copied machine bindings. If the source is unavailable, report the access dependency rather than inventing another planning policy.
+
+Start at [`docs/project-status.md`](docs/project-status.md), then read the linked effort issue. Issues own plans and checkpoints throughout the lifecycle; PRs own diffs and reviews. Local working plans are not committed or pushed. Legacy plans are migration inputs, not competing live authorities. Reconcile actual Git/PR state before continuing, and update the issue with evidence limits, unfinished findings and the next stopping condition before handoff. A stale skill or old PR checklist does not supersede the shared method; publication and operational authorization remain separate.
 
 ## Project purpose
 

@@ -1,19 +1,6 @@
-# Native-pair capability benchmark — execution record and gates
+# Native-pair capability benchmark — historical evidence and reproduction
 
-> **Status:** A4 safety blocker reproduced: per documented `--session` precedence, native `pair execute --file B --session A` silently writes to A rather than checking the selectors agree. Both arms passed bounded metric/save/reopen, but **A5 is on hold** and no interface decision is justified. Canonical scope: [native-first convergence agenda](agenda-native-marimo-pair-convergence.md); current gate: [root agenda](../agenda.md).
-
-## Feature and bounded plan
-
-Compare the existing structured MCP facade (marimo 0.24.x) with **core `marimo pair`** (marimo 0.25.1, paired with the marimo-pair v0.0.20 guidance) against byte-identical disposable notebooks. This compares two interfaces and two framework versions, not MCP against code mode. Keep both environments and notebook copies separate; all listeners are loopback, and neither arm may directly edit the notebook file as a shortcut.
-
-| Stage | Acceptance evidence | State |
-| --- | --- | --- |
-| Baseline | Locked 0.24.x suite, isolated environment, fixture integrity | Complete on Windows in bounded groups; see [live-tests.md](live-tests.md). The test-harness repair is in a separate draft PR. |
-| Native transport smoke | Installed pinned CLI, help, listing, explicit file selection, real `help(cm)`, missing-target refusal | Complete on Windows, using a one-cell disposable notebook; details below. |
-| Fixture/oracle review | Identical initial bytes, independent metric, executable grader for reactive state **and saved artifact in a distinct fresh kernel** | Both arms passed bounded Windows runtime/save/reopen gates on disposable copies. Wrapper: 0.24.x live test; native: 0.25.1 core CLI through portable `benchmark/native_gate.py`, independently checking metric 1.25→2.5→1.25 and zero reopened cell errors. Full A4 safety matrix remains open. |
-| A4 capability protocol | [Equal-condition checks](agenda-native-marimo-pair-convergence.md#task-2-build-a-small-fair-comparison-experiment) on both arms; separate version-confound results still needed; raw sanitized payloads and scorecard | **Blocking failure** on native combined selectors: `--file B --session A` accepted a write to A. Independent-actor native stale edit refused; both arms expose runtime error channels. Remaining matrix incomplete. |
-| A5 fresh-agent missions | Two independent zero-context agents with identical starting state and external scoring | **Hold / no-go** until wrong-target hazard has an explicit owner decision and safety mitigation is verified. |
-| Remote/product/release | Separate owner decisions based on comparison | Not authorized by this benchmark. |
+[Issue #5](https://github.com/ajegorovs/marimo-mcp-cowork/issues/5) owns the current plan, checkpoint, safety gate, remaining work and authorization. This runbook retains bounded historical measurements and reproduction instructions; commands below are not current task selection. See the [comparison design](agenda-native-marimo-pair-convergence.md) for rationale and arms, and [live-test ledger](live-tests.md) for suite results.
 
 ## Windows native transport smoke (local, disposable)
 
@@ -30,7 +17,7 @@ A generated one-cell notebook was served with `marimo edit <disposable.py> --hea
 
 The probe terminated only its own server process tree. No credentials, tailnet listener or committed fixture was involved. These four results **do not** prove cell mutation, widget reactivity, save/reopen, auth, stale-write safety or native superiority. The v0.0.20 guidance was inspected at a pinned source ref but was **not installed or driven by a fresh agent**.
 
-## Blocking checks before A4
+## Fixture and runtime gate evidence
 
 1. Review the published `benchmark/notebooks/mission_clean.py` and `benchmark/oracle.py`: the stdlib oracle computes the gain-2/gain-4 reference independently and refuses aliased or byte-different arm copies. `tests/marimo_inspect/test_benchmark_oracle.py` passed (2 cases), and `marimo check benchmark/notebooks` passed in the isolated 0.24.x environment. The fault/slow variants remain ignored local research, not published benchmark inputs; add them only when their role is decided. The static pass is **not** a runtime or durability claim.
 2. The wrapper-arm live gate (`tests/marimo_inspect/live/test_benchmark_fixture.py`) ran on a disposable notebook copy under the locked 0.24.x environment: the real handlers executed all five original cells; a metric cell yielded 1.25 at gain 2 and 2.5 after a verified slider update; the copy contained the metric; and a **different server PID and session**, with its census path checked against that same copy, reran it at default 1.25 without structured errors. The repo fixture remained byte-identical. This proves one wrapper workflow, not a complete A4 comparison or frontend rendering.
@@ -84,4 +71,4 @@ The owner approved evaluating the single-selector adapter; its stable-session mi
 
 ## Review contract
 
-Keep this page to the current experiment gate and measured smoke. Put raw private transcripts under ignored scratch storage and publish only sanitized, reproducible evidence in the PR. Move a completed gate out of the root agenda instead of accumulating historical updates there. No dependency upgrade, migration, release, or merge is implied by this draft.
+Keep this page to historical measurements, their limits and reproduction instructions; maintain current execution state in issue #5. Put raw private transcripts under ignored scratch storage and publish only sanitized, reproducible evidence in the PR. The root agenda is only a compatibility pointer to the work index. No dependency upgrade, migration, release, or merge is implied by this draft.

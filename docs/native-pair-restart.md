@@ -1,19 +1,10 @@
-# Native-pair comparison — restart checkpoint
+# Native-pair comparison — continuation pointer
 
-**Current gate:** Task 2/A4 is **NO-GO**; Task 3/A5 has **not** started. The prior pause ended when the owner asked to continue, but the safety hold did not. No interface choice, migration, product change, release, merge or remote exposure is approved. Read `agenda.md`, `docs/agenda-native-marimo-pair-convergence.md`, and `docs/native-pair-benchmark-runbook.md` for the plan and measured evidence. Draft PR #4 (`experiment/native-pair-capability-benchmark`) is stacked on draft PR #3 (`test/windows-baseline-harness`), not directly on `main`. Do not delete #3's branch while #4 targets it.
+The maintained plan, checkpoint, remaining findings, authorization boundaries and next stopping condition are in [issue #5](https://github.com/ajegorovs/marimo-mcp-cowork/issues/5). Start there, then reconcile actual Git/PR state under `AGENTS.md` and the shared work-organization guide.
 
-## What is verified
+- [Work index](project-status.md)
+- [Comparison design and provenance](agenda-native-marimo-pair-convergence.md)
+- [Historical measurements and reproduction](native-pair-benchmark-runbook.md)
+- [Baseline review effort #6](https://github.com/ajegorovs/marimo-mcp-cowork/issues/6)
 
-- The Windows baseline harness is in draft PR #3. Its locked 0.24.x environment was isolated outside the checkout; do not overwrite the checkout `.venv`.
-- Both arms passed bounded live metric/reactivity/save/fresh-reopen gates on disposable copies: 1.25 → 2.5 → 1.25. Structural cycle and duplicate-definition refusals, independent stale-edit refusal, runtime error channels, timeout-as-unknown-outcome, and reconnect probes are in the runbook.
-- Native 0.25.1's documented `--session` precedence silently saved a cell in A for `--file B --session A` (`benchmark/native_wrong_write_probe.py`, **intentional exit 4 / FAIL**). The benchmark-only `target_selection.py` refuses combined selectors; its unit and two-session integration tests passed, but upstream pair remains unchanged.
-- Same-server churn reassigned stale A's ID to B; a native **read** by that ID reached B (`benchmark/native_churn_probe.py`). A private-API in-kernel expected-file check refused a wrong cell mutation and accepted a correct one, including a reused-ID refusal (`benchmark/native_in_kernel_guard_probe.py`). It covers only guarded code-mode operations, not raw agent code, packages/lifecycle, or untitled notebooks. There is no atomic expected-file precondition in the pinned execute endpoint. **Do not infer general fail-closed safety or lift A5.**
-- Parent reran the load-bearing native probes. Last non-live gate: `648 passed, 6 skipped, 82 deselected`; Ruff clean. Draft PR #4's remote head and description were read back after publication; no CI checks were reported.
-
-## Restart procedure
-
-1. Check `git status --short --branch`, `git rev-parse HEAD`, and the remote heads/PR bases. The last published #4 head before pausing was `fc96ee1657432ad1c36b0e0f1d032db250809ed6`; any changes after that must be inspected, not assumed. Review untracked or partially written files before deleting or running them.
-2. The auth probe resumed after the interruption and passed in a fresh run (`benchmark/native_auth_probe.py`, disposable credentials only). A matched-version footprint experiment was then actually installed in scratch and read back: marimo 0.24.0 common roots F1 97 distributions/651,377,977 site-packages bytes versus wrapper base F2 136/686,358,416, with 97 identical-version commons. See the runbook; this is install closure, not a native 0.25.1 runtime verdict.
-3. If continuing A4, finish only bounded disposable probes with exclusive file ownership and parent rerun. Use an isolated marimo 0.25.1 interpreter and a separate isolated locked 0.24.x `uv` environment; both were outside this repo, so rediscover their current paths rather than encoding machine paths here. The common gates are `uv run --no-sync pytest -m "not live"`, `uv run --no-sync ruff check .`, and focused live tests with the locked environment; see `docs/live-tests.md` for Windows harness mechanics.
-4. Decide the next **safety design** explicitly before A5. Either obtain a server-side atomic notebook-identity precondition or obtain owner approval to *reframe* A5 as a restricted, harness-mediated, one-server/one-session-per-arm experiment, documenting that it no longer grades the shipped native CLI's unconstrained targeting. A census preflight/post-write readback is not prevention. Do not silently switch benchmark definitions or run zero-context missions under the current blocker.
-5. Keep `agenda.md` short/current, detailed evidence in the runbook, and PR #4's body synchronized. Commit/push only reviewed files and read back the remote PR head. No merge or release is implied.
+This path is retained for existing links. The former restart checklist is superseded; its applicable obligations and provenance were preserved in issue #5 before retirement. It grants no execution or publication permission.
