@@ -46,7 +46,8 @@ current id, while a bound id that now serves a **different** notebook is
 refused `reason: notebook_mismatch` rather than silently retargeted. An
 anchor covers the **bound id** — implicit, or restated with the bound URL — so
 a recorded id cannot be replayed against another notebook. Only a **different**
-id or a **different** server is explicit targeting. After target resolution,
+id is explicit targeting, and an explicit `server_url` does not detach the
+anchor — two URL strings can name one server. After target resolution,
 mutation results report `notebook_path` —
 the file the resolved session actually serves. This narrows the exposure; it is **not atomic
 prevention** (the census read and the execute POST are separate requests, so a

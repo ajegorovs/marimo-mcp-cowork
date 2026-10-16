@@ -55,7 +55,8 @@ def create_server(
         id-only rotation is repaired to the current id while a bound id that
         now serves a different notebook is refused `reason: notebook_mismatch`
         rather than silently retargeted. The anchor covers the bound id (implicit
-                or restated); only a different id or server is explicit targeting.
+                or restated); only a different id is explicit targeting, and an
+                explicit server_url does not detach it.
                 After target resolution, mutation results report `notebook_path`.
 
         Use `set_active_session` to switch to a different notebook session,

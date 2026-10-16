@@ -515,6 +515,12 @@ class TestResourceContent:
         assert "notebook_mismatch" in limits
         assert "notebook_path" in limits
         assert "not atomic prevention" in limits
+        # The boundary between protected and unprotected call shapes, and the
+        # change-tracking identity rule, must be stated where a caller reads it.
+        assert "what the anchor covers" in limits
+        assert "python client" in limits
+        assert "change-tracking key" in limits
+        assert "forgets that id's read baselines" in limits
 
         rules = " ".join(safety.lower().replace("`", "").split())
         assert "notebook_mismatch" in rules

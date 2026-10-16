@@ -241,8 +241,11 @@ runbook).
   retargeting the caller at the wrong notebook.
 - The anchor covers a call **on the bound id** — implicit, or the id restated
   with the bound URL — so replaying a recorded id is still checked. Only a
-  **different** id, or a **different** server, is explicit targeting and is not
-  path-anchored.
+  **different** id is explicit targeting and is not path-anchored. An explicit
+  `server_url` does **not** detach the anchor: `localhost` and a loopback
+  address, a DNS alias or a proxy route can all name the one server, so URL
+  strings are not server identity. Move servers by binding again
+  (`set_active_session`) or by naming a different id.
 
 After target resolution, mutation results report `notebook_path` — the file the resolved
 session actually serves, read from the server census rather than inferred
@@ -253,6 +256,35 @@ the execute POST that mutates are still separate requests, so an id rebinding
 inside that gap is unaddressed, and a path deleted and recreated as a
 *different* notebook is untested. It removes the observed mismatch, it does not
 close the race.
+
+### What the anchor covers — and what it does not
+
+Read this before trusting it. The three call shapes have different guarantees,
+and only the first one is protected:
+
+| Call | Covered? |
+| --- | --- |
+| An MCP tool call resolved through the **binding** — no `session_id`, or the bound id restated | **Yes.** Re-resolved against the bound notebook path; a reused id refuses `notebook_mismatch`. **Not atomic**: the census read that resolves the path and the request that acts on it are separate requests. |
+| An MCP tool call naming a **different** `session_id` | **No.** That is deliberate explicit targeting of another notebook. |
+| The **Python client** used directly (`resolve_session`/`execute` with a recorded id and no `file_path`) | **No.** `MarimoClient` has no notebook-identity precondition, so a reused id still reaches whatever the server reports it serves. |
+| Anything after the check — a session rebound inside the gap, or a path deleted and recreated | **No.** Closing that needs a server-side expected-identity precondition, which the pinned marimo protocol does not offer. |
+
+So: a passing bound call is not proof that a notebook was identified stably, and
+completing the binding work does **not** mean the package is identity-safe
+everywhere. Treat the bind as a narrowing of the exposure and an explicit
+signal, never as a lock.
+
+### A session id is not a change-tracking key
+
+The read-before-edit guard and the change-detection snapshot are keyed by
+**session id**, which the churn evidence shows can be handed to another
+notebook. The binding therefore maintains the identity rule: re-binding an id
+onto a different notebook (an unsaved one included) forgets that id's read
+baselines and snapshot, and a repaired rotation forgets the abandoned id.
+Baselines are never inherited across notebooks, so a cell id and code hash that
+happen to coincide cannot let a second notebook inherit the first's "already
+read" state. Cells are still read (`get_cell_data`) before an edit whatever the
+binding says.
 
 ### The bind validates before it writes
 
@@ -297,7 +329,7 @@ the live cell set.
 | --- | --- |
 | `session_required` | No explicit **and** no bound `session_id`/`server_url`. Discover/bind with `list_active_notebooks`, or pass both explicitly. |
 | `binding_ambiguous` (passed through) | A binding exists but this server process has served more than one client session, so the process-global fallback was withheld — never guessed. |
-| `notebook_mismatch` | The **bound** id — omitted or restated by the caller — now serves a different notebook than the one bound: the server reused it, so the call is refused with `bound_notebook` / `resolved_notebook` rather than silently retargeted. Only a *different* id or server is explicit targeting and unchecked. |
+| `notebook_mismatch` | The **bound** id — omitted or restated by the caller — now serves a different notebook than the one bound: the server reused it, so the call is refused with `bound_notebook` / `resolved_notebook` rather than silently retargeted. Only a *different* id is explicit targeting and unchecked; an explicit `server_url` does not detach the anchor. |
 | `session_not_found` | The requested id is not live on the selected server, and the census was **read**: `available_sessions` is that **same** server's truthful census — never another server's and never an invented id — and `available_sessions_readable` is `true`. |
 | `server_unreachable` | The session census could not be reached (transport failure). |
 | `server_query_failed` | The census answered with a non-auth HTTP error (HTTP `500` included) or an **unreadable** body (truncated JSON, invalid UTF-8, a non-object body). |

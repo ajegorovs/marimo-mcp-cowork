@@ -788,22 +788,39 @@ Implemented the binding notebook-**path** anchor tracked in issue #7: a bind
 records the session's file, a call on the **bound id** (implicit, or the id
 restated) is anchored to it — an id-only rotation is repaired to the current id
 and a reused id refuses `reason: notebook_mismatch`, while naming a different id
-or server stays explicit targeting — and every mutation result (the four cell
-tools, `set_ui_value`, `restart_kernel`) reports the resolved `notebook_path`.
-Added `tests/marimo_inspect/test_notebook_binding.py` (kernel-free: both bind
-sites recording the path, state/fallback isolation and the empty-anchor rule,
-the rotation repair, reuse refusal, explicit-target pass-through, the two
-restated-bound-id routes, and the reported path for every mutation handler),
-`TestRestartKernelNotebookAnchoring` in `test_lifecycle.py`, and live
-anchored-readback cases in `tests/marimo_inspect/live/test_mutation.py` and
-`live/test_restart.py`.
+stays explicit targeting — and every mutation result (the four cell tools,
+`set_ui_value`, `restart_kernel`) reports the resolved `notebook_path`. The
+anchor is keyed on the session **id**, never on the supplied `server_url`: two
+URL strings (`localhost` vs a loopback address, a DNS alias, a proxy route) can
+name one server, so string identity would reopen the wrong-target route. The
+read-before-edit guard follows notebook identity too: a rebind naming a
+different notebook forgets that id's read baselines, and a repaired rotation
+forgets the abandoned id.
+
+Coverage:
+
+- `tests/marimo_inspect/test_notebook_binding.py` (kernel-free): both bind sites
+  recording the path, state/fallback isolation and the empty-anchor rule, the
+  rotation repair, reuse refusal, explicit-target pass-through, the
+  restated-bound-id and URL-alias routes, the tracker-invalidation rules, and
+  the reported path for every mutation handler.
+- `TestRestartKernelNotebookAnchoring` in `test_lifecycle.py`, plus the
+  repaired-restart tracker invalidation case.
+- Live anchored readbacks in `live/test_mutation.py` and `live/test_restart.py`.
+- `live/test_churn_identity.py` (review finding 3): the **integrated** churn
+  regression — one live server, two disposable byte-identical copies, the real
+  rotation-plus-alias sequence, then the real bound handlers. A reused bound id
+  refuses `create_cell`/`restart_kernel` with the unintended notebook's bytes
+  unchanged and its kernel PID unchanged; an id-only rotation is repaired and
+  creates in the bound notebook (read back on its disk, absent from the other);
+  a `localhost` alias of the same live server does not bypass the anchor.
 
 Measured on this checkout with an isolated lock-exact environment (marimo
 0.24.0, fastmcp 4.0.3, pytest 9.1.1), `python -m pytest`:
 
 ```text
--m "not live"                             => 720 passed, 6 skipped, 85 deselected
-tests/marimo_inspect/live/ -m live        => 85 passed
+-m "not live"                             => 727 passed, 6 skipped, 88 deselected
+tests/marimo_inspect/live/ -m live        => 88 passed
 ```
 
 `ruff check` / `ruff format --check` and `marimo check notebooks examples` pass.

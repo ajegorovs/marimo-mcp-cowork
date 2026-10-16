@@ -95,8 +95,11 @@ durable handle — marimo re-keys a session and can hand a stale id to a
 - The anchor covers a call **on the bound id** — implicit, or the id restated
   with the bound `server_url` (a trailing slash is normalised) — so a recorded
   id cannot be replayed against another notebook.
-- Naming a **different** id, or a **different** server, is explicit targeting:
-  the bound path is not asserted against it.
+- Naming a **different** id is explicit targeting: the bound path is not
+  asserted against it. An explicit `server_url` does **not** detach the anchor —
+  two URL strings can name one server (`localhost` vs a loopback address, a DNS
+  alias, a proxy route), so string identity is not server identity. To move to
+  another server, bind again (`set_active_session`) or pass a different id.
 
 After target resolution, mutation results (`create_cell`, `edit_cell`,
 `run_cell`, `delete_cell`, `set_ui_value`, and `restart_kernel`) report
@@ -106,6 +109,17 @@ id it resolved to in `session_id` (`notebook_repaired` on `restart_kernel`).
 A refusal that resolved nothing to operate on carries **no** `notebook_path`;
 `notebook_mismatch` names `bound_notebook` and `resolved_notebook` instead, so
 the notebook the id was reused for is never mistaken for the target.
+
+**What that protects, and what it does not:** only MCP tool calls resolved
+through the binding are checked. A call naming a **different** `session_id` is
+deliberate explicit targeting and is unchecked; the **Python client** used
+directly (`resolve_session`/`execute` with a recorded id) has no
+notebook-identity precondition at all; and nothing covers a session rebound
+*after* the check — that needs a server-side expected-identity precondition the
+pinned protocol does not offer. The read-before-edit guard follows the same
+identity rule: re-binding an id onto a different notebook forgets that id's read
+baselines, and a repaired rotation forgets the abandoned id. See
+`reference://marimo-inspect/fallbacks-and-limits`.
 
 **Binding is not ownership.** Each **session** row reports
 `provenance: "unknown"` and `owner: "unknown"` — marimo's public API exposes
@@ -145,8 +159,9 @@ any write scratchpad is generated:
   now serves a **different** notebook than the one bound, so the call is refused
   rather than silently retargeted at the notebook the id happens to name now.
   It covers the *bound* id — implicit or restated — so replaying a recorded id
-  does not bypass it; only a different id or a different server is treated as
-  explicit targeting.
+  does not bypass it, and an explicit `server_url` does not detach it (two URL
+  strings can name one server); only a different **id** is treated as explicit
+  targeting.
 - `session_not_found` — the requested id is not live on the selected server;
   the payload's `available_sessions` is that **same** server's truthful census
   (never another server's, never a guess) and `available_sessions_readable` is
