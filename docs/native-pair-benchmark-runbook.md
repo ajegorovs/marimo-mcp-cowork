@@ -126,6 +126,40 @@ the booted-resumed case discriminates from the no-boot case is not explained, no
 dependency bisection was performed, and the heartbeat-drain control is a
 diagnostic control rather than a substitute transport.
 
+## Wrapper-arm session-identity exposure (2026-10-16)
+
+`benchmark/wrapper_churn_probe.py` asks the same targeting question of this repo's
+own client that the native churn probe asked of the CLI, on one disposable
+loopback marimo 0.24.0 server holding two disposable copies. Both kernels are
+booted with distinct tags; A's id is rotated via a second `/sse`; the stale A id
+is then presented together with copy B's file.
+
+Result, reproduced on three runs: the stale id was aliased onto copy B, after
+which `MarimoClient.resolve_session(session_id=<recorded A id>)` returned
+**B's path without raising**, `MarimoClient.execute(...)` returned `status="ok"`
+while reading **B's kernel**, and a live cell creation issued with that id landed
+in B (`6 -> 7` cells) and **persisted to B's file on disk**. A's own session
+survived under its rotated id and A's file was untouched, so no response field
+signals the substitution. The committed fixture stayed byte-identical.
+
+Scope and limits: exposition evidence, not a fix, and not A4 clearance. One
+environment and one sequence; no dependency bisection. Reads and the write were
+driven through `MarimoClient` directly, not through a live FastMCP client
+session, so this proves the client/transport layer and the resolver the tools
+share — not an end-to-end MCP wire trace. Because the probe deliberately writes,
+copy B's on-disk change is the measured harm, attributed by a byte snapshot taken
+immediately around that step; the probe asserts integrity of the caller's
+*intended* notebook and the canonical fixture instead. Criteria:
+`benchmark/evidence/wrapper_session_reuse_20261016.json`. Triage is tracked in
+[issue #7](https://github.com/ajegorovs/marimo-mcp-cowork/issues/7). Kernel-free helper
+gates live in `tests/marimo_inspect/test_benchmark_wrapper_churn.py`.
+
+The native CLI's combined-selector form is untriggerable through our tool
+surface, which accepts only `session_id`; the reuse hazard is not. Input
+validation cannot close it, because the request is well formed and the id was
+correct when recorded — the server reassigned it afterwards. Cross-server
+wrong-session refusal remains verified and still holds.
+
 ## Review contract
 
 Keep this page to historical measurements, their limits and reproduction instructions; maintain current execution state in issue #5. Put raw private transcripts under ignored scratch storage and publish only sanitized, reproducible evidence in the PR. The root agenda is only a compatibility pointer to the work index. No dependency upgrade, migration, release, or merge is implied by this draft.

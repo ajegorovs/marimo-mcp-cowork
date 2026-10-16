@@ -136,9 +136,13 @@ cannot close the gap at either layer: nothing about the request is invalid, beca
 the id was correct when the caller recorded it and the server reassigned it
 afterwards. Only the server can compare atomically with the write.
 
-Cross-server wrong-session refusal was verified for the wrapper; the **same-server
-reuse case has not been tested on the wrapper arm**, which is a bounded probe
-available without any upstream or product change.
+Cross-server wrong-session refusal was verified for the wrapper. The same-server
+reuse case was subsequently probed on the wrapper arm
+(`benchmark/wrapper_churn_probe.py`): the recorded id resolved to, read, and
+**wrote to another notebook, persisting to disk**, with the caller's intended
+notebook untouched. That is now tracked as a product-surface defect in
+[issue #7](https://github.com/ajegorovs/marimo-mcp-cowork/issues/7), separate from
+this effort's interface decision.
 
 ### Proposed upstream contract (proposal only — not implemented, not authorized)
 

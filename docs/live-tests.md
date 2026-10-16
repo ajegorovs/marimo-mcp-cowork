@@ -655,7 +655,7 @@ On the comparison branch after planning revision `3a26352`, the isolated Python
 3.12.10 baseline environment was rebuilt from `uv export --locked --all-extras
 --no-emit-project` and installed with uv outside the checkout. With `PYTHONPATH`
 pointing at this checkout's `src`, `python -m pytest -m "not live" -q` returned
-**672 passed, 6 skipped, 82 deselected** (49.90 s). The added stale-verdict and
+**680 passed, 6 skipped, 82 deselected** (49.93 s). The added stale-verdict and
 churn-channel tests are kernel-free; their focused group returned **24 passed**
 both normally and under `python -O` (the optimized pytest run emitted its expected
 assertion-optimization warning). No wrapper live suite rerun is claimed here.
