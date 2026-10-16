@@ -56,14 +56,23 @@ class FakeContext:
         self.infos.append(message)
 
 
+#: Session ids these tests put into the process-global change tracker.
+TRACKED_IDS = ("s_old", "s_new", "s1", "s_explicit", "probe")
+
+
 @pytest.fixture(autouse=True)
 def _reset_fallback():
-    """Keep the process-global fallback from leaking between tests."""
+    """Keep the process-global fallback and tracker from leaking between tests."""
+    from marimo_inspection.tools.change_tracking import get_tracker
     from marimo_inspection.tools.session import reset_fallback_state
 
     reset_fallback_state()
+    for session_id in TRACKED_IDS:
+        get_tracker().clear_session(session_id)
     yield
     reset_fallback_state()
+    for session_id in TRACKED_IDS:
+        get_tracker().clear_session(session_id)
 
 
 def _session(session_id: str, path: str | None) -> SimpleNamespace:
@@ -291,13 +300,14 @@ async def test_bound_notebook_path_anchors_when_the_bound_url_is_supplied():
     assert await resolve_bound_notebook_path("", "http://127.0.0.1:9000", ctx) == BOUND
 
 
-async def test_bound_notebook_path_is_empty_for_a_different_server_url():
-    """An explicit *different* server URL removes the anchor (explicit wins)."""
+async def test_bound_notebook_path_keeps_the_anchor_for_any_url_spelling():
+    """The URL does not gate the anchor: strings are not server identity."""
     from marimo_inspection.tools.session import resolve_bound_notebook_path
 
     ctx = FakeContext("stdio", "s-anchor")
     await _bind(ctx, session_id="s_old", server_url="http://127.0.0.1:9000")
-    assert await resolve_bound_notebook_path("", "http://127.0.0.1:9999", ctx) == ""
+    assert await resolve_bound_notebook_path("", "http://127.0.0.1:9999", ctx) == BOUND
+    assert await resolve_bound_notebook_path("", "http://localhost:9000", ctx) == BOUND
 
 
 async def test_bound_notebook_path_anchors_when_the_caller_restates_the_bound_id():
@@ -331,14 +341,19 @@ async def test_bound_notebook_path_is_empty_for_a_different_session_id():
     )
 
 
-async def test_bound_notebook_path_is_empty_for_a_different_server_for_the_bound_id():
-    """The bound id on another server is another target: no anchor."""
+async def test_bound_notebook_path_keeps_the_anchor_for_the_bound_id_any_url():
+    """Restating the bound id stays anchored whatever address is supplied."""
     from marimo_inspection.tools.session import resolve_bound_notebook_path
 
     ctx = FakeContext("stdio", "s-anchor")
     await _bind(ctx, session_id="s_old", server_url="http://127.0.0.1:9000")
     assert (
-        await resolve_bound_notebook_path("s_old", "http://127.0.0.1:9999", ctx) == ""
+        await resolve_bound_notebook_path("s_old", "http://127.0.0.1:9999", ctx)
+        == BOUND
+    )
+    assert (
+        await resolve_bound_notebook_path("s_old", "http://localhost:9000", ctx)
+        == BOUND
     )
 
 
@@ -488,23 +503,23 @@ async def test_explicit_bound_id_is_still_anchored():
     assert reused.execute.call_count == 0, refusal
 
 
-async def test_explicit_bound_id_with_a_different_server_is_not_anchored():
-    """The same id on another server is a different target: no anchor."""
+async def test_explicit_bound_id_with_another_url_is_still_anchored():
+    """Replaying the bound id against another address is still the bound id."""
     from marimo_inspection.tools.session import resolve_target
 
-    client = _client(
+    reused = _client(
         census=[_session("s_old", OTHER)], resolve_result=_session("s_old", OTHER)
     )
     ctx = FakeContext("stdio", "s-anchor")
     await _bind(ctx, session_id="s_old", server_url="http://127.0.0.1:9000")
 
     resolution = await resolve_target(
-        "s_old", "http://127.0.0.1:9999", ctx=ctx, client_factory=lambda _u: client
+        "s_old", "http://127.0.0.1:9999", ctx=ctx, client_factory=lambda _u: reused
     )
 
-    assert resolution.refusal is None, resolution.refusal
-    _c, session = resolution.unwrap()
-    assert session.session_id == "s_old"
+    refusal = resolution.refusal
+    assert refusal is not None, "another URL spelling bypassed the anchor"
+    assert refusal["reason"] == "notebook_mismatch", refusal
 
 
 async def test_bound_target_is_anchored_when_the_bound_url_is_restated():
@@ -559,23 +574,71 @@ async def test_bound_target_is_anchored_when_the_bound_url_is_restated_with_a_sl
     assert reused.execute.call_count == 0, refusal
 
 
-async def test_explicit_different_server_url_is_not_path_anchored():
-    """Naming a *different* server is explicit targeting: no anchor transfer."""
+async def test_bound_id_restated_with_another_url_spelling_is_still_anchored():
+    """A different SPELLING of the server address is not a different server.
+
+    Review finding (PR #8, finding 1): comparing URL strings let
+    ``http://localhost:9000`` against a bound ``http://127.0.0.1:9000`` drop the
+    anchor, so two addresses of one server reopened the wrong-target route. The
+    anchor is now keyed on the session id alone: the recorded id being restated
+    means the call is still on the bound notebook, whatever address reached it.
+    Deliberately switching servers requires a fresh bind or a different id.
+    """
     from marimo_inspection.tools.session import resolve_target
 
-    client = _client(
+    reused = _client(
         census=[_session("s_old", OTHER)], resolve_result=_session("s_old", OTHER)
     )
     ctx = FakeContext("stdio", "s-anchor")
     await _bind(ctx, session_id="s_old", server_url="http://127.0.0.1:9000")
 
     resolution = await resolve_target(
-        "", "http://127.0.0.1:9999", ctx=ctx, client_factory=lambda _u: client
+        "s_old", "http://localhost:9000", ctx=ctx, client_factory=lambda _u: reused
+    )
+
+    refusal = resolution.refusal
+    assert refusal is not None, "a URL alias bypassed the anchor"
+    assert refusal["reason"] == "notebook_mismatch", refusal
+    assert reused.execute.call_count == 0, refusal
+
+
+async def test_implicit_id_with_an_alias_url_is_still_anchored():
+    """Same rule when the id comes from the binding and the URL is a spelling."""
+    from marimo_inspection.tools.session import resolve_target
+
+    reused = _client(
+        census=[_session("s_old", OTHER)], resolve_result=_session("s_old", OTHER)
+    )
+    ctx = FakeContext("stdio", "s-anchor")
+    await _bind(ctx, session_id="s_old", server_url="http://127.0.0.1:9000")
+
+    resolution = await resolve_target(
+        "", "http://localhost:9000", ctx=ctx, client_factory=lambda _u: reused
+    )
+
+    refusal = resolution.refusal
+    assert refusal is not None, "a URL alias bypassed the anchor"
+    assert refusal["reason"] == "notebook_mismatch", refusal
+
+
+async def test_explicit_different_id_is_not_anchored_even_with_another_url():
+    """A different id stays explicit targeting: the anchor never transfers."""
+    from marimo_inspection.tools.session import resolve_target
+
+    client = _client(
+        census=[_session("s_explicit", OTHER)],
+        resolve_result=_session("s_explicit", OTHER),
+    )
+    ctx = FakeContext("stdio", "s-anchor")
+    await _bind(ctx, session_id="s_old", server_url="http://127.0.0.1:9000")
+
+    resolution = await resolve_target(
+        "s_explicit", "http://127.0.0.1:9999", ctx=ctx, client_factory=lambda _u: client
     )
 
     assert resolution.refusal is None, resolution.refusal
     _c, session = resolution.unwrap()
-    assert session.session_id == "s_old"
+    assert session.session_id == "s_explicit"
     assert resolution.notebook_path == OTHER
 
 
@@ -731,3 +794,91 @@ async def test_set_ui_value_reports_the_resolved_notebook_path():
         )
     assert result["status"] == "ok", result
     assert result["notebook_path"] == BOUND
+
+
+# ---------------------------------------------------------------------------
+# 5. The change tracker follows notebook identity, not the session id.
+# ---------------------------------------------------------------------------
+
+
+def _seed_tracker(session_id: str, cells: dict[str, str]) -> None:
+    """Give ``session_id`` a read baseline + snapshot, as a real read would."""
+    from marimo_inspection.tools.change_tracking import CellFingerprint, get_tracker
+
+    get_tracker().record_cells(
+        session_id,
+        {
+            cell_id: CellFingerprint(code_hash=digest)
+            for cell_id, digest in cells.items()
+        },
+    )
+
+
+def _tracker_holds(session_id: str, cell_id: str = "C1") -> bool:
+    from marimo_inspection.tools.change_tracking import get_tracker
+
+    tracker = get_tracker()
+    return (
+        tracker.has_snapshot(session_id)
+        or tracker.get_cell_fingerprint(session_id, cell_id) is not None
+    )
+
+
+async def test_rotation_repair_forgets_the_previous_session_ids_baseline():
+    """Finding 2: a rotated id must not carry a notebook's baseline forward.
+
+    The id that disappeared can be handed to *another* notebook later, and the
+    tracker is keyed by id alone — so leaving the old notebook's fingerprints
+    under it lets a reused id inherit a read baseline it never earned.
+    """
+    from marimo_inspection.tools.session import resolve_target
+
+    rotated = _client(
+        census=[_session("s_new", BOUND)],
+        resolve_error=ValueError("Session s_old not found"),
+    )
+    ctx = FakeContext("stdio", "s-anchor")
+    await _bind(ctx, session_id="s_old")
+    _seed_tracker("s_old", {"C1": "hash-of-A"})
+
+    resolution = await resolve_target(
+        "", "", ctx=ctx, client_factory=lambda _u: rotated
+    )
+
+    assert resolution.repaired is True
+    assert not _tracker_holds("s_old"), "a rotated id kept its notebook's read baseline"
+
+
+async def test_rebinding_a_reused_id_onto_another_notebook_forgets_its_baseline():
+    """A deliberate rebind of the same id onto B must not inherit A's reads."""
+    ctx = FakeContext("stdio", "s-anchor")
+    await _bind(ctx, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "hash-of-A"})
+
+    await _bind(ctx, session_id="s1", notebook_path=OTHER)
+
+    assert not _tracker_holds("s1"), "A's read baseline survived a rebind onto B"
+
+
+async def test_rebinding_the_same_notebook_keeps_its_baseline():
+    """A re-bind that still names the same notebook is not an identity change."""
+    ctx = FakeContext("stdio", "s-anchor")
+    await _bind(ctx, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "hash-of-A"})
+
+    await _bind(ctx, session_id="s1", notebook_path=BOUND)
+
+    assert _tracker_holds("s1"), "an unchanged binding dropped a valid baseline"
+
+
+async def test_rebinding_a_saved_notebook_onto_an_unsaved_one_forgets_the_baseline():
+    """Binding an unsaved notebook (empty path) is also an identity change."""
+    ctx = FakeContext("stdio", "s-anchor")
+    await _bind(ctx, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "hash-of-A"})
+
+    await _bind(ctx, session_id="s1", notebook_path="")
+
+    assert not _tracker_holds("s1"), (
+        "an empty rebind kept the previous notebook's reads"
+    )

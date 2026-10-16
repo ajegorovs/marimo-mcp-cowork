@@ -1181,6 +1181,44 @@ class TestRestartKernelSuccess:
         finally:
             tracker.clear_session("sid-1")
 
+    async def test_repaired_restart_forgets_the_abandoned_id_too(self, monkeypatch):
+        """Review finding 2: a repaired restart leaves no baseline on either id.
+
+        The bound id disappeared and the notebook is now served under a new one.
+        The abandoned id can later be handed to a *different* notebook, and the
+        tracker is keyed by id alone — so its entries are another notebook's
+        reads and must not survive the repair.
+        """
+        from marimo_inspection.tools import lifecycle
+        from marimo_inspection.tools.change_tracking import (
+            CellFingerprint,
+            get_tracker,
+        )
+
+        tracker = get_tracker()
+        _fast_poll(monkeypatch)
+        ctx = await _bound_ctx(session_id="sid-old", notebook_path="/tmp/nb.py")
+        # The bound id is gone; the bound notebook is served under a new id.
+        pre = FakeClient([_session("sid-new", file="/tmp/nb.py")])
+        post = FakeClient([_session("sid-new", file="/tmp/nb.py")])
+        tracker.record_cells("sid-old", {"C1": CellFingerprint(code_hash="hash-of-nb")})
+        tracker.record_cells("sid-new", {"C1": CellFingerprint(code_hash="stale")})
+        try:
+            with _patch_clients(pre, post):
+                result = await lifecycle.restart_kernel(ctx=ctx)
+
+            assert result["status"] == "ok", result
+            assert result["notebook_repaired"] is True, result
+            assert tracker.get_cell_fingerprint("sid-old", "C1") is None, (
+                "the abandoned id kept a read baseline"
+            )
+            assert tracker.get_cell_fingerprint("sid-new", "C1") is None, (
+                "the repaired id kept a read baseline"
+            )
+        finally:
+            tracker.clear_session("sid-old")
+            tracker.clear_session("sid-new")
+
 
 # ---------------------------------------------------------------------------
 # Registration

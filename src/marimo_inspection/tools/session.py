@@ -62,7 +62,11 @@ that path. An id-only rotation (the bound id is gone, the same path is served
 under a new id) is repaired to the current id; a bound id that now serves a
 different notebook is refused ``reason: notebook_mismatch`` rather than
 silently retargeted. Naming a *different* id or a *different* server is
-explicit targeting and is not anchored. This
+explicit targeting and is not anchored. The supplied server_url does **not**
+gate the anchor: two URL strings can name one server. The process-global
+change tracker is keyed by session id, so a detected rotation forgets the old
+id's read baseline, and a rebind that names a different notebook forgets the
+id's baseline too (an id must not inherit another notebook's reads). This
 is not atomic prevention — the census read and the execute POST remain separate
 requests.
 """
@@ -90,6 +94,7 @@ from marimo_inspection.tools.access import (
     http_error_body,
     probe_evidence,
 )
+from marimo_inspection.tools.change_tracking import get_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -362,30 +367,26 @@ async def resolve_bound_notebook_path(
     and, for its census check, ``restart_kernel`` in ``tools/lifecycle.py``).
     An anchor is returned when the call targets the **bound id** — either the
     id comes from the binding (no explicit ``session_id``) or the caller
-    restates exactly that id — **and** the target server is the bound one:
-    either the caller passed no ``server_url`` (the bound URL is used) or the
-    passed URL names the same server, compared normalised (``rstrip("/")``, as
-    ``MarimoClient`` and discovery normalise) so a spelling difference like a
-    trailing slash cannot slip past the anchor.
+    restates exactly that id. The supplied ``server_url`` deliberately does
+    **not** gate the anchor (review finding, PR #8 finding 1): two URL strings
+    can name one server — ``localhost`` vs a loopback address, a DNS alias, a
+    proxy route — so comparing strings let an alias drop the anchor and reopen
+    the wrong-target route. The id is the identity that matters, and restating
+    the recorded id means the call is still on the bound notebook.
 
-    Naming a **different** session id, or a **different** server, is explicit
-    targeting: the caller named another target, so the bound notebook path
-    belongs to a different target and must **not** be asserted against it — the
-    anchor is "" (explicit wins). Restating the bound id is not that case: it
-    is the id the binding recorded, so its current notebook must still be the
-    bound one, which is what stops a replayed id from silently reaching the
-    notebook the server reused it for.
+    Naming a **different** session id is explicit targeting: the caller named
+    another notebook's id, so the bound notebook path must **not** be asserted
+    against it — the anchor is "" (explicit wins). Deliberately moving to
+    another server means re-binding (``set_active_session``) or passing a
+    different id; an explicit ``server_url`` alone does not detach the anchor.
 
     Never raises: a withheld/ambiguous fallback or an absent binding yields "".
     """
     try:
         bound_id = await resolve_session_id("", ctx)
-        bound_url = await resolve_server_url("", ctx)
     except (SessionBindingError, ValueError):
         return ""
     if session_id and session_id != bound_id:
-        return ""
-    if server_url and server_url.rstrip("/") != bound_url.rstrip("/"):
         return ""
     return await resolve_notebook_path(ctx)
 
@@ -409,7 +410,19 @@ async def bind_active_session(
     leaving the key unset would let a later resolution fall through to the
     process-global fallback and borrow a *previous* notebook's path, so an
     explicit empty anchor states "bound, but nothing to anchor".
+
+    A rebind that names a **different** notebook also forgets that session id's
+    change-tracking entries (read baselines and snapshots). Those are keyed by
+    id alone, and an id is not a notebook identity: without this, re-binding a
+    server-reused id onto another notebook would let the new notebook inherit a
+    *previous* notebook's "already read" baselines wherever a cell id and code
+    hash coincide — exactly the substitution the path anchor exists to stop
+    (review finding 2). A rebind naming the *same* notebook is not an identity
+    change and keeps the caller's reads.
     """
+    previous_path = await ctx.get_state(_NOTEBOOK_KEY)
+    if previous_path is not None and previous_path != notebook_path:
+        get_tracker().clear_session(session_id)
     await ctx.set_state(_SESSION_KEY, session_id)
     if server_url:
         await ctx.set_state(_SERVER_URL_KEY, server_url)
@@ -1366,7 +1379,12 @@ async def resolve_target(
             if repaired is not None:
                 # Id-only rotation: the bound notebook is the same, only its
                 # session id changed — repair to the current id and hand the
-                # live client to the caller.
+                # live client to the caller. The rotated id's change-tracking
+                # entries are forgotten first: that id can be handed to another
+                # notebook later, and the tracker is keyed by id alone, so
+                # keeping them would let the reused id inherit this notebook's
+                # read baselines (review finding 2).
+                get_tracker().clear_session(sid)
                 return TargetResolution(client=client, session=repaired, repaired=True)
         await _close_quietly(client)
         available = [{"server_url": url, "session_id": s.session_id} for s in sessions]

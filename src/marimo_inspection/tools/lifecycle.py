@@ -458,6 +458,10 @@ async def restart_kernel(
         # gone, the bound path served under a new id) is repaired to that
         # current id so the restart targets the intended notebook.
         notebook_repaired = False
+        #: The id the *binding* named, before any repair. A rotation moves the
+        #: notebook to a new id, and the change tracker is keyed by id alone, so
+        #: the abandoned id's entries must go too (review finding 2).
+        bound_sid = sid
         if anchor_path and target is not None:
             resolved_path = target.file if isinstance(target.file, str) else ""
             if resolved_path != anchor_path:
@@ -627,6 +631,10 @@ async def restart_kernel(
     # the only safe direction (every cell then reports `needs_read`).
     tracker = get_tracker()
     tracker.clear_session(sid)
+    if notebook_repaired and bound_sid != sid:
+        # The abandoned id could be handed to another notebook later; its
+        # entries are a different notebook's reads and must not survive.
+        tracker.clear_session(bound_sid)
 
     # ── 5. Point-in-time, not durable. The expected id was live at census time,
     # but this tool then closes its own /sse stream, leaving the session an
