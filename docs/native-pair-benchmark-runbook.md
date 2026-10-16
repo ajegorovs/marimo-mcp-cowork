@@ -160,6 +160,22 @@ validation cannot close it, because the request is well formed and the id was
 correct when recorded — the server reassigned it afterwards. Cross-server
 wrong-session refusal remains verified and still holds.
 
+### Mitigation candidate tested on the same sequence
+
+The same probe then re-resolved the caller's intended notebook **by path** at call
+time instead of trusting the recorded id. The census maps each notebook to its
+*current* id, so the rotation had displaced the recorded id but not the path:
+`resolve_session(file_path=…)` returned A's id (a different id from the recorded
+one), the read reached A's tag, and the write landed in A — while the recorded id
+had read and written B. Attribution is asserted, not assumed: the stale-id write
+did not touch A, the path-anchored write did not touch B, and the committed
+fixture was unchanged. Reproduced on four runs.
+
+Scope of that result: it removes the *observed* failure mode, it is not atomic
+prevention. The census read and the execute POST remain separate requests, so a
+rebind inside that gap is still unaddressed, and a path deleted and recreated as
+a different notebook is untested.
+
 ## Review contract
 
 Keep this page to historical measurements, their limits and reproduction instructions; maintain current execution state in issue #5. Put raw private transcripts under ignored scratch storage and publish only sanitized, reproducible evidence in the PR. The root agenda is only a compatibility pointer to the work index. No dependency upgrade, migration, release, or merge is implied by this draft.

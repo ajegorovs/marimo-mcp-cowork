@@ -142,7 +142,11 @@ reuse case was subsequently probed on the wrapper arm
 **wrote to another notebook, persisting to disk**, with the caller's intended
 notebook untouched. That is now tracked as a product-surface defect in
 [issue #7](https://github.com/ajegorovs/marimo-mcp-cowork/issues/7), separate from
-this effort's interface decision.
+this effort's interface decision. The same probe tested the leading candidate —
+re-resolving by **path** at call time rather than trusting a recorded id — and it
+reached the intended notebook, read and wrote, while the recorded id had reached
+the other one. That narrows the local exposure without being atomic prevention:
+the census read and the execute POST are still separate requests.
 
 ### Proposed upstream contract (proposal only — not implemented, not authorized)
 
