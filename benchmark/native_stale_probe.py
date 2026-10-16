@@ -28,7 +28,13 @@ Assertions
 - Around the rejected edit: live source and the saved copy are unchanged.
 - The committed fixture bytes remain intact.
 
-No secrets or absolute paths are printed.
+The verdict/setup checks are factored into ``verify_stale_refusal``,
+``verify_session_binding`` and ``load_execute_payload`` so they can be exercised
+without a kernel (see ``tests/marimo_inspect/test_benchmark_stale_verdict.py``).
+
+No credentials are provisioned by this probe. Failure diagnostics and Python
+tracebacks can contain disposable absolute paths; sanitize private run logs
+before publishing them.
 """
 
 from __future__ import annotations
@@ -49,6 +55,16 @@ from pathlib import Path
 
 import psutil
 
+
+def require(condition, *diagnostics):
+    """Always-on verdict check; a bare ``assert`` is stripped under ``python -O``."""
+    if condition:
+        return
+    if not diagnostics:
+        raise AssertionError("required condition failed")
+    raise AssertionError(diagnostics[0] if len(diagnostics) == 1 else diagnostics)
+
+
 FIXTURE = Path(__file__).parent / "notebooks" / "mission_clean.py"
 SCRATCH = Path(
     os.environ.get(
@@ -61,6 +77,88 @@ PREFIX = "import marimo._code_mode as cm\n"
 
 # A unique marker printed inside the kernel so the harness can parse cells.
 LIST_MARKER = "PROBE_CELLS_JSON"
+
+
+def load_execute_payload(returncode, stdout, stderr):
+    """Decode a ``marimo pair execute`` result into its structured payload.
+
+    A CLI that did not emit JSON is a setup failure, never a silent
+    ``success=False`` payload: the raw stdout/stderr are preserved in the raised
+    error, so no structured check below can pass on unparsed output.
+    """
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        raise AssertionError(
+            "marimo pair execute emitted non-JSON stdout "
+            f"(exit {returncode}); stdout={stdout!r}; stderr={stderr!r}"
+        ) from error
+    require(
+        isinstance(payload, dict),
+        f"pair execute payload is not an object: {payload!r}",
+    )
+    return payload
+
+
+def verify_session_binding(sessions, session_id, copy_path):
+    """Setup gate: exactly the disposable copy's single session, on this file."""
+    require(
+        list(sessions) == [session_id],
+        f"session census {sessions!r} is not exactly [{session_id!r}]",
+    )
+    reported = sessions[session_id].get("path") or sessions[session_id]["filename"]
+    require(
+        Path(reported).resolve() == Path(copy_path).resolve(),
+        f"session file {reported!r} does not resolve to the disposable copy",
+    )
+
+
+def verify_stale_refusal(obs):
+    """Guarded edit must refuse *specifically* as stale, changing nothing."""
+    payload = obs["attempt_payload"]
+    stderr = str(obs["attempt_kernel_stderr"])
+    require(isinstance(payload, dict), f"refusal payload is not an object: {payload!r}")
+    # The refusal must be a genuine stale-guard trip, not a generic failure
+    # (missing cell, syntax error, transport error).
+    require(
+        obs["attempt_exit"] != 0 and payload.get("success") is False,
+        f"guarded edit did not fail: exit={obs['attempt_exit']} payload={payload!r}",
+    )
+    require(
+        "StaleCellError" in stderr,
+        f"refusal is not a stale-guard trip: {stderr!r}",
+    )
+    require(
+        "was modified since the agent last read it" in stderr,
+        f"stale refusal message missing: {stderr!r}",
+    )
+    require(
+        "KeyError" not in stderr,
+        f"refusal is a generic missing-cell failure, not stale: {stderr!r}",
+    )
+
+    # Around the rejected edit the live source and saved copy are unchanged,
+    # and the independent actor's change is still what is live.
+    require(
+        obs["live_before"] == obs["actor_code"],
+        f"live source before the refusal is not the actor's: {obs['live_before']!r}",
+    )
+    require(
+        obs["live_after"] == obs["live_before"],
+        f"refused edit changed the live source: {obs['live_after']!r}",
+    )
+    require(
+        obs["disk_after"] == obs["disk_before"],
+        "refused edit changed the saved disposable copy",
+    )
+    require(
+        obs["live_after"] != obs["original_code"],
+        "live source reverted to the pre-transaction code",
+    )
+    require(
+        obs["canonical_after"] == obs["canonical_before"],
+        "committed fixture bytes changed",
+    )
 
 
 def execute(url, notebook, env, code):
@@ -85,10 +183,7 @@ def execute(url, notebook, env, code):
         timeout=30,
         check=False,
     )
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        payload = {"success": False, "stdout": "", "stderr": result.stderr}
+    payload = load_execute_payload(result.returncode, result.stdout, result.stderr)
     return result.returncode, payload
 
 
@@ -141,7 +236,7 @@ def _live_code(url, copy, env, cell_id):
         + "    print('PROBE_LIVE', repr(_c.code if _c else None))"
     )
     code, payload = execute(url, copy, env, snippet)
-    assert code == 0 and payload.get("success"), payload
+    require(code == 0 and payload.get("success"), f"_live_code failed: {payload!r}")
     for line in payload.get("stdout", "").splitlines():
         if line.startswith("PROBE_LIVE "):
             value = line[len("PROBE_LIVE ") :]
@@ -204,14 +299,13 @@ def main():
             sid = str(uuid.uuid4())
             query = urllib.parse.urlencode({"session_id": sid, "file": str(copy)})
             with urllib.request.urlopen(f"{url}/sse?{query}", timeout=15) as stream:
-                assert any(b"kernel-ready" in line for line in stream)
+                require(
+                    any(b"kernel-ready" in line for line in stream),
+                    "no kernel-ready event in /sse stream",
+                )
             with urllib.request.urlopen(url + "/api/sessions", timeout=3) as response:
                 sessions = json.load(response)
-            assert list(sessions) == [sid], sessions
-            assert (
-                Path(sessions[sid].get("path") or sessions[sid]["filename"]).resolve()
-                == copy.resolve()
-            )
+            verify_session_binding(sessions, sid, copy)
 
             boot = (
                 PREFIX
@@ -220,7 +314,10 @@ def main():
                 + "        ctx.run_cell(cell.id)"
             )
             code, payload = execute(url, copy, env, boot)
-            assert code == 0 and payload.get("success"), (code, payload)
+            require(
+                code == 0 and payload.get("success"),
+                f"boot run failed: exit={code} payload={payload!r}",
+            )
 
             # Step 1: list cells. Accessing `.code` records the agent read
             # baseline at the current cell version for every non-empty cell.
@@ -232,26 +329,34 @@ def main():
                 + " for c in ctx.cells.values()]))"
             )
             code, snapshot = execute(url, copy, env, listing)
-            assert code == 0 and snapshot.get("success"), snapshot
+            require(
+                code == 0 and snapshot.get("success"),
+                f"cell listing failed: exit={code} payload={snapshot!r}",
+            )
             cells = None
             for line in snapshot.get("stdout", "").splitlines():
                 if line.startswith(LIST_MARKER + " "):
                     cells = json.loads(line[len(LIST_MARKER) + 1 :])
-            assert cells, snapshot
+            require(cells, f"no {LIST_MARKER} line in listing: {snapshot!r}")
             target_id = None
             target_code = None
             for cell_id, cell_code in cells:
                 if "input_vector = np.array(" in cell_code:
                     target_id, target_code = cell_id, cell_code
                     break
-            assert target_id and target_code, cells
-            assert "[2, 4, 6, 8]" in target_code, target_code
+            require(target_id and target_code, f"no target cell in census: {cells!r}")
+            require(
+                "[2, 4, 6, 8]" in target_code,
+                f"unexpected target source: {target_code!r}",
+            )
 
             # Step 2: independent actor advances the cell version out-of-band.
             actor_code = target_code.replace("[2, 4, 6, 8]", "[9, 9, 9, 9]")
-            assert actor_code != target_code
+            require(actor_code != target_code, "actor source equals the original")
             status, response = transaction(url, sid, target_id, actor_code)
-            assert status == 200, (status, response)
+            require(
+                status == 200, f"independent transaction refused: {status} {response!r}"
+            )
 
             # Let the kernel's document reflect the transaction.
             live = None
@@ -260,7 +365,9 @@ def main():
                 if live == actor_code:
                     break
                 time.sleep(0.2)
-            assert live == actor_code, (live, actor_code)
+            require(
+                live == actor_code, f"live source did not adopt the actor's: {live!r}"
+            )
 
             # Step 3: guarded edit must refuse specifically as stale.
             attempt = target_code.replace("[2, 4, 6, 8]", "[7, 7, 7, 7]")
@@ -290,19 +397,21 @@ def main():
 
             # The refusal must be a genuine stale-guard trip, not a generic
             # failure (missing cell, syntax error, transport error).
-            assert code != 0 and refusal.get("success") is False, refusal
-            assert "StaleCellError" in stderr, stderr
-            assert "was modified since the agent last read it" in stderr, stderr
-            assert "KeyError" not in stderr, stderr
-
-            # Around the rejected edit, the live source and saved copy are
-            # unchanged, and the actor's change is still what is live.
-            assert live_before == actor_code, (live_before, actor_code)
-            assert live_after == live_before, (live_after, live_before)
-            assert disk_after == disk_before, "saved copy changed"
-            assert live_after != target_code
-
-            assert FIXTURE.read_bytes() == original
+            verify_stale_refusal(
+                {
+                    "attempt_exit": code,
+                    "attempt_payload": refusal,
+                    "attempt_kernel_stderr": stderr,
+                    "live_before": live_before,
+                    "live_after": live_after,
+                    "actor_code": actor_code,
+                    "original_code": target_code,
+                    "disk_before": disk_before,
+                    "disk_after": disk_after,
+                    "canonical_before": original,
+                    "canonical_after": FIXTURE.read_bytes(),
+                }
+            )
             print("NATIVE_STALE_PROBE_PASS")
         finally:
             stop(proc)
