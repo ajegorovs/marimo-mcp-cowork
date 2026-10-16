@@ -826,7 +826,7 @@ Measured on this checkout with an isolated lock-exact environment (marimo
 0.24.0, fastmcp 4.0.3, pytest 9.1.1), `python -m pytest`:
 
 ```text
--m "not live"                             => 731 passed, 6 skipped, 88 deselected
+-m "not live"                             => 732 passed, 6 skipped, 88 deselected
 tests/marimo_inspect/live/ -m live        => 88 passed
 ```
 
