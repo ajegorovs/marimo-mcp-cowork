@@ -1107,6 +1107,33 @@ async def test_resolution_of_the_same_notebook_keeps_the_baseline():
     assert _tracker_holds("s1")
 
 
+async def test_unsaved_notebook_reuse_is_not_detectable_documented_limit():
+    """The recorded limit: an unsaved notebook has no identity to compare.
+
+    Two *different* unsaved notebooks sharing one session id record the same
+    empty path, so the tracker cannot tell them apart and the second keeps the
+    first's read baselines. This test pins that as a *documented limitation*
+    (see ``reference://marimo-inspect/fallbacks-and-limits``) rather than as
+    intended protection — an unsaved notebook has no usable path anchor either.
+    Closing it needs a different identity mechanism, or refusing to keep
+    baselines for unidentified notebooks, which would force a re-read after
+    every resolution of any unsaved notebook.
+    """
+    from marimo_inspection.tools.session import bind_active_session
+
+    first = FakeContext("stdio", "ctx-a")
+    await bind_active_session("s1", first, server_url="http://127.0.0.1:9000")
+    _seed_tracker("s1", {"C1": "hash-of-unsaved-A"}, notebook="")
+
+    second = FakeContext("stdio", "ctx-b")
+    await bind_active_session("s1", second, server_url="http://127.0.0.1:9000")
+
+    assert _tracker_holds("s1"), (
+        "the empty-path case changed: if unsaved notebooks are now distinguished, "
+        "update the documented limit in fallbacks-and-limits and this test"
+    )
+
+
 async def test_rebinding_a_saved_notebook_onto_an_unsaved_one_forgets_the_baseline():
     """Binding an unsaved notebook (empty path) is also an identity change."""
     ctx = FakeContext("stdio", "s-anchor")

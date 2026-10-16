@@ -525,6 +525,8 @@ class TestResourceContent:
         # context must not be able to inherit another notebook's baselines.
         assert "not an immutable server identity" in limits
         assert "fresh" in limits and "no previous path" in limits
+        # The unsaved-notebook blind spot must be stated, not implied away.
+        assert "unsaved notebook has no identity to compare" in limits
 
         rules = " ".join(safety.lower().replace("`", "").split())
         assert "notebook_mismatch" in rules

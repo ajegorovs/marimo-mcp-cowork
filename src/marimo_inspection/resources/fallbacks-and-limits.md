@@ -300,6 +300,17 @@ to, and invalidates on every identity transition:
   happens when the rotation is confirmed, **before** the destructive request, so
   a refused or failed restart cannot leave the abandoned id's baselines behind.
 
+**Known limit — an unsaved notebook has no identity to compare.** A session with
+no file path is recorded as an empty path, so two *different* unsaved notebooks
+reusing one session id compare equal: the second keeps the first's read
+baselines. Only a path can tell them apart, and an unsaved notebook has none — it
+has no usable path anchor either, so this is the same blind spot at both layers.
+Treat the read baselines of an id that serves an unsaved notebook as
+unattributable and re-read (`get_cell_data`) rather than relying on the guard.
+Closing it needs a different identity mechanism, or refusing to keep baselines
+for unidentified notebooks — which would force a re-read after every resolution
+of any unsaved notebook and is not done here.
+
 Baselines are never inherited across notebooks, so a cell id and code hash that
 happen to coincide cannot let a second notebook inherit the first's "already
 read" state. Cells are still read (`get_cell_data`) before an edit whatever the

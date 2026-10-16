@@ -817,6 +817,9 @@ Coverage:
   never records — entries with no recorded owner, and mocked sessions reporting
   no notebook file — so they now seed the way production does (adopt, then
   record, with a session that names its notebook).
+  The unsaved-notebook blind spot is pinned by its own test as a **documented
+  limit** (two unsaved notebooks reusing an id compare equal), so a future change
+  that closes it fails that test and updates the reference.
 - `TestRestartKernelNotebookAnchoring` in `test_lifecycle.py`, plus the
   repaired-restart tracker invalidation case.
 - Live anchored readbacks in `live/test_mutation.py` and `live/test_restart.py`.
@@ -835,7 +838,7 @@ Measured on this checkout with an isolated lock-exact environment (marimo
 0.24.0, fastmcp 4.0.3, pytest 9.1.1), `python -m pytest`:
 
 ```text
--m "not live"                             => 736 passed, 6 skipped, 88 deselected
+-m "not live"                             => 737 passed, 6 skipped, 88 deselected
 tests/marimo_inspect/live/ -m live        => 88 passed
 ```
 

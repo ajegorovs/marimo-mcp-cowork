@@ -120,9 +120,11 @@ pinned protocol does not offer. The read-before-edit guard follows the same
 identity rule: re-binding an id onto a different notebook forgets that id's read
 baselines — judged from the tracker's own record of which notebook an id
 serves, not from the calling context's state — and a confirmed rotation forgets
-the abandoned id before the restart request. The check pins the notebook path
-behind the id, not a server identity: two servers presenting the same id and
-path would pass it. See `reference://marimo-inspect/fallbacks-and-limits`.
+the abandoned id before the restart request. Two limits are stated, not implied:
+the check pins the notebook path behind the id, not a server identity (two
+servers presenting the same id and path would pass it), and an **unsaved**
+notebook has no path to compare, so its read baselines stay unattributable. See
+`reference://marimo-inspect/fallbacks-and-limits`.
 
 **Binding is not ownership.** Each **session** row reports
 `provenance: "unknown"` and `owner: "unknown"` — marimo's public API exposes

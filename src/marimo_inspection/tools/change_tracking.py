@@ -208,6 +208,16 @@ class ChangeTracker:
         that agrees with the new label would preserve it (review finding, third
         round).
 
+        **Known limit — an unsaved notebook has no identity to compare.** A
+        session with no file path is recorded as ``""``, so two *different*
+        unsaved notebooks reusing one session id compare equal and the second
+        keeps the first's fingerprints. Only a path can distinguish them, and an
+        unsaved notebook has none — it has no usable path anchor either. Treat
+        read baselines for an id serving an unsaved notebook as unattributable;
+        distinguishing them needs another identity mechanism (or refusing to
+        keep baselines for unidentified notebooks, which would cost a re-read
+        after every resolution of any unsaved notebook).
+
         Returns True when the caller's earlier fingerprints were preserved.
         """
         with self._lock:

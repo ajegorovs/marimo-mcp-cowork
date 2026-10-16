@@ -78,7 +78,11 @@ the decision reads the tracker's own process-wide record rather than the calling
 context's previous state, which a *fresh* MCP context does not have. A detected
 rotation additionally forgets the *abandoned* id, in ``resolve_target`` and in
 ``restart_kernel`` — the latter *before* its destructive request, since a
-confirmed rotation is unsafe to reuse whether or not the restart succeeds. This is not atomic prevention — the census read and
+confirmed rotation is unsafe to reuse whether or not the restart succeeds.
+Known limit: an **unsaved** notebook records an empty path, so two different
+unsaved notebooks reusing one id compare equal and the second keeps the first's
+read baselines. Only a path distinguishes them, and an unsaved notebook has
+none — the path anchor has nothing to anchor either. This is not atomic prevention — the census read and
 the execute POST remain separate requests.
 """
 
