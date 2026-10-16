@@ -1445,6 +1445,7 @@ class TestSetActiveSession:
     async def test_binds_session(self):
         """Binds a session_id the server reports and returns confirmation."""
         from marimo_inspection.tools.session import (
+            _NOTEBOOK_KEY,
             _SERVER_URL_KEY,
             _SESSION_KEY,
             set_active_session,
@@ -1481,6 +1482,7 @@ class TestSetActiveSession:
         assert written == {
             _SESSION_KEY: "abc123",
             _SERVER_URL_KEY: "http://127.0.0.1:8090",
+            _NOTEBOOK_KEY: "/t.py",
         }
         instance.close.assert_awaited_once()
 

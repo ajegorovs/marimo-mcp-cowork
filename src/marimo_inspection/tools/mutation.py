@@ -233,6 +233,7 @@ async def _live_cell_targets(
     sid: str,
     *,
     cell_id: str | None = None,
+    notebook_path: str | None = None,
 ) -> tuple[list[dict], dict | None]:
     """Read the live cells as ``(cell_id, name)`` rows, or the refusal.
 
@@ -257,6 +258,7 @@ async def _live_cell_targets(
             ),
             session_id=sid,
             cell_id=cell_id,
+            notebook_path=notebook_path,
             stderr=data.get("stderr", ""),
             next_steps=[
                 "Check the marimo server's health, then retry the call.",
@@ -330,6 +332,7 @@ async def create_cell(
         return resolved.refusal
     client, session = resolved.unwrap()
     sid = session.session_id
+    notebook = resolved.notebook_path
 
     # Validate the placement anchor against the live cells BEFORE generating
     # the create scratchpad: an absent anchor is a target problem, and letting
@@ -337,7 +340,7 @@ async def create_cell(
     # "nothing ran" guarantee the refusal makes.
     anchor = after or before
     if anchor:
-        targets, refusal = await _live_cell_targets(client, sid)
+        targets, refusal = await _live_cell_targets(client, sid, notebook_path=notebook)
         if refusal is not None:
             return refusal
         if not _target_known(targets, anchor):
@@ -352,6 +355,7 @@ async def create_cell(
                     "cell ids and names, then retry with one of them."
                 ),
                 session_id=sid,
+                notebook_path=notebook,
                 anchor=which,
                 anchor_cell_id=anchor,
                 unknown_cell_ids=[anchor],
@@ -371,6 +375,7 @@ async def create_cell(
     )
     data = await _execute_json(client, sid, code)
     if "error" in data:
+        data["notebook_path"] = notebook
         return data
 
     # Record the NEW cell's baseline (deliberate: the caller authored its
@@ -385,6 +390,7 @@ async def create_cell(
         "status": "ok",
         "cell_id": new_cell_id,
         "session_id": sid,
+        "notebook_path": notebook,
         "next_steps": ["Use run_cell to execute it, or get_cell_map to see it."],
     }
     if fps is None:
@@ -440,6 +446,7 @@ async def edit_cell(
         return resolved.refusal
     client, session = resolved.unwrap()
     sid = session.session_id
+    notebook = resolved.notebook_path
 
     from marimo_inspection.templates.mutation import build_cell_hashes_template
 
@@ -463,6 +470,7 @@ async def edit_cell(
             ),
             session_id=sid,
             cell_id=cell_id,
+            notebook_path=notebook,
             unknown_cell_ids=[cell_id],
             next_steps=[
                 "Use get_cell_map to list the live cell ids.",
@@ -483,6 +491,7 @@ async def edit_cell(
             return {
                 "status": "needs_read",
                 "cell_id": cell_id,
+                "notebook_path": notebook,
                 "message": (
                     f"Cell {cell_id} was never read by this agent. "
                     "Call get_cell_data for it (a get_cell_map preview does "
@@ -494,6 +503,7 @@ async def edit_cell(
             return {
                 "status": "conflict",
                 "cell_id": cell_id,
+                "notebook_path": notebook,
                 "message": (
                     f"Cell {cell_id} was modified since the agent last read it "
                     "(source hash changed). Re-read it with get_cell_data to "
@@ -510,6 +520,7 @@ async def edit_cell(
     code = build_edit_cell_template(cell_id, source, name=name, hide_code=hide_code)
     data = await _execute_json(client, sid, code)
     if "error" in data:
+        data["notebook_path"] = notebook
         return data
 
     # The template's own hash (if any) is computed inside the edit context,
@@ -522,6 +533,7 @@ async def edit_cell(
         "status": "ok",
         "cell_id": cell_id,
         "session_id": sid,
+        "notebook_path": notebook,
         "next_steps": ["Use run_cell to execute the edited cell."],
     }
     if fps is None:
@@ -668,6 +680,7 @@ async def run_cell(
         return resolved.refusal
     client, session = resolved.unwrap()
     sid = session.session_id
+    notebook = resolved.notebook_path
     if ctx:
         await ctx.info(f"Running cells (mode={mode}) in session {sid}...")
 
@@ -686,6 +699,7 @@ async def run_cell(
             "reason": "planning_failed",
             "mode": mode,
             "session_id": sid,
+            "notebook_path": notebook,
             "error": plan.get("error") or message,
             "execution_error": plan.get("error"),
             "stderr": plan.get("stderr", ""),
@@ -700,6 +714,7 @@ async def run_cell(
             "reason": "unknown_cell_ids",
             "mode": mode,
             "session_id": sid,
+            "notebook_path": notebook,
             "cell_id": cell_id,
             "resolved_cell_id": None,
             "unknown_cell_ids": unknown,
@@ -729,6 +744,7 @@ async def run_cell(
             "reason": "graph_unpopulated",
             "mode": mode,
             "session_id": sid,
+            "notebook_path": notebook,
             "cell_id": cell_id,
             "resolved_cell_id": target_id,
             "requested_cell_ids": [target_id],
@@ -747,6 +763,7 @@ async def run_cell(
             "status": "ok",
             "mode": mode,
             "session_id": sid,
+            "notebook_path": notebook,
             "requested_cell_ids": [],
             "cells": [],
             "succeeded_cell_ids": [],
@@ -776,6 +793,7 @@ async def run_cell(
             "reason": "reporting_failed",
             "mode": mode,
             "session_id": sid,
+            "notebook_path": notebook,
             "requested_cell_ids": requested,
             "error": execution_error or report.get("error") or message,
             "execution_error": execution_error or report.get("error"),
@@ -838,6 +856,7 @@ async def run_cell(
         "status": status,
         "mode": mode,
         "session_id": sid,
+        "notebook_path": notebook,
         "requested_cell_ids": requested,
         "cells": cells,
         "succeeded_cell_ids": succeeded,
@@ -925,12 +944,15 @@ async def delete_cell(
         return resolved.refusal
     client, session = resolved.unwrap()
     sid = session.session_id
+    notebook = resolved.notebook_path
 
     # Validate the target against the live cells BEFORE generating the delete
     # scratchpad. `ctx.delete_cell` raises `KeyError` for an absent id (or
     # name), which reached callers as a raw traceback envelope with no
     # structured refusal fields (F1).
-    targets, refusal = await _live_cell_targets(client, sid, cell_id=cell_id)
+    targets, refusal = await _live_cell_targets(
+        client, sid, cell_id=cell_id, notebook_path=notebook
+    )
     if refusal is not None:
         return refusal
     if not _target_known(targets, cell_id):
@@ -945,6 +967,7 @@ async def delete_cell(
             ),
             session_id=sid,
             cell_id=cell_id,
+            notebook_path=notebook,
             unknown_cell_ids=[cell_id],
             next_steps=[
                 "Use get_cell_map to list the live cell ids and names.",
@@ -959,6 +982,7 @@ async def delete_cell(
 
     data = await _execute_json(client, sid, build_delete_cell_template(cell_id))
     if "error" in data:
+        data["notebook_path"] = notebook
         return data
 
     # The cell is gone, so there is nothing to record: drop its fingerprint
@@ -969,6 +993,7 @@ async def delete_cell(
         "status": "ok",
         "cell_id": cell_id,
         "session_id": sid,
+        "notebook_path": notebook,
     }
     if fps is None:
         response["warning"] = (
