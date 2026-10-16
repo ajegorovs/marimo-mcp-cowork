@@ -507,6 +507,12 @@ async def restart_kernel(
                 target = repaired
                 sid = repaired.session_id
                 notebook_repaired = True
+                # The rotation is confirmed *now*, so the abandoned id is no
+                # longer a trustworthy handle for change tracking and its read
+                # baselines go immediately — before the destructive request.
+                # Waiting for a successful re-materialization would leave them
+                # behind on every refused/failed path (review finding 2b).
+                get_tracker().clear_session(bound_sid)
 
         if target is None:
             if not sessions_before:
@@ -628,13 +634,12 @@ async def restart_kernel(
     # ── 4. Local state reset. Cell ids and code hashes from before the restart
     # are not a valid basis for change detection or the edit guard, and a cell
     # created in-session can be re-keyed, so dropping the session's entries is
-    # the only safe direction (every cell then reports `needs_read`).
+    # the only safe direction (every cell then reports `needs_read`). A repaired
+    # rotation already dropped the abandoned id's entries before the request
+    # (step 1a), so this clears the id the restart acted on.
     tracker = get_tracker()
     tracker.clear_session(sid)
-    if notebook_repaired and bound_sid != sid:
-        # The abandoned id could be handed to another notebook later; its
-        # entries are a different notebook's reads and must not survive.
-        tracker.clear_session(bound_sid)
+    tracker.set_notebook(sid, file)
 
     # ── 5. Point-in-time, not durable. The expected id was live at census time,
     # but this tool then closes its own /sse stream, leaving the session an

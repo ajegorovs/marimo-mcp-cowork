@@ -1181,6 +1181,48 @@ class TestRestartKernelSuccess:
         finally:
             tracker.clear_session("sid-1")
 
+    async def test_rotation_invalidates_the_abandoned_id_before_the_restart_post(
+        self, monkeypatch
+    ):
+        """F2b: a confirmed rotation invalidates the old baseline even if the
+        destructive restart is then refused.
+
+        The abandoned id was already observed to have rotated, so it can no
+        longer identify its former notebook for change tracking — whether or not
+        the restart succeeds. Cleanup that waits for a successful
+        re-materialization leaves the stale baseline behind on every failure
+        path.
+        """
+        from marimo_inspection.tools import lifecycle
+        from marimo_inspection.tools.change_tracking import (
+            CellFingerprint,
+            get_tracker,
+        )
+
+        tracker = get_tracker()
+        _fast_poll(monkeypatch)
+        ctx = await _bound_ctx(session_id="sid-old", notebook_path="/tmp/nb.py")
+        # The bound id is gone; the bound notebook is served under a new id.
+        pre = FakeClient(
+            [_session("sid-new", file="/tmp/nb.py")],
+            outcome=RestartOutcome(ok=False, reason="edit_required", status_code=403),
+        )
+        # The restart POST is refused: no successful re-materialization.
+        post = FakeClient([_session("sid-new", file="/tmp/nb.py")])
+        tracker.record_cells("sid-old", {"C1": CellFingerprint(code_hash="hash-of-nb")})
+        try:
+            with _patch_clients(pre, post):
+                result = await lifecycle.restart_kernel(ctx=ctx)
+
+            assert result["status"] == "error", result
+            assert tracker.get_cell_fingerprint("sid-old", "C1") is None, (
+                "a confirmed rotation left the abandoned id's read baseline in "
+                "place after a refused restart"
+            )
+        finally:
+            tracker.clear_session("sid-old")
+            tracker.clear_session("sid-new")
+
     async def test_repaired_restart_forgets_the_abandoned_id_too(self, monkeypatch):
         """Review finding 2: a repaired restart leaves no baseline on either id.
 
