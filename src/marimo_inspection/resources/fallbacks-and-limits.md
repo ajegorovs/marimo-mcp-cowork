@@ -224,6 +224,36 @@ consulted only when that state has nothing bound.
   inherit another client's notebook and mutate the wrong one. Pass both
   arguments explicitly on such a client; they always win.
 
+### The bind anchors to the notebook path
+
+The bind records the session's notebook **path** as well as its id and URL
+(the MCP-session state and the process-global fallback both carry it). A later call **on the bound id** (omitted, or restated) is anchored to that
+path, because the id alone is not a
+durable handle: marimo re-keys a session, and a stale id can be handed to a
+*different* notebook's kernel (the wrapper churn probe in the benchmark
+runbook).
+
+- The bound id is gone but the same path is now served under a new id — an
+  **id-only rotation** — the resolution **repairs** to the current id and
+  proceeds.
+- The bound id now serves a **different** notebook — the id was **reused** —
+  the call is refused `reason: notebook_mismatch` instead of silently
+  retargeting the caller at the wrong notebook.
+- The anchor covers a call **on the bound id** — implicit, or the id restated
+  with the bound URL — so replaying a recorded id is still checked. Only a
+  **different** id, or a **different** server, is explicit targeting and is not
+  path-anchored.
+
+After target resolution, mutation results report `notebook_path` — the file the resolved
+session actually serves, read from the server census rather than inferred
+after the operation.
+
+This is **not atomic prevention**: the census read that resolves the path and
+the execute POST that mutates are still separate requests, so an id rebinding
+inside that gap is unaddressed, and a path deleted and recreated as a
+*different* notebook is untested. It removes the observed mismatch, it does not
+close the race.
+
 ### The bind validates before it writes
 
 `set_active_session` checks the id against **live** sessions before it binds
@@ -267,6 +297,7 @@ the live cell set.
 | --- | --- |
 | `session_required` | No explicit **and** no bound `session_id`/`server_url`. Discover/bind with `list_active_notebooks`, or pass both explicitly. |
 | `binding_ambiguous` (passed through) | A binding exists but this server process has served more than one client session, so the process-global fallback was withheld — never guessed. |
+| `notebook_mismatch` | The **bound** id — omitted or restated by the caller — now serves a different notebook than the one bound: the server reused it, so the call is refused with `bound_notebook` / `resolved_notebook` rather than silently retargeted. Only a *different* id or server is explicit targeting and unchecked. |
 | `session_not_found` | The requested id is not live on the selected server, and the census was **read**: `available_sessions` is that **same** server's truthful census — never another server's and never an invented id — and `available_sessions_readable` is `true`. |
 | `server_unreachable` | The session census could not be reached (transport failure). |
 | `server_query_failed` | The census answered with a non-auth HTTP error (HTTP `500` included) or an **unreadable** body (truncated JSON, invalid UTF-8, a non-object body). |

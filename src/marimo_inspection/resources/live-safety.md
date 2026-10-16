@@ -52,7 +52,24 @@ as its cause** — treat it as unexplained, don't assume one.
 `edit_cell` and `run_cell` mutate the session the server is attached to. The
 `.py` file on disk is reconciled by marimo separately. There is no undo.
 
+A bind records the notebook **path**, so a call on the bound id (omitted, or
+restated) is anchored to the notebook you bound: if its id rotated the call is repaired to the current
+id, and if the id has been reused for a **different** notebook the call is
+refused `reason: notebook_mismatch` rather than mutating the wrong file.
+The anchor covers the bound id — implicit or restated — so replaying a
+recorded id is still checked; only a different id or server is explicit
+targeting. After target resolution, mutation results report the resolved
+`notebook_path` — check it against
+the notebook you mean. This is not atomic prevention: the resolving census read
+and the mutating request are separate, so do not treat a bind as a lock.
+
 ## A kernel restart invalidates every id and read baseline
+
+`restart_kernel` is anchored the same way: a restart on the bound id refuses
+`reason: notebook_mismatch` (nothing closed) when the bound id now serves a
+different notebook, and an id-only rotation is repaired to the current id
+(`notebook_repaired: true`). Its refusal carries no `notebook_path` — it names
+`bound_notebook` and `resolved_notebook` instead.
 
 `restart_kernel` discards all execution state: kernel globals, imported-module
 caches and widget values are gone, and a cell created in-session can come back
