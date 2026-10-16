@@ -58,7 +58,9 @@ from marimo_inspection.client import (
 from marimo_inspection.tools import access
 from marimo_inspection.tools.change_tracking import get_tracker
 from marimo_inspection.tools.session import (
+    REASON_NOTEBOOK_MISMATCH,
     SessionBindingError,
+    resolve_bound_notebook_path,
     resolve_server_url,
     resolve_session_id,
 )
@@ -179,6 +181,7 @@ def _closed_without_live_session(
     url: str,
     sessions_before: list[SessionInfo],
     sessions_after: list[SessionInfo],
+    notebook_path: str = "",
 ) -> dict:
     """Refuse a restart that closed the kernel but confirmed no live session.
 
@@ -195,6 +198,7 @@ def _closed_without_live_session(
         restarted=True,
         sessions_before=len(sessions_before),
         sessions_after=len(sessions_after),
+        notebook_path=notebook_path or None,
         available_sessions=[
             {"session_id": s.session_id, "file": s.file} for s in sessions_after
         ],
@@ -313,6 +317,12 @@ async def restart_kernel(
     - `session_not_found` — the id is not live (or the server has no session);
       nothing was closed. This is also the guard that refuses to run over a
       sessionless server.
+    - `notebook_mismatch` — a call on the **bound** id (issue #7) found that id
+      serving a different notebook: the server reused it, so the restart is
+      refused with `bound_notebook`/`resolved_notebook` and **nothing closed**
+      rather than restarting the wrong kernel. An id-only rotation (the bound
+      id gone, the bound path now served under a new id) is instead repaired to
+      that current id and reported with `notebook_repaired: true`.
     - `session_file_unknown` — the live session reports no notebook path, so
       the `/sse` handshake has no `file` to hand back; nothing was closed.
     - `edit_scope_required` — the server is reachable and readable (a
@@ -378,6 +388,12 @@ async def restart_kernel(
     if ctx:
         await ctx.info(f"Restarting kernel of session {sid} on {url}...")
 
+    # Issue #7: a bound, argument-less call is anchored to the notebook the
+    # binding recorded, so the destructive restart cannot act on a reused id.
+    # The shared ``resolve_bound_notebook_path`` owns the anchoring rule (no
+    # explicit session id; the supplied URL absent or the bound one).
+    anchor_path = await resolve_bound_notebook_path(session_id, server_url, ctx)
+
     # ── 1. Pre-flight: the zero-session guard. A sessionless server (or an
     # unknown id) is refused here so the 500 the endpoint would answer with is
     # never provoked, and no session is closed.
@@ -434,6 +450,70 @@ async def restart_kernel(
         available = [
             {"session_id": s.session_id, "file": s.file} for s in sessions_before
         ]
+
+        # ── 1a. Notebook anchoring (issue #7). A bound, argument-less call is
+        # resolved against the notebook path the binding recorded, using this
+        # same census — no second one. An id reused for a different notebook is
+        # refused before anything is closed; an id-only rotation (the bound id
+        # gone, the bound path served under a new id) is repaired to that
+        # current id so the restart targets the intended notebook.
+        notebook_repaired = False
+        #: The id the *binding* named, before any repair. A rotation moves the
+        #: notebook to a new id, and the change tracker is keyed by id alone, so
+        #: the abandoned id's entries must go too (review finding 2).
+        bound_sid = sid
+        if anchor_path and target is not None:
+            resolved_path = target.file if isinstance(target.file, str) else ""
+            if resolved_path != anchor_path:
+                return _failure(
+                    REASON_NOTEBOOK_MISMATCH,
+                    (
+                        f"reason: {REASON_NOTEBOOK_MISMATCH} — the bound session "
+                        f"id {sid!r} now serves {resolved_path!r}, not the bound "
+                        f"notebook {anchor_path!r}: the server reused the id for "
+                        "a different notebook, so the restart is refused rather "
+                        f"than closing the wrong kernel; {_NOT_STARTED}."
+                    ),
+                    session_id=sid,
+                    server_url=url,
+                    bound_notebook=anchor_path,
+                    resolved_notebook=target.file,
+                    sessions_before=len(sessions_before),
+                    sessions_after=len(sessions_before),
+                    available_sessions=available,
+                    next_steps=[
+                        (
+                            "Re-run list_active_notebooks and re-bind the "
+                            "notebook you mean (the old id no longer names it)."
+                        ),
+                        (
+                            "Or pass session_id and server_url explicitly to "
+                            "target a notebook deliberately."
+                        ),
+                    ],
+                )
+        if target is None and anchor_path:
+            repaired = next(
+                (
+                    s
+                    for s in sessions_before
+                    if isinstance(s.file, str) and s.file == anchor_path
+                ),
+                None,
+            )
+            if repaired is not None:
+                # Id-only rotation: the bound notebook is the same, only its
+                # session id changed — restart the current id.
+                target = repaired
+                sid = repaired.session_id
+                notebook_repaired = True
+                # The rotation is confirmed *now*, so the abandoned id is no
+                # longer a trustworthy handle for change tracking and its read
+                # baselines go immediately — before the destructive request.
+                # Waiting for a successful re-materialization would leave them
+                # behind on every refused/failed path (review finding 2b).
+                get_tracker().clear_session(bound_sid)
+
         if target is None:
             if not sessions_before:
                 message = (
@@ -520,6 +600,7 @@ async def restart_kernel(
             url=url,
             sessions_before=sessions_before,
             sessions_after=sessions_after,
+            notebook_path=file,
         )
 
     if not live_id:
@@ -547,14 +628,18 @@ async def restart_kernel(
             url=url,
             sessions_before=sessions_before,
             sessions_after=sessions_after,
+            notebook_path=file,
         )
 
     # ── 4. Local state reset. Cell ids and code hashes from before the restart
     # are not a valid basis for change detection or the edit guard, and a cell
     # created in-session can be re-keyed, so dropping the session's entries is
-    # the only safe direction (every cell then reports `needs_read`).
+    # the only safe direction (every cell then reports `needs_read`). A repaired
+    # rotation already dropped the abandoned id's entries before the request
+    # (step 1a), so this clears the id the restart acted on.
     tracker = get_tracker()
     tracker.clear_session(sid)
+    tracker.adopt_notebook(sid, file)
 
     # ── 5. Point-in-time, not durable. The expected id was live at census time,
     # but this tool then closes its own /sse stream, leaving the session an
@@ -570,6 +655,8 @@ async def restart_kernel(
         "live_session_id": live_id,
         "server_url": url,
         "session_file": file,
+        "notebook_path": file,
+        "notebook_repaired": notebook_repaired,
         "restarted": True,
         "re_materialized": True,
         "state_changed": True,
@@ -697,5 +784,6 @@ def _restart_failure(
         sessions_before=sessions_before,
         sessions_after=None if state_changed is None else sessions_before,
         session_file=file,
+        notebook_path=file or None,
         next_steps=next_steps,
     )

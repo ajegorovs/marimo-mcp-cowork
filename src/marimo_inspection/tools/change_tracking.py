@@ -92,6 +92,12 @@ class ChangeTracker:
         self._snapshots: dict[str, dict[str, CellFingerprint]] = {}
         # Read baseline: the last full-source read, for the edit_cell guard.
         self._baselines: dict[str, dict[str, CellFingerprint]] = {}
+        # Which notebook each session id's entries belong to. A session id is
+        # not a notebook identity (the server re-keys sessions and hands stale
+        # ids to other notebooks), so entries are only trustworthy for the
+        # notebook that recorded them — and that attribution has to live here,
+        # process-wide: the binding is per MCP session, the tracker is not.
+        self._notebooks: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def diff(
@@ -184,6 +190,49 @@ class ChangeTracker:
         with self._lock:
             self._snapshots.pop(session_id, None)
             self._baselines.pop(session_id, None)
+            self._notebooks.pop(session_id, None)
+
+    def adopt_notebook(self, session_id: str, notebook_path: str) -> bool:
+        """Bind this id's change tracking to ``notebook_path`` as ONE step.
+
+        The only supported way to state which notebook a session id serves, and
+        the only place that decides whether previously recorded fingerprints may
+        be kept. They are kept **only** when the recorded owner is the same
+        notebook; a different owner — or entries with no recorded owner — is an
+        identity transition, so both stores are invalidated before the new owner
+        is recorded.
+
+        Coupling the two is the point: an attribution write that left the old
+        fingerprints behind would re-label an id with the new notebook while
+        still holding the previous notebook's read baseline, and a later bind
+        that agrees with the new label would preserve it (review finding, third
+        round).
+
+        **Known limit — an unsaved notebook has no identity to compare.** A
+        session with no file path is recorded as ``""``, so two *different*
+        unsaved notebooks reusing one session id compare equal and the second
+        keeps the first's fingerprints. Only a path can distinguish them, and an
+        unsaved notebook has none — it has no usable path anchor either. Treat
+        read baselines for an id serving an unsaved notebook as unattributable;
+        distinguishing them needs another identity mechanism (or refusing to
+        keep baselines for unidentified notebooks, which would cost a re-read
+        after every resolution of any unsaved notebook).
+
+        Returns True when the caller's earlier fingerprints were preserved.
+        """
+        with self._lock:
+            owner = self._notebooks.get(session_id)
+            kept = owner is not None and owner == notebook_path
+            if not kept:
+                self._snapshots.pop(session_id, None)
+                self._baselines.pop(session_id, None)
+            self._notebooks[session_id] = notebook_path
+            return kept
+
+    def notebook_of(self, session_id: str) -> str | None:
+        """The notebook this id's entries belong to, or None when unrecorded."""
+        with self._lock:
+            return self._notebooks.get(session_id)
 
     def has_snapshot(self, session_id: str) -> bool:
         """True when a change-detection snapshot exists for the session."""

@@ -48,6 +48,42 @@ a machine-readable ``reason`` (``invalid_session_id`` / ``session_not_found`` /
 never create a binding; a validated id with no MCP context to bind refuses
 with ``binding_context_unavailable`` rather than reporting success.
 See ``lookup_session`` for the read-only validator the tool builds on.
+
+Notebook-path anchoring (issue #7)
+----------------------------------
+A session id is not a durable handle: marimo re-keys a session on reconnect,
+and a stale id can be handed to a *different* notebook's kernel. The
+auto-bind of ``list_active_notebooks`` and ``set_active_session`` therefore
+also record the session's notebook **path** (``_NOTEBOOK_KEY``, mirrored in the process-global
+fallback). ``resolve_bound_notebook_path`` is the shared anchor seam: a call
+on the **bound id** — implicit, or the caller restating that id — is anchored to
+that path. An id-only rotation (the bound id is gone, the same path is served
+under a new id) is repaired to the current id; a bound id that now serves a
+different notebook is refused ``reason: notebook_mismatch`` rather than
+silently retargeted. Naming a *different* id is explicit targeting and is not
+anchored. The supplied ``server_url`` does **not** gate the anchor: two URL
+strings can name one server, so URL spelling is not server identity. Note what
+this does and does not establish — it pins the *notebook path* behind the id,
+not an immutable server identity: two distinct servers presenting the same
+session id and notebook path would pass the same check.
+
+The process-global change tracker is keyed by session id, so it carries the
+notebook each id's entries belong to and invalidates on identity transitions.
+Attribution and invalidation are **one** operation, ``adopt_notebook``: it keeps
+previously recorded fingerprints only when the recorded owner is the same
+notebook, and drops the snapshots and read baselines otherwise (unattributed
+entries and an unsaved notebook included). Every place that states which
+notebook an id serves uses it — a resolution, a repaired rotation, a bind — and
+the decision reads the tracker's own process-wide record rather than the calling
+context's previous state, which a *fresh* MCP context does not have. A detected
+rotation additionally forgets the *abandoned* id, in ``resolve_target`` and in
+``restart_kernel`` — the latter *before* its destructive request, since a
+confirmed rotation is unsafe to reuse whether or not the restart succeeds.
+Known limit: an **unsaved** notebook records an empty path, so two different
+unsaved notebooks reusing one id compare equal and the second keeps the first's
+read baselines. Only a path distinguishes them, and an unsaved notebook has
+none — the path anchor has nothing to anchor either. This is not atomic prevention — the census read and
+the execute POST remain separate requests.
 """
 
 from __future__ import annotations
@@ -73,11 +109,17 @@ from marimo_inspection.tools.access import (
     http_error_body,
     probe_evidence,
 )
+from marimo_inspection.tools.change_tracking import get_tracker
 
 logger = logging.getLogger(__name__)
 
 _SESSION_KEY = "active_session_id"
 _SERVER_URL_KEY = "active_server_url"
+#: The notebook PATH a binding is anchored to (issue #7). The session id
+#: alone is not a durable handle — marimo re-keys a session and can reuse a
+#: stale id for a different notebook — so the bind records the path and a
+#: later argument-less call re-resolves against it.
+_NOTEBOOK_KEY = "active_notebook_path"
 
 # Transports that serve exactly one client per server process. For these the
 # process-global fallback is connection-global and cannot leak, so the
@@ -88,6 +130,7 @@ _SINGLE_CLIENT_TRANSPORTS = frozenset({"stdio"})
 _FALLBACK_LOCK = threading.Lock()
 _fallback_session_id = ""
 _fallback_server_url = ""
+_fallback_notebook_path = ""
 # Client sessions observed on this process; only consulted for multi-client
 # transports (see the module docstring).
 _seen_client_sessions: set[str] = set()
@@ -115,6 +158,7 @@ class FallbackDecision:
 
     session_id: str = ""
     server_url: str = ""
+    notebook_path: str = ""
     reason: str = ""
 
 
@@ -154,17 +198,24 @@ def record_client_session(
         _seen_client_sessions.add(session_id)
 
 
-def store_fallback_binding(session_id: str, server_url: str = "") -> None:
+def store_fallback_binding(
+    session_id: str, server_url: str = "", notebook_path: str = ""
+) -> None:
     """Store the process-global fallback binding for argument-less calls.
 
     Mirrors ``bind_active_session``: the session_id always replaces the
-    previous fallback, the server_url only when one was supplied.
+    previous fallback, and so does the notebook_path — including an **empty**
+    one. The path must be replaced even when empty: a saved notebook A bound
+    before an unsaved notebook B would otherwise leave A's path behind as a
+    stale anchor for B. The server_url still only replaces when one was
+    supplied.
     """
-    global _fallback_session_id, _fallback_server_url
+    global _fallback_session_id, _fallback_server_url, _fallback_notebook_path
     with _FALLBACK_LOCK:
         _fallback_session_id = session_id
         if server_url:
             _fallback_server_url = server_url
+        _fallback_notebook_path = notebook_path
 
 
 def fallback_decision(
@@ -190,15 +241,17 @@ def fallback_decision(
         return FallbackDecision(
             session_id=_fallback_session_id,
             server_url=_fallback_server_url,
+            notebook_path=_fallback_notebook_path,
         )
 
 
 def reset_fallback_state() -> None:
     """Clear the process-global fallback (test isolation only)."""
-    global _fallback_session_id, _fallback_server_url
+    global _fallback_session_id, _fallback_server_url, _fallback_notebook_path
     with _FALLBACK_LOCK:
         _fallback_session_id = ""
         _fallback_server_url = ""
+        _fallback_notebook_path = ""
         _seen_client_sessions.clear()
 
 
@@ -291,23 +344,109 @@ async def resolve_server_url(
     )
 
 
+async def resolve_notebook_path(ctx: Context | None = None) -> str:
+    """Resolve the bound notebook path, or "" when none is anchored.
+
+    Consults the MCP-session state first, then the process-global fallback
+    under the same single-client scope as the id/url resolvers. It never
+    raises: a withheld (ambiguous) fallback yields "" so the caller simply has
+    no path to anchor against — the binding resolver has already refused in
+    that case.
+
+    A **present but empty** local key (an unsaved notebook bound through
+    ``bind_active_session``) is honored as "no anchor" and short-circuits: the
+    fallback is consulted only when this MCP session has *nothing* bound for
+    the path, never to override an explicit empty local binding — otherwise a
+    fresh binding to an unsaved notebook could borrow an earlier notebook's
+    path from the process-global fallback.
+    """
+    if ctx is not None:
+        bound = await ctx.get_state(_NOTEBOOK_KEY)
+        if bound is not None:
+            return bound if isinstance(bound, str) else ""
+
+    decision = fallback_decision(_transport_of(ctx), _session_of(ctx))
+    if decision.reason:
+        return ""
+    return decision.notebook_path
+
+
+async def resolve_bound_notebook_path(
+    session_id: str,
+    server_url: str,
+    ctx: Context | None = None,
+) -> str:
+    """The notebook path to anchor *this* call to, or "" when there is none.
+
+    The single shared anchor seam for every targeting path (``resolve_target``
+    and, for its census check, ``restart_kernel`` in ``tools/lifecycle.py``).
+    An anchor is returned when the call targets the **bound id** — either the
+    id comes from the binding (no explicit ``session_id``) or the caller
+    restates exactly that id. The supplied ``server_url`` deliberately does
+    **not** gate the anchor (review finding, PR #8 finding 1): two URL strings
+    can name one server — ``localhost`` vs a loopback address, a DNS alias, a
+    proxy route — so comparing strings let an alias drop the anchor and reopen
+    the wrong-target route. The id is the identity that matters, and restating
+    the recorded id means the call is still on the bound notebook.
+
+    Naming a **different** session id is explicit targeting: the caller named
+    another notebook's id, so the bound notebook path must **not** be asserted
+    against it — the anchor is "" (explicit wins). Deliberately moving to
+    another server means re-binding (``set_active_session``) or passing a
+    different id; an explicit ``server_url`` alone does not detach the anchor.
+
+    Never raises: a withheld/ambiguous fallback or an absent binding yields "".
+    """
+    try:
+        bound_id = await resolve_session_id("", ctx)
+    except (SessionBindingError, ValueError):
+        return ""
+    if session_id and session_id != bound_id:
+        return ""
+    return await resolve_notebook_path(ctx)
+
+
 async def bind_active_session(
     session_id: str,
     ctx: Context,
     server_url: str = "",
+    notebook_path: str = "",
 ) -> None:
-    """Bind a session_id (and optionally its server_url) as the active session.
+    """Bind a session_id, its server_url and its notebook path as active.
 
     Writes both the MCP-session state and the process-global fallback (see the
     module docstring for the isolation argument). The binder's own client
     session is recorded first so a later *different* client on a multi-client
     transport is detected and refused instead of inheriting this binding.
+
+    ``notebook_path`` is the session's own file (issue #7); recording it lets a
+    later argument-less call be anchored to that notebook rather than trusting
+    the id alone. It is recorded **even when empty** (an unsaved notebook):
+    leaving the key unset would let a later resolution fall through to the
+    process-global fallback and borrow a *previous* notebook's path, so an
+    explicit empty anchor states "bound, but nothing to anchor".
+
+    Binding also states which notebook the id serves, and that statement runs
+    through the tracker's single identity-transition operation
+    (``adopt_notebook``): entries that cannot be attributed to *this* notebook —
+    a different owner, or unattributed entries — are dropped first, so binding a
+    server-reused id onto another notebook cannot let the new notebook inherit
+    the previous one's "already read" baselines wherever a cell id and code hash
+    coincide (review findings 2, 2a and the third round's re-attribution path).
+    The decision reads the tracker's own process-wide record, **not** this
+    context's previous state: the tracker is process-global while a binding is
+    per MCP session, so a *fresh* context has no previous path to compare. A
+    rebind naming the *same* notebook keeps the caller's reads.
     """
+    get_tracker().adopt_notebook(session_id, notebook_path)
     await ctx.set_state(_SESSION_KEY, session_id)
     if server_url:
         await ctx.set_state(_SERVER_URL_KEY, server_url)
+    await ctx.set_state(_NOTEBOOK_KEY, notebook_path)
     record_client_session(_transport_of(ctx), _session_of(ctx))
-    store_fallback_binding(session_id, server_url=server_url)
+    store_fallback_binding(
+        session_id, server_url=server_url, notebook_path=notebook_path
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +457,10 @@ async def bind_active_session(
 # `session_not_found` / `server_unreachable` / `server_query_failed` are reused
 # by the bind validator below (they are the same classes there); the private
 # aliases keep the existing internal names without a second source of truth.
+#: The bound session id now serves a DIFFERENT notebook than the bound
+#: path: the server reused the id (issue #7). Refused rather than silently
+#: retargeted at the notebook the id happens to name now.
+REASON_NOTEBOOK_MISMATCH = "notebook_mismatch"
 REASON_SESSION_REQUIRED = "session_required"
 REASON_SESSION_NOT_FOUND = "session_not_found"
 REASON_SERVER_UNREACHABLE = "server_unreachable"
@@ -337,6 +480,7 @@ class _ServerQuery:
 
     url: str
     session_ids: tuple[str, ...] = ()
+    sessions: tuple[SessionInfo, ...] = ()
     reason: str = ""
     detail: str = ""
 
@@ -352,6 +496,9 @@ class SessionLookup:
 
     server_url: str = ""
     source: str = ""  # "explicit" | "discovered"
+    #: The matched session's file, set only when exactly one server reported
+    #: the id — the notebook path a bind records (issue #7).
+    notebook_path: str = ""
     reason: str = ""
     matches: tuple[str, ...] = ()  # server urls that reported the id
     queried: tuple[str, ...] = ()  # server urls that answered
@@ -397,7 +544,11 @@ async def _query_server(url: str) -> _ServerQuery:
         )
     finally:
         await client.close()
-    return _ServerQuery(url=url, session_ids=tuple(s.session_id for s in sessions))
+    return _ServerQuery(
+        url=url,
+        session_ids=tuple(s.session_id for s in sessions),
+        sessions=tuple(sessions),
+    )
 
 
 def _failure_headline(failures: tuple[tuple[str, str], ...]) -> str:
@@ -476,7 +627,8 @@ async def lookup_session(session_id: str, server_url: str = "") -> SessionLookup
             )
 
     queries = [await _query_server(url) for url in urls]
-    matches = tuple(q.url for q in queries if session_id in q.session_ids)
+    matched = [q for q in queries if session_id in q.session_ids]
+    matches = tuple(q.url for q in matched)
     queried = tuple(q.url for q in queries if not q.reason)
     failures = tuple((q.url, q.reason) for q in queries if q.reason)
     available = tuple((q.url, sid) for q in queries for sid in q.session_ids)
@@ -490,7 +642,13 @@ async def lookup_session(session_id: str, server_url: str = "") -> SessionLookup
     }
 
     if len(matches) == 1:
-        return SessionLookup(server_url=matches[0], **common)
+        only = matched[0]
+        notebook_path = next(
+            (s.file for s in only.sessions if s.session_id == session_id), None
+        )
+        return SessionLookup(
+            server_url=only.url, notebook_path=notebook_path or "", **common
+        )
     if len(matches) > 1:
         return SessionLookup(
             reason=_REASON_SESSION_AMBIGUOUS,
@@ -753,7 +911,10 @@ async def set_active_session(
     client session; once a second distinct client session appears,
     argument-less calls are refused with `reason: binding_ambiguous` rather
     than risk handing one client another client's notebook — pass both
-    arguments explicitly there. Use `list_active_notebooks` first to discover
+    arguments explicitly there. The session's notebook **path** is recorded
+    alongside the id and URL, so a later argument-less call is anchored to that
+    notebook (an id-only rotation is repaired; a reused id refuses
+    `notebook_mismatch`). Use `list_active_notebooks` first to discover
     available sessions and their IDs.
 
     Args:
@@ -784,7 +945,9 @@ async def set_active_session(
         # The id is live, but there is no MCP session state to bind it to.
         return _context_unavailable_refusal(session_id, resolved_url)
 
-    await bind_active_session(session_id, ctx, server_url=resolved_url)
+    await bind_active_session(
+        session_id, ctx, server_url=resolved_url, notebook_path=lookup.notebook_path
+    )
     await ctx.info(f"Active session set to {session_id}")
 
     return {
@@ -853,11 +1016,27 @@ class TargetResolution:
     client: MarimoClient | None = None
     session: SessionInfo | None = None
     refusal: dict[str, Any] | None = None
+    #: True when the bound session id rotated and the resolution repaired it to
+    #: the current id serving the bound notebook path (issue #7).
+    repaired: bool = False
 
     @property
     def refused(self) -> bool:
         """True when the caller must return ``refusal`` and do nothing else."""
         return self.refusal is not None
+
+    @property
+    def notebook_path(self) -> str | None:
+        """The resolved session's notebook file, or None when unavailable.
+
+        This is the path the session *actually* serves (the resolver read it
+        from the server census), not a post-facto claim about where a mutation
+        provably executed.
+        """
+        if self.session is None:
+            return None
+        file = self.session.file
+        return file if isinstance(file, str) else None
 
     def unwrap(self) -> tuple[MarimoClient, SessionInfo]:
         """The resolved ``(client, session)`` pair, or raise on a refusal.
@@ -938,8 +1117,8 @@ async def _close_quietly(client: MarimoClient) -> None:
 
 
 async def _census_of(
-    client: MarimoClient, url: str
-) -> tuple[list[dict[str, str]], str]:
+    client: MarimoClient,
+) -> tuple[list[SessionInfo], str]:
     """Read *that* client's server census, only to report it truthfully.
 
     Called when ``resolve_session`` reports the requested id absent: the same
@@ -950,18 +1129,16 @@ async def _census_of(
     invalid UTF-8, which ``resolve_session`` surfaces as the same ``ValueError``
     it raises for a missing id, so the type alone cannot tell them apart).
 
-    Returns ``(rows, "")`` on a successful read — an empty census included —
-    and ``([], error)`` on a failed one: never a different server and never an
-    invented id.
+    Returns ``(sessions, "")`` on a successful read — an empty census
+    included — and ``([], error)`` on a failed one: never a different server
+    and never an invented id. The raw ``SessionInfo`` rows are returned so the
+    anchored resolver can look up a session by its *path*, not only its id.
     """
     try:
         sessions = await client.list_sessions()
     except (httpx2.HTTPError, OSError, ValueError, AttributeError, TypeError) as exc:
         return [], str(exc)
-    return (
-        [{"server_url": url, "session_id": s.session_id} for s in sessions],
-        "",
-    )
+    return list(sessions), ""
 
 
 def _missing_target_refusal(
@@ -1006,6 +1183,14 @@ async def resolve_target(
       server; the same server's `available_sessions` census is included, with
       `available_sessions_readable: true` because that census was read.
     - `server_unreachable` — the session census transport failed.
+    - `notebook_mismatch` — a call on the **bound** id found it serving a
+      different notebook than the one bound: the id was reused, so the call is
+      refused rather than silently retargeted. An id-only rotation (the bound id
+      gone, the same path under a new id) is instead **repaired** to the current
+      id and reported with ``repaired`` set. Neither applies to an explicit
+      *different* ``session_id`` — that is the caller naming its own target, and
+      the supplied ``server_url`` does not change it (see
+      `resolve_bound_notebook_path`).
     - `server_query_failed` — the census answered with a non-auth HTTP error
       (a 500 included) or could not be read: an unreadable body (truncated
       JSON, invalid UTF-8, a non-object body) or a failing discriminating
@@ -1098,6 +1283,16 @@ async def resolve_target(
             ),
         )
 
+    # Anchoring: a call on the *bound* id is anchored to the bound notebook path
+    # (issue #7). This is the shared seam (`resolve_bound_notebook_path`) so
+    # `restart_kernel`'s census check uses the identical rule. Naming a
+    # *different* session_id is the caller naming its own target: such a call is
+    # never path-anchored, so explicit targeting is preserved. The supplied
+    # server_url does not change this — two URL strings can name one server, and
+    # the guard is about the notebook identity behind the id, not about pinning
+    # a server.
+    bound_path = await resolve_bound_notebook_path(session_id, server_url, ctx)
+
     client = client_factory(url)
     try:
         session = await client.resolve_session(session_id=sid)
@@ -1168,9 +1363,9 @@ async def resolve_target(
         #     transport failure of this second read lands in the same
         #     query-failure class (the census could not be read at all) and its
         #     error text is carried in the message.
-        available, census_error = await _census_of(client, url)
-        await _close_quietly(client)
+        sessions, census_error = await _census_of(client)
         if census_error:
+            await _close_quietly(client)
             return TargetResolution(
                 refusal=_target_refusal(
                     REASON_SERVER_QUERY_FAILED,
@@ -1189,6 +1384,29 @@ async def resolve_target(
                     ],
                 )
             )
+        if bound_path:
+            repaired = next(
+                (
+                    s
+                    for s in sessions
+                    if isinstance(s.file, str) and s.file == bound_path
+                ),
+                None,
+            )
+            if repaired is not None:
+                # Id-only rotation: the bound notebook is the same, only its
+                # session id changed — repair to the current id and hand the
+                # live client to the caller. The rotated id's change-tracking
+                # entries are forgotten first: that id can be handed to another
+                # notebook later, and the tracker is keyed by id alone, so
+                # keeping them would let the reused id inherit this notebook's
+                # read baselines (review finding 2).
+                tracker = get_tracker()
+                tracker.clear_session(sid)
+                tracker.adopt_notebook(repaired.session_id, bound_path)
+                return TargetResolution(client=client, session=repaired, repaired=True)
+        await _close_quietly(client)
+        available = [{"server_url": url, "session_id": s.session_id} for s in sessions]
         return TargetResolution(
             refusal=_target_refusal(
                 REASON_SESSION_NOT_FOUND,
@@ -1231,4 +1449,45 @@ async def resolve_target(
             )
         )
 
+    if bound_path:
+        resolved_path = session.file if isinstance(session.file, str) else ""
+        if resolved_path != bound_path:
+            # The bound id exists but now serves a different notebook: the id
+            # was reused, so following it would silently retarget the caller at
+            # the wrong notebook. Fail closed with a typed refusal instead.
+            await _close_quietly(client)
+            return TargetResolution(
+                refusal=_target_refusal(
+                    REASON_NOTEBOOK_MISMATCH,
+                    (
+                        f"reason: {REASON_NOTEBOOK_MISMATCH} — the bound session "
+                        f"id {sid!r} now serves {session.file!r}, not the bound "
+                        f"notebook {bound_path!r}: the server reused the id for a "
+                        "different notebook, so the call is refused rather than "
+                        f"silently retargeted. {_OPERATION_NOT_RUN}"
+                    ),
+                    session_id=sid,
+                    server_url=url,
+                    bound_notebook=bound_path,
+                    resolved_notebook=session.file,
+                    next_steps=[
+                        (
+                            "Re-run list_active_notebooks and re-bind the "
+                            "notebook you mean (the old id no longer names it)."
+                        ),
+                        (
+                            "Or pass session_id and server_url explicitly to "
+                            "target a notebook deliberately."
+                        ),
+                    ],
+                )
+            )
+
+    # Bind this id's change tracking to the notebook it actually serves — one
+    # operation that invalidates when the identity changed, so a later bind of
+    # the same id cannot inherit another notebook's baselines through a
+    # re-attribution that left them behind.
+    get_tracker().adopt_notebook(
+        session.session_id, session.file if isinstance(session.file, str) else ""
+    )
     return TargetResolution(client=client, session=session)

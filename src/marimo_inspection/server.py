@@ -49,6 +49,16 @@ def create_server(
         binding_ambiguous` — pass `session_id` and `server_url` explicitly
         there.
 
+        The bind also records the notebook **path**, and a call on the bound id
+        (implicit, or the id restated) is anchored to it: a session id is not durable (marimo re-keys a session
+        and can hand a stale id to a different notebook's kernel), so an
+        id-only rotation is repaired to the current id while a bound id that
+        now serves a different notebook is refused `reason: notebook_mismatch`
+        rather than silently retargeted. The anchor covers the bound id (implicit
+                or restated); only a different id is explicit targeting, and an
+                explicit server_url does not detach it.
+                After target resolution, mutation results report `notebook_path`.
+
         Use `set_active_session` to switch to a different notebook session,
         or pass `session_id`/`server_url` explicitly to any tool to override
         the bound values for a single call.

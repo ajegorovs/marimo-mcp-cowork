@@ -190,6 +190,8 @@ def _rejection_payload(
     data: dict,
     kernel_message: str,
     site: str | None = None,
+    *,
+    notebook_path: str | None = None,
 ) -> dict:
     """Error payload for a UI update marimo raised on while applying it.
 
@@ -224,6 +226,7 @@ def _rejection_payload(
         "status": "error",
         "variable_name": variable_name,
         "session_id": session_id,
+        "notebook_path": notebook_path,
         "element_type": element_type,
         "accepted_shape": data.get("accepted_shape"),
         "submitted_value": value,
@@ -852,6 +855,7 @@ async def set_ui_value(
         return resolved.refusal
     client, session = resolved.unwrap()
     sid = session.session_id
+    notebook = resolved.notebook_path
     if ctx:
         await ctx.info(f"Setting UI element '{variable_name}' in session {sid}...")
 
@@ -860,13 +864,10 @@ async def set_ui_value(
     data, stderr_text = await _execute_json(
         client, sid, build_set_ui_value_template(variable_name, value)
     )
-    if "error" in data:
-        # Execution failure or JSON parse failure — pass verbatim.
-        return data
-    if data.get("status") == "error":
-        # Structured kernel rejection: unknown name, non-UI name, shape
-        # mismatch. Each carries its own actionable message.
-        return data
+    if "error" in data or data.get("status") == "error":
+        # Preserve execution errors and structured kernel refusal fields,
+        # adding only the notebook identity observed during resolution.
+        return {**data, "notebook_path": notebook}
 
     # marimo writes a traceback to the kernel's stderr for EVERY failure point
     # of a UI update: a rejected CONVERSION (unknown dropdown key) raises
@@ -888,7 +889,15 @@ async def set_ui_value(
             # on_click for it). Fail conservatively — never a false on_click
             # attribution, never a handler_invoked claim.
             site = "unattributed"
-        return _rejection_payload(variable_name, sid, value, data, rejection, site)
+        return _rejection_payload(
+            variable_name,
+            sid,
+            value,
+            data,
+            rejection,
+            site,
+            notebook_path=notebook,
+        )
 
     verified = bool(data.get("verified"))
     applied = bool(data.get("applied"))
@@ -896,6 +905,7 @@ async def set_ui_value(
         "status": "ok",
         "variable_name": variable_name,
         "session_id": sid,
+        "notebook_path": notebook,
         "element_type": data.get("element_type"),
         "accepted_shape": data.get("accepted_shape"),
         "verified": verified,

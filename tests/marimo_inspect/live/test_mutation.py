@@ -537,3 +537,67 @@ async def test_absent_delete_and_anchor_are_structured_refusals(mutation_server)
     )
     data = await get_cell_data(session_id=session_id, server_url=server_url)
     assert all(_F1_MARKER not in (row.get("code") or "") for row in data["data"]), data
+
+
+class _BindingCtx:
+    """In-memory ctx so a live handler can bind/read the active session.
+
+    The live suite normally passes an explicit ``session_id``/``server_url``;
+    issue #7's anchoring is about the *argument-less* path, so this exposes the
+    `set_state`/`get_state`/`info` surface the binding uses.
+    """
+
+    def __init__(self) -> None:
+        self._state: dict[str, object] = {}
+        self.infos: list[str] = []
+
+    async def set_state(self, key, value, serializable=True) -> None:
+        self._state[key] = value
+
+    async def get_state(self, key):
+        return self._state.get(key)
+
+    async def info(self, message) -> None:
+        self.infos.append(message)
+
+
+@pytest.mark.live
+async def test_anchored_mutation_reports_the_bound_notebook_path(mutation_server):
+    """Issue #7: an anchored mutation reports the resolved notebook, live.
+
+    `set_active_session` records the notebook PATH; the following
+    argument-less `create_cell` is then anchored to it, reaches the bound
+    disposable copy, and reports that path. Two mutations must agree on it, and
+    the path must name the notebook the server is actually serving — a
+    readback, not a post-facto claim. Cleanup uses an explicit target so the
+    cells never survive on the disposable copy.
+    """
+    from pathlib import Path
+
+    from marimo_inspection.tools.session import set_active_session
+
+    _manager, server_url, session_id, notebook_copy = mutation_server
+    ctx = _BindingCtx()
+
+    bound = await set_active_session(
+        session_id=session_id, server_url=server_url, ctx=ctx
+    )
+    assert bound["status"] == "OK", bound
+
+    first = await create_cell("live7_marker = 1", ctx=ctx)
+    assert first["status"] == "ok", first
+    second_id = None
+    try:
+        assert first["notebook_path"], first
+        assert Path(first["notebook_path"]).name == notebook_copy.name, first
+
+        second = await create_cell("live7_marker_2 = 2", ctx=ctx)
+        assert second["status"] == "ok", second
+        second_id = second["cell_id"]
+        assert second["notebook_path"] == first["notebook_path"], second
+    finally:
+        await delete_cell(
+            first["cell_id"], session_id=session_id, server_url=server_url
+        )
+        if second_id:
+            await delete_cell(second_id, session_id=session_id, server_url=server_url)

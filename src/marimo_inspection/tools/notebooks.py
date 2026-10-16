@@ -154,6 +154,10 @@ async def list_active_notebooks(
 
     # Query each server for sessions
     all_notebooks = []
+    # The raw session file per row, aligned with `all_notebooks`, captured so
+    # the auto-bind can anchor to the first session's notebook path (issue #7)
+    # without changing the published row shape.
+    row_files: list[str] = []
     session_count = 0
 
     for url in servers:
@@ -161,6 +165,7 @@ async def list_active_notebooks(
         try:
             sessions = await client.list_sessions()
             for session in sessions:
+                row_files.append(session.file or "")
                 all_notebooks.append(
                     {
                         "name": session.basename or "untitled",
@@ -181,6 +186,7 @@ async def list_active_notebooks(
             # deliberately omits `provenance`/`owner` (those describe a
             # session), is excluded from `session_count`/`total_notebooks`,
             # and is counted only by `result_row_count`.
+            row_files.append("")
             all_notebooks.append(
                 {
                     "name": "connection failed",
@@ -197,7 +203,9 @@ async def list_active_notebooks(
         sid = first.get("session_id")
         if sid and sid != "error":
             url = first.get("server_url", "")
-            await bind_active_session(sid, ctx, server_url=url)
+            await bind_active_session(
+                sid, ctx, server_url=url, notebook_path=row_files[0]
+            )
             await ctx.info(f"Auto-bound session {sid} as active session")
 
     return {

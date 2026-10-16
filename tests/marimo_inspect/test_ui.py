@@ -1383,7 +1383,7 @@ class TestSetUiValueTool:
         assert "already held" in result["message"]
 
     async def test_shape_mismatch_passthrough(self):
-        """An in-kernel shape refusal is returned verbatim, not re-wrapped."""
+        """Keep kernel refusal fields intact and add resolved notebook identity."""
         from marimo_inspection.tools.ui import set_ui_value
 
         mismatch = {
@@ -1400,7 +1400,10 @@ class TestSetUiValueTool:
             result = await set_ui_value(
                 "dd", value="beta", session_id=self.SID, server_url=self.URL
             )
-        assert result == mismatch
+        assert "notebook_path" in result
+        assert {
+            key: value for key, value in result.items() if key != "notebook_path"
+        } == mismatch
 
     async def test_preserves_value_shape_in_sent_code(self):
         """The handler passes the exact value to the template builder."""

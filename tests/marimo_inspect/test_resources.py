@@ -273,6 +273,7 @@ class TestResourceContent:
             "session_not_found",
             "server_unreachable",
             "server_query_failed",
+            "notebook_mismatch",
         ):
             assert reason in text, reason
         assert "available_sessions" in text
@@ -478,11 +479,58 @@ class TestResourceContent:
             "session_not_found",
             "server_unreachable",
             "server_query_failed",
+            "notebook_mismatch",
         ):
             assert reason in text, reason
         assert "available_sessions" in text
         assert "available_sessions_readable" in text
         assert "unreadable" in text
+
+    async def test_resources_document_path_anchoring(self, mcp_server):
+        """Issue #7: the bind anchors to the notebook path, and says how.
+
+        A caller must be able to learn, from the packaged resources, that a bind
+        records the notebook path, that an argument-less call is anchored to it
+        (an id-only rotation is repaired; a reused id refuses
+        `notebook_mismatch` rather than silently retargeting), that explicit
+        targets are never anchored, that mutation results report
+        `notebook_path`, and that this is not atomic prevention.
+        """
+        async with Client(transport=mcp_server) as client:
+            loop = _resource_text(await client.read_resource(CO_WORK_URI))
+            fallbacks = _resource_text(await client.read_resource(FALLBACKS_URI))
+            safety = _resource_text(await client.read_resource(LIVE_SAFETY_URI))
+
+        for raw in (loop, fallbacks, safety):
+            text = " ".join(raw.lower().replace("`", "").split())
+            assert "notebook" in text and "path" in text
+
+        anchor = " ".join(loop.lower().replace("`", "").split())
+        assert "notebook_mismatch" in anchor
+        assert "repaired" in anchor
+        assert "bound id" in anchor
+        assert "not atomic" in anchor
+
+        limits = " ".join(fallbacks.lower().replace("`", "").split())
+        assert "notebook_mismatch" in limits
+        assert "notebook_path" in limits
+        assert "not atomic prevention" in limits
+        # The boundary between protected and unprotected call shapes, and the
+        # change-tracking identity rule, must be stated where a caller reads it.
+        assert "what the anchor covers" in limits
+        assert "python client" in limits
+        assert "change-tracking key" in limits
+        assert "each id's entries belong to" in limits
+        # The check is a notebook-path anchor, not server pinning, and a fresh
+        # context must not be able to inherit another notebook's baselines.
+        assert "not an immutable server identity" in limits
+        assert "fresh" in limits and "no previous path" in limits
+        # The unsaved-notebook blind spot must be stated, not implied away.
+        assert "unsaved notebook has no identity to compare" in limits
+
+        rules = " ".join(safety.lower().replace("`", "").split())
+        assert "notebook_mismatch" in rules
+        assert "notebook_path" in rules
 
     async def test_fallbacks_documents_cell_and_anchor_target_refusals(
         self, mcp_server

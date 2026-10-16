@@ -268,3 +268,107 @@ async def test_unknown_session_id_is_refused_and_changes_nothing(notebook_server
     # And the session still works: a read through the tools succeeds.
     after_map = await get_cell_map(session_id=session_id, server_url=server_url)
     assert _find(after_map, "seed = 1"), after_map
+
+
+class _BoundContext:
+    """A minimal issue-#7 binding context for an argument-less live call.
+
+    Real MCP bindings live in fastmcp state; this stands in for it so the live
+    handler can be driven with a bound id + url + notebook path.
+    """
+
+    def __init__(self, session_id: str, server_url: str, notebook_path: str) -> None:
+        self._state = {
+            "active_session_id": session_id,
+            "active_server_url": server_url,
+            "active_notebook_path": notebook_path,
+        }
+        self.transport = "stdio"
+        self.session_id = "mcp-live-1"
+        self.infos: list[str] = []
+
+    async def get_state(self, key: str):
+        return self._state.get(key)
+
+    async def set_state(self, key: str, value: object, serializable: bool = True):
+        self._state[key] = value
+
+    async def info(self, message: str) -> None:
+        self.infos.append(message)
+
+
+@pytest.mark.live
+async def test_bound_id_reused_for_other_notebook_refuses_and_closes_nothing(
+    notebook_server,
+):
+    """A bound id that now serves another notebook is refused, nothing closed.
+
+    The binding records a notebook path; the live session id is real but the
+    bound path is not its file, so the id was reused for a different notebook.
+    The destructive restart must be refused and the kernel left running.
+    """
+    _manager, server_url, session_id, notebook = await notebook_server(RESTART_NOTEBOOK)
+
+    client = MarimoClient(server_url)
+    try:
+        pid_before = await _kernel_pid(client, session_id)
+    finally:
+        await client.close()
+
+    ctx = _BoundContext(session_id, server_url, "/tmp/some-other-notebook.py")
+    result = await restart_kernel(ctx=ctx)
+
+    assert result["status"] == "error", result
+    assert result["reason"] == "notebook_mismatch", result
+    assert result["state_changed"] is False, result
+    assert result["restarted"] is False, result
+    # The refusal names both paths; `notebook_path` is reserved for a result
+    # that actually resolved a session to operate on — this one closed nothing.
+    assert "notebook_path" not in result, result
+    assert result["resolved_notebook"] == str(notebook), result
+    assert result["bound_notebook"] == "/tmp/some-other-notebook.py", result
+
+    # Nothing was closed: the same kernel process still serves the session.
+    client = MarimoClient(server_url)
+    try:
+        sessions = await client.list_sessions()
+        assert [s.session_id for s in sessions] == [session_id], sessions
+        assert await _kernel_pid(client, session_id) == pid_before
+    finally:
+        await client.close()
+
+
+@pytest.mark.live
+async def test_stale_bound_id_repairs_to_current_id_and_restarts(notebook_server):
+    """An id-only rotation is repaired: the restart targets the bound notebook.
+
+    The bound id is stale (never live) while the bound PATH is the live
+    session's file, so the resolver repairs to the current id and the restart
+    acts on it — not on the dead id.
+    """
+    _manager, server_url, session_id, notebook = await notebook_server(RESTART_NOTEBOOK)
+
+    client = MarimoClient(server_url)
+    try:
+        pid_before = await _kernel_pid(client, session_id)
+    finally:
+        await client.close()
+
+    ctx = _BoundContext(str(uuid.uuid4()), server_url, str(notebook))
+    result = await restart_kernel(ctx=ctx)
+
+    assert result["status"] == "ok", result
+    assert result["notebook_repaired"] is True, result
+    # The restart targeted the CURRENT id of the bound notebook.
+    assert result["session_id"] == session_id, result
+    assert result["live_session_id"] == session_id, result
+    assert result["notebook_path"] == str(notebook), result
+
+    client = MarimoClient(server_url)
+    try:
+        sessions = await client.list_sessions()
+        assert [s.session_id for s in sessions] == [session_id], sessions
+        # A genuinely new kernel process.
+        assert await _kernel_pid(client, session_id) != pid_before
+    finally:
+        await client.close()

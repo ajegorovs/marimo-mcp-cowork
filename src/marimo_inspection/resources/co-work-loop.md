@@ -37,6 +37,22 @@ always win, and they cost one line. The refusal tells you which case you hit:
 call, so it withheld it. This is a limitation of client-session handling, not
 of the notebook session.
 
+**The bind also records the notebook path, and anchors calls on the bound id
+to it.** A session id is not a durable handle: marimo re-keys a session, and a
+stale id can be handed to a *different* notebook's kernel. So a later call on the
+bound id re-resolves against the bound path — an **id-only rotation** (the bound id
+is gone, the same path is now served under a new id) is **repaired** to the
+current id, while a bound id that now serves a **different** notebook is
+refused `reason: notebook_mismatch` rather than silently retargeted. An
+anchor covers the **bound id** — implicit, or restated with the bound URL — so
+a recorded id cannot be replayed against another notebook. Only a **different**
+id is explicit targeting, and an explicit `server_url` does not detach the
+anchor — two URL strings can name one server. After target resolution,
+mutation results report `notebook_path` —
+the file the resolved session actually serves. This narrows the exposure; it is **not atomic
+prevention** (the census read and the execute POST are separate requests, so a
+rebind inside the gap is unaddressed).
+
 ### Target refusals are structured payloads
 
 Every cell/session-targeting tool resolves its target through one shared step,
@@ -52,6 +68,10 @@ either case. The session reasons are:
   `server_url`; discover and bind one, or pass both explicitly.
 - `binding_ambiguous` — passed through from the binding rules above (the
   process-global fallback was withheld, never guessed).
+- `notebook_mismatch` — the id this call resolves through the binding (the
+  bound id, omitted or restated) now serves a **different** notebook: the
+  server reused it, so the call is refused with `bound_notebook` /
+  `resolved_notebook` and nothing is written, never silently retargeted.
 - `session_not_found` — the requested id is not live on the **selected**
   server. `available_sessions` is that same server's truthful census and
   `available_sessions_readable` is `true` (that census was read), so correct

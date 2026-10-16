@@ -945,6 +945,120 @@ class TestRestartKernelGuardRails:
         assert post.materialized == []
 
 
+async def _bound_ctx(
+    *,
+    session_id: str = "sid-1",
+    url: str = SERVER,
+    notebook_path: str = "/tmp/nb.py",
+) -> FakeContext:
+    """A FakeContext with a full issue-#7 binding (id, url, notebook path)."""
+    ctx = FakeContext()
+    await ctx.set_state("active_session_id", session_id)
+    await ctx.set_state("active_server_url", url)
+    if notebook_path:
+        await ctx.set_state("active_notebook_path", notebook_path)
+    return ctx
+
+
+class TestRestartKernelNotebookAnchoring:
+    """Issue #7: an argument-less restart is anchored to the bound notebook.
+
+    The bound session id is not a durable handle — marimo re-keys a session and
+    can reuse a stale id for a different notebook — so the destructive restart
+    must resolve against the bound notebook *path* before it closes anything:
+    a reused id that now serves another notebook is refused (nothing closed),
+    while an id-only rotation is repaired to the current id of the bound
+    notebook. An explicit target is never anchored.
+    """
+
+    async def test_reused_bound_id_for_other_notebook_refuses_without_restart(
+        self, monkeypatch
+    ):
+        from marimo_inspection.tools import lifecycle
+
+        _fast_poll(monkeypatch)
+        ctx = await _bound_ctx(notebook_path="/tmp/nb.py")
+        # The bound id is live, but now serves a DIFFERENT notebook.
+        pre = FakeClient([_session("sid-1", file="/tmp/other.py")])
+        post = FakeClient([])
+        with _patch_clients(pre, post):
+            result = await lifecycle.restart_kernel(ctx=ctx)
+
+        assert result["status"] == "error"
+        assert result["reason"] == "notebook_mismatch"
+        assert result["state_changed"] is False
+        assert result["restarted"] is False
+        # The refusal names both paths; `notebook_path` is reserved for a
+        # result that actually resolved a session to operate on.
+        assert "notebook_path" not in result
+        assert result["resolved_notebook"] == "/tmp/other.py"
+        assert result["bound_notebook"] == "/tmp/nb.py"
+        # The destructive call was never made: nothing was closed.
+        assert pre.restart_calls == []
+        assert post.materialized == []
+
+    async def test_id_rotation_repairs_to_current_id_of_bound_notebook(
+        self, monkeypatch
+    ):
+        from marimo_inspection.tools import lifecycle
+
+        _fast_poll(monkeypatch)
+        ctx = await _bound_ctx(notebook_path="/tmp/nb.py")
+        # The bound id is gone; the same notebook is served under a new id.
+        pre = FakeClient([_session("sid-2", file="/tmp/nb.py")])
+        post = FakeClient([_session("sid-2", file="/tmp/nb.py")])
+        with _patch_clients(pre, post):
+            result = await lifecycle.restart_kernel(ctx=ctx)
+
+        assert result["status"] == "ok"
+        assert result["session_id"] == "sid-2"
+        assert result["live_session_id"] == "sid-2"
+        assert result["notebook_path"] == "/tmp/nb.py"
+        assert result["notebook_repaired"] is True
+        # The restart targeted the CURRENT id of the bound notebook.
+        assert pre.restart_calls == ["sid-2"]
+        assert post.materialized == [("sid-2", "/tmp/nb.py")]
+
+    async def test_explicit_different_id_is_not_anchored(self, monkeypatch):
+        from marimo_inspection.tools import lifecycle
+
+        _fast_poll(monkeypatch)
+        ctx = await _bound_ctx(notebook_path="/tmp/nb.py")
+        # A *different* id is the caller naming its own target, so the bound
+        # path must not be asserted against it even though the file differs.
+        pre = FakeClient([_session("sid-other", file="/tmp/other.py")])
+        post = FakeClient([_session("sid-other", file="/tmp/other.py")])
+        with _patch_clients(pre, post):
+            result = await lifecycle.restart_kernel(
+                session_id="sid-other", server_url=SERVER, ctx=ctx
+            )
+
+        assert result["status"] == "ok"
+        assert pre.restart_calls == ["sid-other"]
+        assert result["notebook_repaired"] is False
+
+    async def test_restated_bound_id_refuses_when_it_serves_another_notebook(
+        self, monkeypatch
+    ):
+        """Replaying the recorded id does not bypass the anchor."""
+        from marimo_inspection.tools import lifecycle
+
+        _fast_poll(monkeypatch)
+        ctx = await _bound_ctx(notebook_path="/tmp/nb.py")
+        pre = FakeClient([_session("sid-1", file="/tmp/other.py")])
+        post = FakeClient([])
+        with _patch_clients(pre, post):
+            result = await lifecycle.restart_kernel(
+                session_id="sid-1", server_url=SERVER, ctx=ctx
+            )
+
+        assert result["status"] == "error", result
+        assert result["reason"] == "notebook_mismatch", result
+        assert result["bound_notebook"] == "/tmp/nb.py", result
+        assert result["resolved_notebook"] == "/tmp/other.py", result
+        assert pre.restart_calls == [], "the reused id was restarted anyway"
+
+
 class TestRestartKernelSuccess:
     """The success payload states exactly what happened, and what it cost."""
 
@@ -1066,6 +1180,86 @@ class TestRestartKernelSuccess:
             assert tracker.get_cell_fingerprint("sid-1", "cell-a") is None
         finally:
             tracker.clear_session("sid-1")
+
+    async def test_rotation_invalidates_the_abandoned_id_before_the_restart_post(
+        self, monkeypatch
+    ):
+        """F2b: a confirmed rotation invalidates the old baseline even if the
+        destructive restart is then refused.
+
+        The abandoned id was already observed to have rotated, so it can no
+        longer identify its former notebook for change tracking — whether or not
+        the restart succeeds. Cleanup that waits for a successful
+        re-materialization leaves the stale baseline behind on every failure
+        path.
+        """
+        from marimo_inspection.tools import lifecycle
+        from marimo_inspection.tools.change_tracking import (
+            CellFingerprint,
+            get_tracker,
+        )
+
+        tracker = get_tracker()
+        _fast_poll(monkeypatch)
+        ctx = await _bound_ctx(session_id="sid-old", notebook_path="/tmp/nb.py")
+        # The bound id is gone; the bound notebook is served under a new id.
+        pre = FakeClient(
+            [_session("sid-new", file="/tmp/nb.py")],
+            outcome=RestartOutcome(ok=False, reason="edit_required", status_code=403),
+        )
+        # The restart POST is refused: no successful re-materialization.
+        post = FakeClient([_session("sid-new", file="/tmp/nb.py")])
+        tracker.record_cells("sid-old", {"C1": CellFingerprint(code_hash="hash-of-nb")})
+        try:
+            with _patch_clients(pre, post):
+                result = await lifecycle.restart_kernel(ctx=ctx)
+
+            assert result["status"] == "error", result
+            assert tracker.get_cell_fingerprint("sid-old", "C1") is None, (
+                "a confirmed rotation left the abandoned id's read baseline in "
+                "place after a refused restart"
+            )
+        finally:
+            tracker.clear_session("sid-old")
+            tracker.clear_session("sid-new")
+
+    async def test_repaired_restart_forgets_the_abandoned_id_too(self, monkeypatch):
+        """Review finding 2: a repaired restart leaves no baseline on either id.
+
+        The bound id disappeared and the notebook is now served under a new one.
+        The abandoned id can later be handed to a *different* notebook, and the
+        tracker is keyed by id alone — so its entries are another notebook's
+        reads and must not survive the repair.
+        """
+        from marimo_inspection.tools import lifecycle
+        from marimo_inspection.tools.change_tracking import (
+            CellFingerprint,
+            get_tracker,
+        )
+
+        tracker = get_tracker()
+        _fast_poll(monkeypatch)
+        ctx = await _bound_ctx(session_id="sid-old", notebook_path="/tmp/nb.py")
+        # The bound id is gone; the bound notebook is served under a new id.
+        pre = FakeClient([_session("sid-new", file="/tmp/nb.py")])
+        post = FakeClient([_session("sid-new", file="/tmp/nb.py")])
+        tracker.record_cells("sid-old", {"C1": CellFingerprint(code_hash="hash-of-nb")})
+        tracker.record_cells("sid-new", {"C1": CellFingerprint(code_hash="stale")})
+        try:
+            with _patch_clients(pre, post):
+                result = await lifecycle.restart_kernel(ctx=ctx)
+
+            assert result["status"] == "ok", result
+            assert result["notebook_repaired"] is True, result
+            assert tracker.get_cell_fingerprint("sid-old", "C1") is None, (
+                "the abandoned id kept a read baseline"
+            )
+            assert tracker.get_cell_fingerprint("sid-new", "C1") is None, (
+                "the repaired id kept a read baseline"
+            )
+        finally:
+            tracker.clear_session("sid-old")
+            tracker.clear_session("sid-new")
 
 
 # ---------------------------------------------------------------------------
