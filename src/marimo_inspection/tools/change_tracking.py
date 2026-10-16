@@ -92,6 +92,12 @@ class ChangeTracker:
         self._snapshots: dict[str, dict[str, CellFingerprint]] = {}
         # Read baseline: the last full-source read, for the edit_cell guard.
         self._baselines: dict[str, dict[str, CellFingerprint]] = {}
+        # Which notebook each session id's entries belong to. A session id is
+        # not a notebook identity (the server re-keys sessions and hands stale
+        # ids to other notebooks), so entries are only trustworthy for the
+        # notebook that recorded them — and that attribution has to live here,
+        # process-wide: the binding is per MCP session, the tracker is not.
+        self._notebooks: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def diff(
@@ -184,6 +190,29 @@ class ChangeTracker:
         with self._lock:
             self._snapshots.pop(session_id, None)
             self._baselines.pop(session_id, None)
+            self._notebooks.pop(session_id, None)
+
+    def set_notebook(self, session_id: str, notebook_path: str) -> None:
+        """Record which notebook this session id's entries belong to.
+
+        Written wherever a session is resolved for a call — a bind, a read, a
+        mutation — so the next statement about the id can be checked against
+        what was actually observed, not against one MCP session's state.
+        """
+        with self._lock:
+            self._notebooks[session_id] = notebook_path
+
+    def notebook_of(self, session_id: str) -> str | None:
+        """The notebook this id's entries belong to, or None when unrecorded."""
+        with self._lock:
+            return self._notebooks.get(session_id)
+
+    def has_entries(self, session_id: str) -> bool:
+        """True when any fingerprint (snapshot or baseline) is stored for the id."""
+        with self._lock:
+            return bool(
+                self._snapshots.get(session_id) or self._baselines.get(session_id)
+            )
 
     def has_snapshot(self, session_id: str) -> bool:
         """True when a change-detection snapshot exists for the session."""

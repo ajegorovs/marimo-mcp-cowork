@@ -715,6 +715,43 @@ async def test_edit_cell_reports_the_resolved_notebook_path():
     assert result["notebook_path"] == BOUND
 
 
+async def test_fresh_context_reuse_makes_edit_cell_require_a_fresh_read():
+    """F2a end-to-end at the handler the review named: no inherited baseline.
+
+    The reviewer's scenario reaches ``edit_cell``: the guard looks up the
+    baseline by (session id, cell id) alone, so a baseline recorded against
+    notebook A under an id that now serves B would let B's first edit skip
+    ``needs_read`` wherever the cell id and hash coincide. After a fresh context
+    binds the reused id onto B, that edit must be refused as never-read.
+    """
+    from marimo_inspection.tools import mutation
+    from marimo_inspection.tools.session import bind_active_session
+
+    # Context A bound A under S1 and read cell C1 of a notebook whose cell has
+    # the SAME id and the same source hash in B (the plausible copy case).
+    first = FakeContext("stdio", "ctx-a")
+    await _bind(first, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "same-hash-in-both"}, notebook=BOUND)
+
+    # A fresh context binds the same id onto B.
+    fresh = FakeContext("stdio", "ctx-b")
+    await bind_active_session(
+        "s1", fresh, server_url="http://127.0.0.1:9000", notebook_path=OTHER
+    )
+
+    client = _mutation_client(
+        OTHER,
+        _Result(['{"C1": "same-hash-in-both"}']),
+    )
+    with patch.object(mutation, "MarimoClient", return_value=client):
+        result = await mutation.edit_cell(
+            "C1", "y = 2", session_id="s1", server_url="u"
+        )
+
+    assert result["status"] == "needs_read", result
+    assert client.execute.await_count == 1, "the edit was dispatched anyway"
+
+
 async def test_run_cell_reports_the_resolved_notebook_path():
     from marimo_inspection.tools import mutation
 
@@ -801,17 +838,26 @@ async def test_set_ui_value_reports_the_resolved_notebook_path():
 # ---------------------------------------------------------------------------
 
 
-def _seed_tracker(session_id: str, cells: dict[str, str]) -> None:
-    """Give ``session_id`` a read baseline + snapshot, as a real read would."""
+def _seed_tracker(
+    session_id: str, cells: dict[str, str], notebook: str = BOUND
+) -> None:
+    """Give ``session_id`` a read baseline + snapshot, as a real read would.
+
+    A real read goes through ``resolve_target``, which also records *which*
+    notebook the id serves — so the attribution is part of the simulation, not
+    an extra.
+    """
     from marimo_inspection.tools.change_tracking import CellFingerprint, get_tracker
 
-    get_tracker().record_cells(
+    tracker = get_tracker()
+    tracker.record_cells(
         session_id,
         {
             cell_id: CellFingerprint(code_hash=digest)
             for cell_id, digest in cells.items()
         },
     )
+    tracker.set_notebook(session_id, notebook)
 
 
 def _tracker_holds(session_id: str, cell_id: str = "C1") -> bool:
@@ -853,7 +899,7 @@ async def test_rebinding_a_reused_id_onto_another_notebook_forgets_its_baseline(
     """A deliberate rebind of the same id onto B must not inherit A's reads."""
     ctx = FakeContext("stdio", "s-anchor")
     await _bind(ctx, session_id="s1", notebook_path=BOUND)
-    _seed_tracker("s1", {"C1": "hash-of-A"})
+    _seed_tracker("s1", {"C1": "hash-of-A"}, notebook=BOUND)
 
     await _bind(ctx, session_id="s1", notebook_path=OTHER)
 
@@ -869,6 +915,70 @@ async def test_rebinding_the_same_notebook_keeps_its_baseline():
     await _bind(ctx, session_id="s1", notebook_path=BOUND)
 
     assert _tracker_holds("s1"), "an unchanged binding dropped a valid baseline"
+
+
+async def test_a_fresh_context_binding_the_reused_id_forgets_the_old_baseline():
+    """F2a: the invalidation must not depend on THIS context's previous path.
+
+    The tracker is process-global while the binding state is per MCP session, so
+    a *fresh* context binding a server-reused id has no previous path to compare
+    against — yet the entries under that id belong to the other notebook. The
+    decision has to come from the tracker's own record of which notebook an id
+    serves, not from the incoming context's state.
+    """
+    from marimo_inspection.tools.session import bind_active_session
+
+    # Context A bound notebook A under S1 and read a cell (baseline recorded).
+    first = FakeContext("stdio", "ctx-a")
+    await _bind(first, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "hash-of-A"})
+
+    # A FRESH context, no _NOTEBOOK_KEY at all, binds the same id onto B.
+    fresh = FakeContext("stdio", "ctx-b")
+    await bind_active_session(
+        "s1", fresh, server_url="http://127.0.0.1:9000", notebook_path=OTHER
+    )
+
+    assert not _tracker_holds("s1"), (
+        "a fresh context inheriting the reused id kept another notebook's read baseline"
+    )
+
+
+async def test_fresh_context_binding_the_same_notebook_keeps_the_baseline():
+    """The rule is identity, not paranoia: same notebook keeps the reads."""
+    from marimo_inspection.tools.session import bind_active_session
+
+    first = FakeContext("stdio", "ctx-a")
+    await _bind(first, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "hash-of-A"})
+
+    fresh = FakeContext("stdio", "ctx-b")
+    await bind_active_session(
+        "s1", fresh, server_url="http://127.0.0.1:9000", notebook_path=BOUND
+    )
+
+    assert _tracker_holds("s1")
+
+
+async def test_a_read_through_an_explicit_target_records_the_ids_notebook():
+    """Any use of the id records which notebook its entries belong to.
+
+    Without this, a baseline recorded by an explicit-target read (no bind) is
+    unattributable and the next bind cannot tell whether it belongs to the
+    notebook now being bound.
+    """
+    from marimo_inspection.tools.change_tracking import get_tracker
+    from marimo_inspection.tools.session import resolve_target
+
+    client = _client(
+        census=[_session("s1", BOUND)], resolve_result=_session("s1", BOUND)
+    )
+    resolution = await resolve_target(
+        "s1", "http://127.0.0.1:9000", client_factory=lambda _u: client
+    )
+    assert resolution.refusal is None, resolution.refusal
+
+    assert get_tracker().notebook_of("s1") == BOUND
 
 
 async def test_rebinding_a_saved_notebook_onto_an_unsaved_one_forgets_the_baseline():

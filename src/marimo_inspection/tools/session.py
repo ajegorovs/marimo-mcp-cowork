@@ -56,19 +56,27 @@ and a stale id can be handed to a *different* notebook's kernel. The
 auto-bind of ``list_active_notebooks`` and ``set_active_session`` therefore
 also record the session's notebook **path** (``_NOTEBOOK_KEY``, mirrored in the process-global
 fallback). ``resolve_bound_notebook_path`` is the shared anchor seam: a call
-on the **bound id** — implicit, or the caller restating that id — against the
-bound server (no ``server_url``, or one equal to the bound URL) is anchored to
+on the **bound id** — implicit, or the caller restating that id — is anchored to
 that path. An id-only rotation (the bound id is gone, the same path is served
 under a new id) is repaired to the current id; a bound id that now serves a
 different notebook is refused ``reason: notebook_mismatch`` rather than
-silently retargeted. Naming a *different* id or a *different* server is
-explicit targeting and is not anchored. The supplied server_url does **not**
-gate the anchor: two URL strings can name one server. The process-global
-change tracker is keyed by session id, so a detected rotation forgets the old
-id's read baseline, and a rebind that names a different notebook forgets the
-id's baseline too (an id must not inherit another notebook's reads). This
-is not atomic prevention — the census read and the execute POST remain separate
-requests.
+silently retargeted. Naming a *different* id is explicit targeting and is not
+anchored. The supplied ``server_url`` does **not** gate the anchor: two URL
+strings can name one server, so URL spelling is not server identity. Note what
+this does and does not establish — it pins the *notebook path* behind the id,
+not an immutable server identity: two distinct servers presenting the same
+session id and notebook path would pass the same check.
+
+The process-global change tracker is keyed by session id, so it carries the
+notebook each id's entries belong to and invalidates on identity transitions: a
+detected rotation forgets the abandoned id (in ``resolve_target`` and in
+``restart_kernel``, the latter *before* its destructive request, since a
+confirmed rotation is unsafe to reuse whether or not the restart succeeds); a
+binding statement about an id whose entries cannot be attributed to the
+notebook being bound forgets that id's entries, judged from the tracker's own
+process-wide record rather than from the calling context's previous state (a
+fresh MCP context has none). This is not atomic prevention — the census read and
+the execute POST remain separate requests.
 """
 
 from __future__ import annotations
@@ -411,18 +419,29 @@ async def bind_active_session(
     process-global fallback and borrow a *previous* notebook's path, so an
     explicit empty anchor states "bound, but nothing to anchor".
 
-    A rebind that names a **different** notebook also forgets that session id's
-    change-tracking entries (read baselines and snapshots). Those are keyed by
-    id alone, and an id is not a notebook identity: without this, re-binding a
-    server-reused id onto another notebook would let the new notebook inherit a
-    *previous* notebook's "already read" baselines wherever a cell id and code
-    hash coincide — exactly the substitution the path anchor exists to stop
-    (review finding 2). A rebind naming the *same* notebook is not an identity
-    change and keeps the caller's reads.
+    A binding statement about an id whose change-tracking entries cannot be
+    attributed to *this* notebook also forgets those entries (read baselines and
+    snapshots). They are keyed by id alone, and an id is not a notebook identity:
+    without this, binding a server-reused id onto another notebook would let the
+    new notebook inherit the previous one's "already read" baselines wherever a
+    cell id and code hash coincide — the substitution the path anchor exists to
+    stop (review finding 2).
+
+    The attribution comes from the tracker's own process-wide record of which
+    notebook each id served, **not** from this context's previous state: the
+    tracker is process-global while a binding is per MCP session, so a *fresh*
+    context binding a reused id has no previous path to compare (review finding
+    2a). Entries under an id with no recorded owner are unattributable and are
+    dropped too, and a rebind naming the *same* notebook keeps the caller's
+    reads.
     """
-    previous_path = await ctx.get_state(_NOTEBOOK_KEY)
-    if previous_path is not None and previous_path != notebook_path:
-        get_tracker().clear_session(session_id)
+    tracker = get_tracker()
+    known_notebook = tracker.notebook_of(session_id)
+    if known_notebook != notebook_path or (
+        known_notebook is None and tracker.has_entries(session_id)
+    ):
+        tracker.clear_session(session_id)
+    tracker.set_notebook(session_id, notebook_path)
     await ctx.set_state(_SESSION_KEY, session_id)
     if server_url:
         await ctx.set_state(_SERVER_URL_KEY, server_url)
@@ -1167,14 +1186,14 @@ async def resolve_target(
       server; the same server's `available_sessions` census is included, with
       `available_sessions_readable: true` because that census was read.
     - `server_unreachable` — the session census transport failed.
-    - `notebook_mismatch` — a **bound** call (no explicit `session_id`, target
-      server is the bound one) found the bound session id serving a different
-      notebook than the one bound: the id was reused, so the call is refused
-      rather than silently retargeted. An id-only rotation (the bound id gone,
-      the same path under a new id) is instead **repaired** to the current id
-      and reported with ``repaired`` set. Neither applies to an explicit
-      `session_id`, nor to an explicit `server_url` naming a *different*
-      server (see `resolve_bound_notebook_path`).
+    - `notebook_mismatch` — a call on the **bound** id found it serving a
+      different notebook than the one bound: the id was reused, so the call is
+      refused rather than silently retargeted. An id-only rotation (the bound id
+      gone, the same path under a new id) is instead **repaired** to the current
+      id and reported with ``repaired`` set. Neither applies to an explicit
+      *different* ``session_id`` — that is the caller naming its own target, and
+      the supplied ``server_url`` does not change it (see
+      `resolve_bound_notebook_path`).
     - `server_query_failed` — the census answered with a non-auth HTTP error
       (a 500 included) or could not be read: an unreadable body (truncated
       JSON, invalid UTF-8, a non-object body) or a failing discriminating
@@ -1267,13 +1286,14 @@ async def resolve_target(
             ),
         )
 
-    # Anchoring: an implicit-session-id call against the *bound* server is
-    # anchored to the bound notebook path (issue #7). This is the shared seam
-    # (`resolve_bound_notebook_path`) so `restart_kernel`'s census check uses
-    # the identical rule. An explicit session_id, or an explicit *different*
-    # server_url, is the caller naming its own target — it is never
-    # path-anchored, so explicit targeting is preserved and an anchor is never
-    # transferred to another server.
+    # Anchoring: a call on the *bound* id is anchored to the bound notebook path
+    # (issue #7). This is the shared seam (`resolve_bound_notebook_path`) so
+    # `restart_kernel`'s census check uses the identical rule. Naming a
+    # *different* session_id is the caller naming its own target: such a call is
+    # never path-anchored, so explicit targeting is preserved. The supplied
+    # server_url does not change this — two URL strings can name one server, and
+    # the guard is about the notebook identity behind the id, not about pinning
+    # a server.
     bound_path = await resolve_bound_notebook_path(session_id, server_url, ctx)
 
     client = client_factory(url)
@@ -1384,7 +1404,9 @@ async def resolve_target(
                 # notebook later, and the tracker is keyed by id alone, so
                 # keeping them would let the reused id inherit this notebook's
                 # read baselines (review finding 2).
-                get_tracker().clear_session(sid)
+                tracker = get_tracker()
+                tracker.clear_session(sid)
+                tracker.set_notebook(repaired.session_id, bound_path)
                 return TargetResolution(client=client, session=repaired, repaired=True)
         await _close_quietly(client)
         available = [{"server_url": url, "session_id": s.session_id} for s in sessions]
@@ -1464,4 +1486,9 @@ async def resolve_target(
                 )
             )
 
+    # Attribute this id to the notebook it actually serves, so a later binding
+    # of the same id can tell whether entries recorded here belong to it.
+    get_tracker().set_notebook(
+        session.session_id, session.file if isinstance(session.file, str) else ""
+    )
     return TargetResolution(client=client, session=session)
