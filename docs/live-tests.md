@@ -802,11 +802,18 @@ Coverage:
 - `tests/marimo_inspect/test_notebook_binding.py` (kernel-free): both bind sites
   recording the path, state/fallback isolation and the empty-anchor rule, the
   rotation repair, reuse refusal, explicit-target pass-through, the
-  restated-bound-id and URL-alias routes, the tracker-invalidation rules, and
-  the reported path for every mutation handler.
+  restated-bound-id and URL-alias routes, and the reported path for every
+  mutation handler. The tracker-invalidation rules are covered including the
+  second review round: a *fresh* MCP context binding a server-reused id still
+  invalidates (the decision comes from the tracker's own record of which
+  notebook an id serves, not from the context's previous state), which reaches
+  `edit_cell` as a fresh `needs_read`.
 - `TestRestartKernelNotebookAnchoring` in `test_lifecycle.py`, plus the
   repaired-restart tracker invalidation case.
 - Live anchored readbacks in `live/test_mutation.py` and `live/test_restart.py`.
+  `restart_kernel` invalidates the abandoned id's baselines when the rotation is
+  confirmed — before its destructive request — so a refused or failed restart
+  cannot leave them behind.
 - `live/test_churn_identity.py` (review finding 3): the **integrated** churn
   regression — one live server, two disposable byte-identical copies, the real
   rotation-plus-alias sequence, then the real bound handlers. A reused bound id
@@ -819,7 +826,7 @@ Measured on this checkout with an isolated lock-exact environment (marimo
 0.24.0, fastmcp 4.0.3, pytest 9.1.1), `python -m pytest`:
 
 ```text
--m "not live"                             => 727 passed, 6 skipped, 88 deselected
+-m "not live"                             => 731 passed, 6 skipped, 88 deselected
 tests/marimo_inspect/live/ -m live        => 88 passed
 ```
 

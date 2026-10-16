@@ -69,7 +69,9 @@ and the mutating request are separate, so do not treat a bind as a lock.
 `reason: notebook_mismatch` (nothing closed) when the bound id now serves a
 different notebook, and an id-only rotation is repaired to the current id
 (`notebook_repaired: true`). Its refusal carries no `notebook_path` — it names
-`bound_notebook` and `resolved_notebook` instead.
+`bound_notebook` and `resolved_notebook` instead. A confirmed rotation also
+forgets the abandoned id's change baselines immediately, before the restart
+request, so a refused or failed restart cannot leave them behind.
 
 `restart_kernel` discards all execution state: kernel globals, imported-module
 caches and widget values are gone, and a cell created in-session can come back

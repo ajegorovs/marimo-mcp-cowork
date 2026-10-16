@@ -520,7 +520,11 @@ class TestResourceContent:
         assert "what the anchor covers" in limits
         assert "python client" in limits
         assert "change-tracking key" in limits
-        assert "forgets that id's read baselines" in limits
+        assert "each id's entries belong to" in limits
+        # The check is a notebook-path anchor, not server pinning, and a fresh
+        # context must not be able to inherit another notebook's baselines.
+        assert "not an immutable server identity" in limits
+        assert "fresh" in limits and "no previous path" in limits
 
         rules = " ".join(safety.lower().replace("`", "").split())
         assert "notebook_mismatch" in rules

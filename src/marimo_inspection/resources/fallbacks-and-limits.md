@@ -269,6 +269,10 @@ and only the first one is protected:
 | The **Python client** used directly (`resolve_session`/`execute` with a recorded id and no `file_path`) | **No.** `MarimoClient` has no notebook-identity precondition, so a reused id still reaches whatever the server reports it serves. |
 | Anything after the check — a session rebound inside the gap, or a path deleted and recreated | **No.** Closing that needs a server-side expected-identity precondition, which the pinned marimo protocol does not offer. |
 
+The check pins the **notebook path** behind the id — not an immutable server
+identity: two distinct servers presenting the same session id and the same
+notebook path would pass the same check.
+
 So: a passing bound call is not proof that a notebook was identified stably, and
 completing the binding work does **not** mean the package is identity-safe
 everywhere. Treat the bind as a narrowing of the exposure and an explicit
@@ -278,9 +282,19 @@ signal, never as a lock.
 
 The read-before-edit guard and the change-detection snapshot are keyed by
 **session id**, which the churn evidence shows can be handed to another
-notebook. The binding therefore maintains the identity rule: re-binding an id
-onto a different notebook (an unsaved one included) forgets that id's read
-baselines and snapshot, and a repaired rotation forgets the abandoned id.
+notebook. So the tracker also records *which notebook* each id's entries belong
+to, and invalidates on every identity transition:
+
+- a binding statement about an id whose entries cannot be attributed to the
+  notebook being bound forgets that id's entries (an unsaved notebook included).
+  The decision uses the tracker's own process-wide record, **not** the calling
+  context's previous state — the tracker is process-global while a binding is per
+  MCP session, so a *fresh* context binding a reused id has no previous path and
+  must still invalidate;
+- a detected **rotation** forgets the abandoned id. In `restart_kernel` this
+  happens when the rotation is confirmed, **before** the destructive request, so
+  a refused or failed restart cannot leave the abandoned id's baselines behind.
+
 Baselines are never inherited across notebooks, so a cell id and code hash that
 happen to coincide cannot let a second notebook inherit the first's "already
 read" state. Cells are still read (`get_cell_data`) before an edit whatever the
