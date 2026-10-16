@@ -89,6 +89,7 @@ def _client(
     census=(),
     resolve_result: object = None,
     resolve_error: Exception | None = None,
+    execute_results: list | None = None,
 ) -> MagicMock:
     """A MarimoClient double exposing the two seams `resolve_target` reads.
 
@@ -102,9 +103,12 @@ def _client(
         client.resolve_session = AsyncMock(side_effect=resolve_error)
     else:
         client.resolve_session = AsyncMock(return_value=resolve_result)
-    client.execute = AsyncMock(
-        return_value=MagicMock(status="ok", stdout=["{}"], stderr=[])
-    )
+    if execute_results is None:
+        client.execute = AsyncMock(
+            return_value=MagicMock(status="ok", stdout=["{}"], stderr=[])
+        )
+    else:
+        client.execute = AsyncMock(side_effect=list(execute_results))
     client.close = AsyncMock()
     return client
 
@@ -843,13 +847,16 @@ def _seed_tracker(
 ) -> None:
     """Give ``session_id`` a read baseline + snapshot, as a real read would.
 
-    A real read goes through ``resolve_target``, which also records *which*
-    notebook the id serves — so the attribution is part of the simulation, not
-    an extra.
+    A real read goes through ``resolve_target``, which also binds the id's
+    tracking to the notebook it serves — so the adoption is part of the
+    simulation, not an extra.
     """
     from marimo_inspection.tools.change_tracking import CellFingerprint, get_tracker
 
     tracker = get_tracker()
+    # Production order: the session is resolved (adopting the notebook) before
+    # the read records fingerprints.
+    tracker.adopt_notebook(session_id, notebook)
     tracker.record_cells(
         session_id,
         {
@@ -857,7 +864,6 @@ def _seed_tracker(
             for cell_id, digest in cells.items()
         },
     )
-    tracker.set_notebook(session_id, notebook)
 
 
 def _tracker_holds(session_id: str, cell_id: str = "C1") -> bool:
@@ -979,6 +985,126 @@ async def test_a_read_through_an_explicit_target_records_the_ids_notebook():
     assert resolution.refusal is None, resolution.refusal
 
     assert get_tracker().notebook_of("s1") == BOUND
+
+
+async def test_an_explicit_resolution_onto_another_notebook_drops_the_baseline():
+    """Third review: recording the new owner must not keep the old baseline.
+
+    ``resolve_target`` re-attributes the id to the notebook it now serves. If
+    that write only overwrote the owner, the previous notebook's read baseline
+    would survive under an id now *labelled* with the new notebook — so the next
+    bind would see agreement and preserve it.
+    """
+    from marimo_inspection.tools.session import resolve_target
+
+    ctx = FakeContext("stdio", "ctx-a")
+    await _bind(ctx, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "same-hash-in-both"}, notebook=BOUND)
+
+    # An explicitly targeted call resolves the SAME id, which now serves OTHER.
+    client = _client(
+        census=[_session("s1", OTHER)], resolve_result=_session("s1", OTHER)
+    )
+    resolution = await resolve_target(
+        "s1", "http://127.0.0.1:9000", client_factory=lambda _u: client
+    )
+    assert resolution.refusal is None, resolution.refusal
+
+    assert not _tracker_holds("s1"), (
+        "re-attributing the id kept the other notebook's read baseline"
+    )
+
+
+async def test_explicit_map_then_fresh_bind_then_edit_requires_a_fresh_read():
+    """Third review, decisive sequence: A read -> id reused for B -> explicit map
+    of B -> fresh-context bind to B -> edit_cell must return ``needs_read``.
+
+    A ``get_cell_map`` is enough for the middle step because it deliberately
+    establishes no full-source baseline while still resolving the id.
+    """
+    from marimo_inspection.tools import cells, mutation
+    from marimo_inspection.tools.session import bind_active_session
+
+    first = FakeContext("stdio", "ctx-a")
+    await _bind(first, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "same-hash-in-both"}, notebook=BOUND)
+
+    # Explicitly targeted map: the id now serves OTHER.
+    map_client = _client(
+        census=[_session("s1", OTHER)],
+        resolve_result=_session("s1", OTHER),
+        execute_results=[_Result(['{"cells": [{"cell_id": "C1", "code": "x = 1"}]}'])],
+    )
+    with patch.object(cells, "MarimoClient", return_value=map_client):
+        mapped = await cells.get_cell_map(session_id="s1", server_url="u")
+    assert mapped.get("status") != "error", mapped
+
+    # A fresh context binds the same id onto OTHER.
+    fresh = FakeContext("stdio", "ctx-b")
+    await bind_active_session(
+        "s1", fresh, server_url="http://127.0.0.1:9000", notebook_path=OTHER
+    )
+
+    # Scripted so a *buggy* run reaches the edit and reports ok, rather than
+    # running out of scripted results: the assertion then names the real defect.
+    edit_client = _mutation_client(
+        OTHER,
+        _Result(['{"C1": "same-hash-in-both"}']),
+        _Result(['{"status": "ok", "cell_id": "C1"}']),
+        _Result(['{"C1": "y = 2"}']),
+    )
+    with patch.object(mutation, "MarimoClient", return_value=edit_client):
+        result = await mutation.edit_cell(
+            "C1", "y = 2", session_id="s1", server_url="u"
+        )
+
+    assert result["status"] == "needs_read", result
+    assert edit_client.execute.await_count == 1, "the edit was dispatched anyway"
+
+
+async def test_rotation_repair_does_not_adopt_a_replacement_ids_other_baseline():
+    """Third review: a replacement id carrying another notebook's fingerprints.
+
+    The repaired id is a *replacement*: whatever an earlier notebook stored under
+    it must not be inherited by the notebook the rotation repaired to.
+    """
+    from marimo_inspection.tools.session import resolve_target
+
+    rotated = _client(
+        census=[_session("s_new", BOUND)],
+        resolve_error=ValueError("Session s_old not found"),
+    )
+    ctx = FakeContext("stdio", "s-anchor")
+    await _bind(ctx, session_id="s_old")
+    # The replacement already carries a *different* notebook's baseline.
+    _seed_tracker("s_new", {"C1": "hash-of-other"}, notebook=OTHER)
+
+    resolution = await resolve_target(
+        "", "", ctx=ctx, client_factory=lambda _u: rotated
+    )
+
+    assert resolution.repaired is True, resolution.refusal
+    assert not _tracker_holds("s_new"), (
+        "the repaired id inherited another notebook's read baseline"
+    )
+
+
+async def test_resolution_of_the_same_notebook_keeps_the_baseline():
+    """The identity rule is not paranoia: an agreeing resolution keeps reads."""
+    from marimo_inspection.tools.session import resolve_target
+
+    ctx = FakeContext("stdio", "ctx-a")
+    await _bind(ctx, session_id="s1", notebook_path=BOUND)
+    _seed_tracker("s1", {"C1": "hash-of-A"}, notebook=BOUND)
+
+    client = _client(
+        census=[_session("s1", BOUND)], resolve_result=_session("s1", BOUND)
+    )
+    resolution = await resolve_target(
+        "s1", "http://127.0.0.1:9000", client_factory=lambda _u: client
+    )
+    assert resolution.refusal is None, resolution.refusal
+    assert _tracker_holds("s1")
 
 
 async def test_rebinding_a_saved_notebook_onto_an_unsaved_one_forgets_the_baseline():

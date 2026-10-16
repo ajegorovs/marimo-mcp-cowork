@@ -639,7 +639,7 @@ async def restart_kernel(
     # (step 1a), so this clears the id the restart acted on.
     tracker = get_tracker()
     tracker.clear_session(sid)
-    tracker.set_notebook(sid, file)
+    tracker.adopt_notebook(sid, file)
 
     # ── 5. Point-in-time, not durable. The expected id was live at census time,
     # but this tool then closes its own /sse stream, leaving the session an

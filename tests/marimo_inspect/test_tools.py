@@ -562,6 +562,7 @@ class TestGetCellDataChangeTracking:
         tracker = get_tracker()
         tracker.clear_session(self.SID)
         try:
+            tracker.adopt_notebook(self.SID, "/test.py")
             tracker.record_cells(
                 self.SID, {"B": CellFingerprint(code_hash="bhash", state="idle")}
             )
@@ -625,6 +626,7 @@ class TestGetCellDataChangeTracking:
         tracker = get_tracker()
         tracker.clear_session(self.SID)
         try:
+            tracker.adopt_notebook(self.SID, "/test.py")
             tracker.record_cells(self.SID, {"B": CellFingerprint(code_hash="bhash")})
             with self._patch_client(["not valid json"]):
                 result = await get_cell_data(
@@ -647,6 +649,7 @@ class TestGetCellDataChangeTracking:
         tracker = get_tracker()
         tracker.clear_session(self.SID)
         try:
+            tracker.adopt_notebook(self.SID, "/test.py")
             tracker.record_cells(self.SID, {"B": CellFingerprint(code_hash="bhash")})
             with self._patch_client([], status="error"):
                 result = await get_cell_data(

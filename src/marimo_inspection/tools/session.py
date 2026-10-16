@@ -68,14 +68,17 @@ not an immutable server identity: two distinct servers presenting the same
 session id and notebook path would pass the same check.
 
 The process-global change tracker is keyed by session id, so it carries the
-notebook each id's entries belong to and invalidates on identity transitions: a
-detected rotation forgets the abandoned id (in ``resolve_target`` and in
-``restart_kernel``, the latter *before* its destructive request, since a
-confirmed rotation is unsafe to reuse whether or not the restart succeeds); a
-binding statement about an id whose entries cannot be attributed to the
-notebook being bound forgets that id's entries, judged from the tracker's own
-process-wide record rather than from the calling context's previous state (a
-fresh MCP context has none). This is not atomic prevention — the census read and
+notebook each id's entries belong to and invalidates on identity transitions.
+Attribution and invalidation are **one** operation, ``adopt_notebook``: it keeps
+previously recorded fingerprints only when the recorded owner is the same
+notebook, and drops the snapshots and read baselines otherwise (unattributed
+entries and an unsaved notebook included). Every place that states which
+notebook an id serves uses it — a resolution, a repaired rotation, a bind — and
+the decision reads the tracker's own process-wide record rather than the calling
+context's previous state, which a *fresh* MCP context does not have. A detected
+rotation additionally forgets the *abandoned* id, in ``resolve_target`` and in
+``restart_kernel`` — the latter *before* its destructive request, since a
+confirmed rotation is unsafe to reuse whether or not the restart succeeds. This is not atomic prevention — the census read and
 the execute POST remain separate requests.
 """
 
@@ -419,29 +422,19 @@ async def bind_active_session(
     process-global fallback and borrow a *previous* notebook's path, so an
     explicit empty anchor states "bound, but nothing to anchor".
 
-    A binding statement about an id whose change-tracking entries cannot be
-    attributed to *this* notebook also forgets those entries (read baselines and
-    snapshots). They are keyed by id alone, and an id is not a notebook identity:
-    without this, binding a server-reused id onto another notebook would let the
-    new notebook inherit the previous one's "already read" baselines wherever a
-    cell id and code hash coincide — the substitution the path anchor exists to
-    stop (review finding 2).
-
-    The attribution comes from the tracker's own process-wide record of which
-    notebook each id served, **not** from this context's previous state: the
-    tracker is process-global while a binding is per MCP session, so a *fresh*
-    context binding a reused id has no previous path to compare (review finding
-    2a). Entries under an id with no recorded owner are unattributable and are
-    dropped too, and a rebind naming the *same* notebook keeps the caller's
-    reads.
+    Binding also states which notebook the id serves, and that statement runs
+    through the tracker's single identity-transition operation
+    (``adopt_notebook``): entries that cannot be attributed to *this* notebook —
+    a different owner, or unattributed entries — are dropped first, so binding a
+    server-reused id onto another notebook cannot let the new notebook inherit
+    the previous one's "already read" baselines wherever a cell id and code hash
+    coincide (review findings 2, 2a and the third round's re-attribution path).
+    The decision reads the tracker's own process-wide record, **not** this
+    context's previous state: the tracker is process-global while a binding is
+    per MCP session, so a *fresh* context has no previous path to compare. A
+    rebind naming the *same* notebook keeps the caller's reads.
     """
-    tracker = get_tracker()
-    known_notebook = tracker.notebook_of(session_id)
-    if known_notebook != notebook_path or (
-        known_notebook is None and tracker.has_entries(session_id)
-    ):
-        tracker.clear_session(session_id)
-    tracker.set_notebook(session_id, notebook_path)
+    get_tracker().adopt_notebook(session_id, notebook_path)
     await ctx.set_state(_SESSION_KEY, session_id)
     if server_url:
         await ctx.set_state(_SERVER_URL_KEY, server_url)
@@ -1406,7 +1399,7 @@ async def resolve_target(
                 # read baselines (review finding 2).
                 tracker = get_tracker()
                 tracker.clear_session(sid)
-                tracker.set_notebook(repaired.session_id, bound_path)
+                tracker.adopt_notebook(repaired.session_id, bound_path)
                 return TargetResolution(client=client, session=repaired, repaired=True)
         await _close_quietly(client)
         available = [{"server_url": url, "session_id": s.session_id} for s in sessions]
@@ -1486,9 +1479,11 @@ async def resolve_target(
                 )
             )
 
-    # Attribute this id to the notebook it actually serves, so a later binding
-    # of the same id can tell whether entries recorded here belong to it.
-    get_tracker().set_notebook(
+    # Bind this id's change tracking to the notebook it actually serves — one
+    # operation that invalidates when the identity changed, so a later bind of
+    # the same id cannot inherit another notebook's baselines through a
+    # re-attribution that left them behind.
+    get_tracker().adopt_notebook(
         session.session_id, session.file if isinstance(session.file, str) else ""
     )
     return TargetResolution(client=client, session=session)

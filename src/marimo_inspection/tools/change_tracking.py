@@ -192,27 +192,37 @@ class ChangeTracker:
             self._baselines.pop(session_id, None)
             self._notebooks.pop(session_id, None)
 
-    def set_notebook(self, session_id: str, notebook_path: str) -> None:
-        """Record which notebook this session id's entries belong to.
+    def adopt_notebook(self, session_id: str, notebook_path: str) -> bool:
+        """Bind this id's change tracking to ``notebook_path`` as ONE step.
 
-        Written wherever a session is resolved for a call — a bind, a read, a
-        mutation — so the next statement about the id can be checked against
-        what was actually observed, not against one MCP session's state.
+        The only supported way to state which notebook a session id serves, and
+        the only place that decides whether previously recorded fingerprints may
+        be kept. They are kept **only** when the recorded owner is the same
+        notebook; a different owner — or entries with no recorded owner — is an
+        identity transition, so both stores are invalidated before the new owner
+        is recorded.
+
+        Coupling the two is the point: an attribution write that left the old
+        fingerprints behind would re-label an id with the new notebook while
+        still holding the previous notebook's read baseline, and a later bind
+        that agrees with the new label would preserve it (review finding, third
+        round).
+
+        Returns True when the caller's earlier fingerprints were preserved.
         """
         with self._lock:
+            owner = self._notebooks.get(session_id)
+            kept = owner is not None and owner == notebook_path
+            if not kept:
+                self._snapshots.pop(session_id, None)
+                self._baselines.pop(session_id, None)
             self._notebooks[session_id] = notebook_path
+            return kept
 
     def notebook_of(self, session_id: str) -> str | None:
         """The notebook this id's entries belong to, or None when unrecorded."""
         with self._lock:
             return self._notebooks.get(session_id)
-
-    def has_entries(self, session_id: str) -> bool:
-        """True when any fingerprint (snapshot or baseline) is stored for the id."""
-        with self._lock:
-            return bool(
-                self._snapshots.get(session_id) or self._baselines.get(session_id)
-            )
 
     def has_snapshot(self, session_id: str) -> bool:
         """True when a change-detection snapshot exists for the session."""

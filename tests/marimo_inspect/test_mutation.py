@@ -219,7 +219,9 @@ async def test_edit_cell_ok_returns_post_exit_hash():
 
     instance = MagicMock(
         resolve_session=AsyncMock(
-            return_value=MagicMock(session_id="s1", basename="test.py")
+            return_value=MagicMock(
+                session_id="s1", basename="test.py", file="/repo/notebooks/test.py"
+            )
         ),
         execute=AsyncMock(side_effect=_execute),
     )
@@ -268,6 +270,7 @@ async def test_edit_cell_missing_cell_returns_error():
     )
 
     tracker = get_tracker()
+    tracker.adopt_notebook("test-session-1", "/repo/notebooks/test.py")
     tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash="h")})
     # Live hashes do not contain C1 at all.
     mock_cls = _mock_client(['{"OTHER": "h"}'])
@@ -299,6 +302,7 @@ async def test_edit_cell_reread_then_retry_proceeds():
     h3 = hashlib.sha256(b"x = 3").hexdigest()[:12]
 
     tracker = get_tracker()
+    tracker.adopt_notebook("test-session-1", "/repo/notebooks/test.py")
     tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
 
     calls = {"n": 0}
@@ -316,7 +320,11 @@ async def test_edit_cell_reread_then_retry_proceeds():
 
     instance = MagicMock(
         resolve_session=AsyncMock(
-            return_value=MagicMock(session_id="test-session-1", basename="test.py")
+            return_value=MagicMock(
+                session_id="test-session-1",
+                basename="test.py",
+                file="/repo/notebooks/test.py",
+            )
         ),
         execute=AsyncMock(side_effect=_execute),
     )
@@ -358,6 +366,7 @@ async def test_edit_cell_conflict_persists_after_reread_and_new_change():
     h3 = hashlib.sha256(b"x = 3").hexdigest()[:12]
 
     tracker = get_tracker()
+    tracker.adopt_notebook("test-session-1", "/repo/notebooks/test.py")
     tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
 
     calls = {"n": 0}
@@ -371,7 +380,11 @@ async def test_edit_cell_conflict_persists_after_reread_and_new_change():
 
     instance = MagicMock(
         resolve_session=AsyncMock(
-            return_value=MagicMock(session_id="test-session-1", basename="test.py")
+            return_value=MagicMock(
+                session_id="test-session-1",
+                basename="test.py",
+                file="/repo/notebooks/test.py",
+            )
         ),
         execute=AsyncMock(side_effect=_execute),
     )
@@ -412,6 +425,7 @@ async def test_edit_cell_refresh_error_preserves_baseline_and_warns():
     h2 = hashlib.sha256(b"x = 2").hexdigest()[:12]
 
     tracker = get_tracker()
+    tracker.adopt_notebook("test-session-1", "/repo/notebooks/test.py")
     tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash=h1)})
 
     calls = {"n": 0}
@@ -431,7 +445,11 @@ async def test_edit_cell_refresh_error_preserves_baseline_and_warns():
 
     instance = MagicMock(
         resolve_session=AsyncMock(
-            return_value=MagicMock(session_id="test-session-1", basename="test.py")
+            return_value=MagicMock(
+                session_id="test-session-1",
+                basename="test.py",
+                file="/repo/notebooks/test.py",
+            )
         ),
         execute=AsyncMock(side_effect=_execute),
     )
@@ -476,7 +494,11 @@ async def test_create_cell_warns_on_refresh_error():
 
     instance = MagicMock(
         resolve_session=AsyncMock(
-            return_value=MagicMock(session_id="test-session-1", basename="test.py")
+            return_value=MagicMock(
+                session_id="test-session-1",
+                basename="test.py",
+                file="/repo/notebooks/test.py",
+            )
         ),
         execute=AsyncMock(side_effect=_execute),
     )
@@ -503,7 +525,11 @@ def _run_client(*results):
     """
     instance = MagicMock(
         resolve_session=AsyncMock(
-            return_value=MagicMock(session_id="test-session-1", basename="test.py")
+            return_value=MagicMock(
+                session_id="test-session-1",
+                basename="test.py",
+                file="/repo/notebooks/test.py",
+            )
         ),
         execute=AsyncMock(side_effect=list(results)),
     )
@@ -1116,6 +1142,7 @@ async def test_edit_cell_conflict_guard():
     tracker = get_tracker()
     # Simulate: agent previously read cell C1 with hash "oldhash".
     # NOTE: the mocked resolve_session returns session_id "test-session-1".
+    tracker.adopt_notebook("test-session-1", "/repo/notebooks/test.py")
     tracker.record_cells("test-session-1", {"C1": CellFingerprint(code_hash="oldhash")})
 
     # Live hashes: C1 now has a different hash -> the cell changed.
@@ -1142,6 +1169,7 @@ async def test_edit_cell_ok_when_unchanged():
     )
 
     tracker = get_tracker()
+    tracker.adopt_notebook("s1", "/repo/notebooks/test.py")
     tracker.record_cells("s1", {"C1": CellFingerprint(code_hash="samehash")})
 
     calls = {"n": 0}
@@ -1162,7 +1190,9 @@ async def test_edit_cell_ok_when_unchanged():
 
     instance = MagicMock(
         resolve_session=AsyncMock(
-            return_value=MagicMock(session_id="s1", basename="test.py")
+            return_value=MagicMock(
+                session_id="s1", basename="test.py", file="/repo/notebooks/test.py"
+            )
         ),
         execute=AsyncMock(side_effect=_execute),
     )
