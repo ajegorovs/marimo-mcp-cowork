@@ -173,6 +173,82 @@ class TestResolveSession:
             assert session.session_id == "abc123"
             assert session.file == "/test.py"
 
+    async def _resolve_with(self, client, **kwargs):
+        """Drive resolve_session against a two-notebook census."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "abc123": {"path": "/test.py", "filename": "test.py"},
+            "def456": {"path": "/other.py", "filename": "other.py"},
+        }
+        with patch.object(
+            client, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_http = MagicMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+            return await client.resolve_session(**kwargs)
+
+    async def test_conflicting_file_and_session_id_refuses(self):
+        """A named file and a named id that disagree must fail closed.
+
+        Precedence without a cross-check is the native CLI's documented silent
+        wrong-target write. Naming both is an assertion that they agree; if they
+        do not, returning the id's notebook silently retargets the caller.
+        """
+        from marimo_inspection.client import MarimoClient
+
+        client = MarimoClient("http://127.0.0.1:8090")
+        with pytest.raises(ValueError) as excinfo:
+            await self._resolve_with(client, file_path="/test.py", session_id="def456")
+        message = str(excinfo.value)
+        assert "def456" in message and "/other.py" in message
+        assert "/test.py" in message
+
+    async def test_same_basename_in_another_directory_refuses(self):
+        """A name-only match must not accept a different file.
+
+        /elsewhere/test.py and the session's /test.py share a basename; only the
+        session's path is served, so accepting the pair would retarget the call.
+        """
+        from marimo_inspection.client import MarimoClient
+
+        client = MarimoClient("http://127.0.0.1:8090")
+        with pytest.raises(ValueError):
+            await self._resolve_with(
+                client, file_path="/elsewhere/test.py", session_id="abc123"
+            )
+
+    async def test_agreeing_file_and_session_id_resolves(self):
+        """An agreeing pair is still a valid, unambiguous request."""
+        from marimo_inspection.client import MarimoClient
+
+        client = MarimoClient("http://127.0.0.1:8090")
+        session = await self._resolve_with(
+            client, file_path="/test.py", session_id="abc123"
+        )
+        assert session.session_id == "abc123"
+        assert session.file == "/test.py"
+
+    async def test_agreeing_pair_by_basename_resolves(self):
+        """Agreement is judged the way file resolution already is: path or basename."""
+        from marimo_inspection.client import MarimoClient
+
+        client = MarimoClient("http://127.0.0.1:8090")
+        session = await self._resolve_with(
+            client, file_path="test.py", session_id="abc123"
+        )
+        assert session.session_id == "abc123"
+
+    async def test_unknown_session_id_with_file_still_refuses_as_not_found(self):
+        """An absent id must keep reporting absence, not a mismatch."""
+        from marimo_inspection.client import MarimoClient
+
+        client = MarimoClient("http://127.0.0.1:8090")
+        with pytest.raises(ValueError) as excinfo:
+            await self._resolve_with(client, file_path="/test.py", session_id="missing")
+        assert "not found" in str(excinfo.value)
+
     async def test_resolve_by_file_path(self):
         """Resolves session by file path."""
         from marimo_inspection.client import MarimoClient

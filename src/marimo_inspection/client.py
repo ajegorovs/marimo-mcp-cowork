@@ -39,6 +39,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Self
 
 import httpx2 as httpx
@@ -197,6 +198,22 @@ class ExecuteResult:
     status: str = ""  # "ok" | "error"
 
 
+def _names_same_notebook(session: SessionInfo, file_path: str) -> bool:
+    """Whether *session* serves *file_path*, strictly enough to be a check.
+
+    A full path must match the session's path exactly. A bare basename is
+    accepted on the name alone, matching how a file-only lookup behaves — but a
+    path is never matched on its basename, because two notebooks in different
+    directories can share one and the session serves only one of them. That is
+    the case this check exists to refuse.
+    """
+    if session.file == file_path:
+        return True
+    if str(Path(file_path).parent) in ("", "."):
+        return bool(session.basename) and session.basename == Path(file_path).name
+    return False
+
+
 class MarimoClient:
     """HTTP client for marimo's API."""
 
@@ -256,13 +273,24 @@ class MarimoClient:
             SessionInfo for the matched session.
 
         Raises:
-            ValueError: If no matching session is found.
+            ValueError: If no matching session is found, or if both selectors
+                are supplied and do not name the same notebook.
         """
         sessions = await self.list_sessions()
 
         if session_id:
             for s in sessions:
                 if s.session_id == session_id:
+                    if file_path and not _names_same_notebook(s, file_path):
+                        # Naming both is an assertion that they agree. An id and
+                        # a file that disagree are not a precedence question: the
+                        # server reuses ids across notebooks, so returning the
+                        # id's notebook here would silently retarget the caller.
+                        raise ValueError(
+                            f"session_id {session_id} serves "
+                            f"{s.file!r}, which is not the requested file "
+                            f"{file_path!r}; refusing a mismatched target pair"
+                        )
                     return s
             raise ValueError(f"Session {session_id} not found")
 

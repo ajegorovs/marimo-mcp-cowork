@@ -1,0 +1,131 @@
+{
+  "scope": "Disposable loopback native 0.25.1 SSE disconnect characterization. Diagnostic only: not canonical churn clearance, not A4 clearance.",
+  "baseline_revision": "0440d1aaa98a70c793f991b32a0e11391fe9b0bc",
+  "environment": {
+    "platform": "Windows",
+    "python": "3.12.10",
+    "marimo": "0.25.1",
+    "starlette": "1.8.0",
+    "uvicorn": "0.54.0",
+    "anyio": "4.15.1",
+    "asgi_spec_version": "2.3"
+  },
+  "question": "Why does the canonical churn probe's rotated session never settle to orphaned?",
+  "observations": [
+    {
+      "session": "initial",
+      "close_after": "kernel-ready",
+      "optimized": false,
+      "final_active": 0,
+      "orphaned": true,
+      "wait_seconds": 0.02,
+      "identity_held": true,
+      "copies_unchanged": true
+    },
+    {
+      "session": "initial",
+      "close_after": "kernel-ready",
+      "optimized": true,
+      "final_active": 0,
+      "orphaned": true,
+      "wait_seconds": 0.0,
+      "identity_held": true,
+      "copies_unchanged": true
+    },
+    {
+      "session": "second",
+      "close_after": "kernel-ready",
+      "optimized": false,
+      "final_active": 0,
+      "orphaned": true,
+      "wait_seconds": 0.0,
+      "identity_held": true,
+      "copies_unchanged": true
+    },
+    {
+      "session": "second",
+      "close_after": "heartbeat",
+      "optimized": false,
+      "final_active": 0,
+      "orphaned": true,
+      "wait_seconds": 0.0,
+      "identity_held": true,
+      "copies_unchanged": true
+    },
+    {
+      "session": "resumed",
+      "close_after": "kernel-ready",
+      "optimized": false,
+      "final_active": 1,
+      "orphaned": false,
+      "wait_seconds": 45.03,
+      "identity_held": true,
+      "copies_unchanged": true
+    },
+    {
+      "session": "resumed",
+      "close_after": "kernel-ready",
+      "optimized": true,
+      "final_active": 1,
+      "orphaned": false,
+      "wait_seconds": 45.19,
+      "identity_held": true,
+      "copies_unchanged": true
+    },
+    {
+      "session": "resumed",
+      "close_after": "heartbeat",
+      "optimized": false,
+      "final_active": 0,
+      "orphaned": true,
+      "wait_seconds": 0.0,
+      "identity_held": true,
+      "copies_unchanged": true
+    },
+    {
+      "session": "resumed",
+      "close_after": "heartbeat",
+      "optimized": true,
+      "final_active": 0,
+      "orphaned": true,
+      "wait_seconds": 0.02,
+      "identity_held": true,
+      "copies_unchanged": true
+    }
+  ],
+  "additional_runs": [
+    {
+      "case": "pair execute boot alone",
+      "active_after_boot": [
+        0,
+        0,
+        0
+      ],
+      "orphaned": true,
+      "note": "A native file-targeted execute invocation retains no consumer by itself."
+    },
+    {
+      "case": "resumed, kernel-ready, instrumented (scratch sitecustomize)",
+      "disconnect_hook_observed_for_closed_stream": false,
+      "response_finished": true,
+      "iterator_suspended_at": "marimo/_server/api/endpoints/ws/sse_handler.py:189",
+      "stream_finished": false,
+      "consumer_attached": true,
+      "remaining_task": "SSESessionHandler._heartbeat_loop"
+    },
+    {
+      "case": "resumed renders reproduced",
+      "retained_runs": 6,
+      "settled_runs": 3
+    }
+  ],
+  "finding": "Closing a resumed SSE response immediately after the replayed `kernel-ready` event leaves the consumer attached and the handler's disconnect hook unrun, so the bounded orphan wait cannot settle. Draining one `: keep-alive` event before closing lets teardown complete. The discriminator is not the rename alone: a first stream (`initial`) and a post-orphan new-id stream without a booted kernel (`second`) both tear down at `kernel-ready`.",
+  "mechanism": "`SSESessionHandler.stream()` returns only when its queue yields DISCONNECT/CLOSE; `_on_disconnect()` runs from the response generator's `finally`. With ASGI spec_version 2.3 the server may stop consuming the response while the generator is suspended at a `yield`, so `finally` never executes and the session keeps an active consumer. No product code was patched.",
+  "limits": [
+    "Why `resumed`-after-boot discriminates from `second` is not fully explained; the boot itself retains no consumer, so the remaining difference is unmeasured.",
+    "No dependency bisection: no claim about which version introduced the behavior.",
+    "Instrumentation was a scratch, opt-in `sitecustomize` that only adds observation hooks; it does not alter teardown, and it is not a product patch.",
+    "The heartbeat-drain control changes disconnect timing; it is a diagnostic control, not a substitute transport.",
+    "No live churn PASS, A4 clearance, A5 mission, migration or release is implied."
+  ]
+}

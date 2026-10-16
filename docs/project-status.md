@@ -1,10 +1,6 @@
 # Project status and work index
 
-This is the mutable index for project progress. The short dashboard-facing
-[`agenda.md`](../agenda.md) lists current gates and blockers; update both when
-an active workstream changes. Update this file—not
-`AGENTS.md`—when an agenda opens or closes, priorities change, a release moves,
-or a current-work pointer changes.
+This is the single repository work-discovery index; root [`agenda.md`](../agenda.md) is a compatibility pointer, not another tracker. Effort issues own plans, execution checkpoints, decisions and unfinished obligations. This index routes readers to those issues; evidence documents retain their measurements, not competing live plans. Update navigation here, not mutable progress in `AGENTS.md`.
 
 `AGENTS.md` is stable contributor guidance. It should contain only durable
 architecture, conventions, safety rules, and a static link to this index.
@@ -15,7 +11,9 @@ ledger.
 
 | Area | Current state | Canonical detail |
 | --- | --- | --- |
-| Native-first comparison | Evidence wave in progress: the existing 0.24.x baseline was exercised on Windows in an isolated lock-exact environment after test-harness portability repairs; the pinned 0.25.1 CLI has only a source audit, and the comparison fixture has only static oracle checks. No default interface selected | [`agenda-native-marimo-pair-convergence.md`](agenda-native-marimo-pair-convergence.md) · [`agenda.md`](../agenda.md) |
+| Native-first comparison | Owner declined A4 option (a); **A4 remains no-go** and the native path is unvalidated for unattended use. Option (b) unselected. Evidence hardening, the churn diagnosis and the wrapper-arm exposure probe are landed on PR #4's branch. | [Effort issue #5](https://github.com/ajegorovs/marimo-mcp-cowork/issues/5) · [PR #4](https://github.com/ajegorovs/marimo-mcp-cowork/pull/4) · [historical measurements](native-pair-benchmark-runbook.md) |
+| Session identity reuse | Client now refuses a mismatched file/session pair (landed). Binding-level path anchoring is the approved next slice. | [Issue #7](https://github.com/ajegorovs/marimo-mcp-cowork/issues/7) |
+| Windows baseline harness | Review findings captured; not selected for code work while #7 is the active queue | [Effort issue #6](https://github.com/ajegorovs/marimo-mcp-cowork/issues/6) · [PR #3](https://github.com/ajegorovs/marimo-mcp-cowork/pull/3) |
 | MCP upgrade roadmap | Secondary feature backlog while the native-first comparison is open. Composite cell reads and structured target refusals are implemented — including the evidence-based auth/edit-scope denial taxonomy (`edit_scope_required` / `auth_required` / `session_census_denied`, classified by a read-scope probe); `restart_kernel` is implemented; notebook-server start/stop/switch remain operator-owned | [`mcp-upgrade-roadmap.md`](mcp-upgrade-roadmap.md) |
 | Consumer findings | Round 2 fully closed — T18 resolved: server discovery is not session discovery (a launch creates no session; a `marimo run` server registers but is never discoverable, its census answering 401), on top of the browser-first recipe (marimo 0.24 edit mode without `--session-ttl`) and truthful `provenance`/`owner: "unknown"` with scoped counts | [`agenda-udv-consumer-findings.md`](agenda-udv-consumer-findings.md) |
 | Remote topology | Tailnet-only R2 (remote MCP co-located with loopback marimo) is the supported shared co-work mode; R1 (local client/MCP targeting an explicit non-loopback marimo server) is supported but not preferred. Both controlled two-machine paths prove discovery, reads, safe scratchpad execution, and structured unreachable refusals. Protected marimo is detected and refused as `auth_required`; lifecycle supervision, timeout/version policy, remote UI elements, and multi-checkout sharing remain open | [`deployment-topologies.md`](deployment-topologies.md) · [`agenda-remote-marimo-mcp.md`](agenda-remote-marimo-mcp.md) |
@@ -39,9 +37,8 @@ ledger.
 
 ## Update rules
 
-- Keep one current row per active workstream; link to the detailed agenda or
-  roadmap rather than copying its full item list.
-- Put implementation evidence and decisions in the owning agenda/roadmap.
+- Keep one navigation row per workstream; link the effort issue for current execution state and existing references for durable background.
+- Maintain effort decisions, checkpoints and remaining work in the owning issue; link durable evidence without duplicating the plan.
 - Put exact test counts only in `live-tests.md`.
 - Move completed work to the closed section; do not copy its chronology into
   `AGENTS.md`.
