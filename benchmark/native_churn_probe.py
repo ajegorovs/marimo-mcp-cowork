@@ -54,12 +54,13 @@ Method (loopback only, no installation, at most one server, no retry)
 5. Old-id refusal: RUN-ONLY there is no ``/api/sessions`` post for this; drive
    the native ``pair execute --session <OLD_A>`` with a kernel sentinel print
    and assert it is refused as stale (nonzero exit, ``success: false``, stale
-   wording) AND that the sentinel is absent from every stdout/payload channel
-   this probe captures. Only the CLI's stdout is captured here -- there is no
-   separate stderr stream in ``run_cli`` -- so absence is asserted across the
-   channels that exist (raw stdout, plus the JSON envelope's ``stdout`` and
-   ``output`` fields when present) and never over a channel that was not
-   observed.
+   wording) AND that the sentinel is absent from every channel this probe
+   captures: the raw subprocess stdout AND stderr, plus the JSON envelope's own
+   ``stdout``/``stderr``/``output`` fields when present. ``run_cli`` keeps both
+   raw streams, so a sentinel that leaked to stderr is caught, not missed.
+   Malformed or absent output is never accepted as evidence of a valid refusal,
+   and a channel the refusal does not carry is reported as unchecked rather
+   than asserted clean.
 6. File-only read: ``pair execute --file copy_a`` with no ``--session``; assert
    it resolves to the NEW id, returns tag ``COPY_A`` and ``gain == 2`` — i.e.
    it landed A's renamed kernel, not B's.
@@ -89,6 +90,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 
 import psutil
@@ -247,7 +249,14 @@ def open_session(url: str, session_id: str, file_path: Path) -> bool:
 
 def run_cli(
     url: str, *, session_id: str | None, file_path: Path | None, code: str, env: dict
-) -> tuple[int, dict | None, str]:
+) -> tuple[int, dict | None, str, str]:
+    """Run native ``pair execute``; return (returncode, payload, stdout, stderr).
+
+    Both subprocess streams are returned raw. The JSON envelope is parsed from
+    stdout when possible, but the unparsed ``stdout`` AND ``stderr`` text are
+    always kept, so a caller can scan every channel a kernel print could reach
+    (a stale refusal's leak may surface on stderr alone).
+    """
     argv = [sys.executable, "-m", "marimo", "pair", "execute", "--url", url]
     if session_id is not None:
         argv += ["--session", session_id]
@@ -261,7 +270,61 @@ def run_cli(
         payload = json.loads(result.stdout)
     except (ValueError, TypeError):
         payload = None
-    return result.returncode, payload, result.stdout
+    return result.returncode, payload, result.stdout, result.stderr
+
+
+def output_channels(
+    payload: dict | None, raw_stdout: str, raw_stderr: str
+) -> dict[str, str]:
+    """Every channel a kernel print could surface on for one CLI invocation.
+
+    Always includes the raw subprocess streams. The JSON envelope's own
+    ``stdout``/``stderr``/``output`` fields are added only when the envelope
+    actually carries them: a channel the refusal does not expose is left
+    unchecked rather than reported clean.
+    """
+    channels = {"raw_stdout": raw_stdout, "raw_stderr": raw_stderr}
+    if isinstance(payload, dict):
+        for field in ("stdout", "stderr"):
+            if payload.get(field) is not None:
+                channels[f"payload.{field}"] = str(payload[field])
+        if payload.get("output") is not None:
+            channels["payload.output"] = json.dumps(payload["output"])
+    return channels
+
+
+def verify_stale_refusal(
+    rc: int, payload: dict | None, raw_stdout: str, raw_stderr: str
+) -> dict[str, str]:
+    """Prove a stale-session refusal short-circuited, or raise AssertionError.
+
+    A valid refusal is a NONZERO exit whose envelope is a structured failure
+    (``success is False``) naming a stale session. Malformed or absent output is
+    never accepted as evidence of a valid refusal. Every captured channel -- the
+    raw stdout AND raw stderr, plus the envelope's own stdout/stderr/output
+    fields when present -- must be free of ``STALE_SENTINEL``; any channel that
+    carries it means the kernel may have run the code, which is a hard failure.
+    Returns the channel map so the caller can report what was checked.
+    """
+    if rc == 0:
+        raise AssertionError(f"stale call exited 0 (accepted): payload={payload!r}")
+    if not isinstance(payload, dict) or payload.get("success") is not False:
+        raise AssertionError(
+            "stale refusal was not a structured failure envelope: "
+            f"rc={rc} payload={payload!r}"
+        )
+    if "stale" not in str(payload.get("error")).lower():
+        raise AssertionError(
+            f"stale refusal did not name a stale session: rc={rc} payload={payload!r}"
+        )
+    channels = output_channels(payload, raw_stdout, raw_stderr)
+    leaked = sorted(name for name, blob in channels.items() if STALE_SENTINEL in blob)
+    if leaked:
+        raise AssertionError(
+            f"stale refusal leaked the sentinel {STALE_SENTINEL!r} in {leaked}: "
+            "the kernel may have run the code"
+        )
+    return channels
 
 
 def _marker_line(payload: dict) -> str | None:
@@ -308,11 +371,21 @@ READ_CODE = (
 def main() -> int:
     fixture_before = FIXTURE.read_bytes()
     server = None
+
+    def stop_server():
+        nonlocal server
+        if server is not None:
+            stop(server)
+            server = None
+
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="marimo-native-churn-",
-            dir=SCRATCH,
-        ) as directory:
+        with (
+            tempfile.TemporaryDirectory(
+                prefix="marimo-native-churn-",
+                dir=SCRATCH,
+            ) as directory,
+            ExitStack() as cleanup,
+        ):
             root = Path(directory)
             workspace = root / "ws"
             workspace.mkdir()
@@ -329,6 +402,9 @@ def main() -> int:
             env["XDG_STATE_HOME"] = str(state)
 
             server, url = start_server(workspace, env)
+            # ExitStack exits before TemporaryDirectory on every path, including
+            # Blocker/refusal failures, so Windows can release the server log.
+            cleanup.callback(stop_server)
 
             # --- Two sessions A/B on one server ---------------------------
             sid_a, sid_b = str(uuid.uuid4()), str(uuid.uuid4())
@@ -352,7 +428,7 @@ def main() -> int:
             print("CENSUS1", "A", sid_a, "B", sid_b, "count", len(census1))
 
             # --- Run A's cells so its kernel holds a re-readable tag ------
-            boot_rc, boot_payload, _ = run_cli(
+            boot_rc, boot_payload, _, _ = run_cli(
                 url, session_id=None, file_path=copy_a, code=BOOT_CODE, env=env
             )
             if boot_rc != 0 or not boot_payload or not boot_payload.get("success"):
@@ -405,7 +481,7 @@ def main() -> int:
             )
 
             # --- Old id must be REFUSED by the CLI ------------------------
-            stale_rc, stale_payload, stale_raw = run_cli(
+            stale_rc, stale_payload, stale_raw_out, stale_raw_err = run_cli(
                 url,
                 session_id=sid_a,
                 file_path=None,
@@ -422,27 +498,15 @@ def main() -> int:
                 "error",
                 repr(stale_error),
             )
-            if stale_rc == 0 or (stale_payload or {}).get("success") is not False:
-                raise AssertionError(
-                    f"stale id was ACCEPTED by execute: rc={stale_rc} "
-                    f"payload={stale_payload!r}"
-                )
-            if stale_payload is None or "stale" not in str(stale_error).lower():
-                raise AssertionError(
-                    f"stale refusal did not name a stale session: {stale_raw!r}"
-                )
-
-            # The sentinel must be absent from every stdout/payload channel
-            # this probe captures. run_cli captures the CLI's stdout only (no
-            # separate stderr stream), so the available channels are the raw
-            # stdout text and the JSON envelope's own ``stdout``/``output``
-            # fields. A channel the refusal does not carry is reported as
-            # unchecked rather than asserted clean.
-            stale_channels: dict[str, str] = {"raw_stdout": stale_raw}
-            if stale_payload.get("stdout") is not None:
-                stale_channels["payload.stdout"] = str(stale_payload["stdout"])
-            if stale_payload.get("output") is not None:
-                stale_channels["payload.output"] = json.dumps(stale_payload["output"])
+            # Nonzero exit + structured success:false + stale wording, then a
+            # sweep of EVERY captured channel -- raw stdout AND raw stderr, plus
+            # the envelope's own stdout/stderr/output when present -- for the
+            # sentinel. Malformed or absent output never counts as a valid
+            # refusal; a sentinel in any observed channel fails (the code may
+            # have run). A channel the refusal does not carry is left unchecked.
+            stale_channels = verify_stale_refusal(
+                stale_rc, stale_payload, stale_raw_out, stale_raw_err
+            )
             leaked = [
                 name for name, blob in stale_channels.items() if STALE_SENTINEL in blob
             ]
@@ -453,14 +517,9 @@ def main() -> int:
                 "sentinel_present",
                 sorted(leaked),
             )
-            if leaked:
-                raise AssertionError(
-                    f"stale refusal leaked the sentinel {STALE_SENTINEL!r} in "
-                    f"{leaked}: the kernel may have run the code"
-                )
 
             # --- File-only read after rotation must land A ----------------
-            read_rc, read_payload, _ = run_cli(
+            read_rc, read_payload, _, _ = run_cli(
                 url, session_id=None, file_path=copy_a, code=READ_CODE, env=env
             )
             if read_rc != 0 or not read_payload or not read_payload.get("success"):
@@ -497,7 +556,7 @@ def main() -> int:
 
             # Pre-run B's fixture cells, so a later old-A-id read can
             # identify B's kernel rather than relying on the census alone.
-            boot_b_rc, boot_b_payload, _ = run_cli(
+            boot_b_rc, boot_b_payload, _, _ = run_cli(
                 url, session_id=None, file_path=copy_b, code=BOOT_CODE, env=env
             )
             if (
@@ -552,7 +611,7 @@ def main() -> int:
 
             # The formerly stale ID now succeeds against B's kernel. This is
             # a read, never a retry of a mutating request.
-            cross_rc, cross_payload, _ = run_cli(
+            cross_rc, cross_payload, _, _ = run_cli(
                 url, session_id=sid_a, file_path=None, code=READ_CODE, env=env
             )
             if (
@@ -581,8 +640,7 @@ def main() -> int:
             print("NATIVE_CHURN_PROBE_PASS")
             # Stop the server before the temp tree is removed: a live marimo
             # server holds its log file open, which blocks Windows cleanup.
-            stop(server)
-            server = None
+            stop_server()
             return 0
     except Blocker as error:
         print(f"NATIVE_CHURN_PROBE_BLOCKER: {error}")
@@ -591,8 +649,7 @@ def main() -> int:
         print(f"NATIVE_CHURN_PROBE_FAIL: {error}")
         return 1
     finally:
-        if server is not None:
-            stop(server)
+        stop_server()
 
 
 if __name__ == "__main__":
