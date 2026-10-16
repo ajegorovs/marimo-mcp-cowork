@@ -25,6 +25,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from collections import deque
 from pathlib import Path
@@ -69,7 +70,7 @@ class MarimoServerManager:
         # must not reap it).
         self._owns_state_dir = True
         self._log_lines: deque[str] = deque(maxlen=500)
-        self._drain_task: asyncio.Task | None = None
+        self._drain_threads: list[threading.Thread] = []
 
     @staticmethod
     def _pick_port() -> int:
@@ -162,34 +163,29 @@ class MarimoServerManager:
             stderr=subprocess.PIPE,
             env=env,
         )
-        # Drain the pipes in the background so the server never blocks on a
-        # full pipe buffer, and so we can surface logs on failure.
-        self._drain_task = asyncio.create_task(self._drain_pipes())
+        # Drain each pipe independently. A child kernel may retain a pipe handle
+        # after the server exits, so executor readline must not block asyncio's
+        # default-executor shutdown on Windows.
+        for reader in (self.process.stdout, self.process.stderr):
+            assert reader is not None
+            thread = threading.Thread(
+                target=self._drain_pipe, args=(reader,), daemon=True
+            )
+            thread.start()
+            self._drain_threads.append(thread)
 
         self.server_url = await self._wait_until_ready(port)
         return self.server_url
 
-    async def _drain_pipes(self) -> None:
-        """Continuously read server stdout/stderr into a bounded deque."""
-        assert self.process is not None
-        loop = asyncio.get_running_loop()
+    def _drain_pipe(self, reader) -> None:
         while True:
-            for reader in (self.process.stdout, self.process.stderr):
-                if reader is None or reader.closed:
-                    continue
-                try:
-                    line = await loop.run_in_executor(None, reader.readline)
-                except (ValueError, OSError):
-                    continue
-                if not line:  # EOF on this pipe
-                    continue
-                self._log_lines.append(line.decode(errors="replace").rstrip("\n"))
-            if self.process.poll() is not None and all(
-                r is None or r.closed
-                for r in (self.process.stdout, self.process.stderr)
-            ):
+            try:
+                line = reader.readline()
+            except (ValueError, OSError):
                 break
-            await asyncio.sleep(0.05)
+            if not line:
+                break
+            self._log_lines.append(line.decode(errors="replace").rstrip("\n"))
 
     async def _wait_until_ready(self, port: int) -> str:
         """Poll /api/version until the server responds.
@@ -280,13 +276,9 @@ class MarimoServerManager:
                 self.process.kill()
                 self.process.wait(timeout=5)
             self.process = None
-        if self._drain_task:
-            self._drain_task.cancel()
-            try:
-                await self._drain_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - teardown best-effort
-                self._log_lines.append("[stop] drain task cancelled")
-            self._drain_task = None
+        for thread in self._drain_threads:
+            thread.join(timeout=0.25)
+        self._drain_threads.clear()
         # Reap the isolated XDG_STATE_HOME so a long pytest session (or CI)
         # does not accumulate one temp state dir per booted server. A
         # caller-supplied dir belongs to the caller (tmp_path) — leave it.
@@ -428,7 +420,7 @@ async def notebook_server(tmp_path):
 
     async def _boot(source: str, name: str = "notebook.py"):
         notebook = tmp_path / name
-        notebook.write_text(source)
+        notebook.write_text(source, newline="")
         manager = MarimoServerManager()
         await manager.start(str(notebook))
         await manager.create_session()
@@ -488,7 +480,7 @@ async def bare_server(tmp_path):
         auth: bool = False,
     ) -> MarimoServerManager:
         notebook = tmp_path / name
-        notebook.write_text(source)
+        notebook.write_text(source, newline="")
         manager = MarimoServerManager()
         await manager.start(str(notebook), mode=mode, state_dir=state_dir, auth=auth)
         managers.append(manager)

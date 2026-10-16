@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 
@@ -60,10 +61,12 @@ def _():
 
 def _registry_entries(state_dir: Path) -> list[dict]:
     """Parse the marimo server registry written under an isolated state dir."""
-    return [
-        json.loads(path.read_text())
-        for path in sorted((state_dir / "marimo" / "servers").glob("*.json"))
-    ]
+    registry = (
+        state_dir / ".marimo" / "servers"
+        if os.name == "nt"
+        else state_dir / "marimo" / "servers"
+    )
+    return [json.loads(path.read_text()) for path in sorted(registry.glob("*.json"))]
 
 
 async def _wait_for_registry_entries(
@@ -133,6 +136,8 @@ async def test_fresh_edit_server_is_discoverable_with_zero_sessions(
 
     state_dir = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(state_dir))
     manager = await bare_server(DISCOVERY_NOTEBOOK, mode="edit", state_dir=state_dir)
     server_url = manager.server_url
 
@@ -196,6 +201,8 @@ async def test_run_mode_server_is_registered_but_not_discoverable(
 
     state_dir = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(state_dir))
     manager = await bare_server(DISCOVERY_NOTEBOOK, mode="run", state_dir=state_dir)
     server_url = manager.server_url
 
@@ -266,6 +273,8 @@ async def test_run_mode_denial_is_classified_edit_scope_required(
 
     state_dir = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(state_dir))
     manager = await bare_server(DISCOVERY_NOTEBOOK, mode="run", state_dir=state_dir)
     server_url = manager.server_url
 

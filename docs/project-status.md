@@ -1,6 +1,8 @@
 # Project status and work index
 
-This is the mutable index for project progress. Update this file—not
+This is the mutable index for project progress. The short dashboard-facing
+[`agenda.md`](../agenda.md) lists current gates and blockers; update both when
+an active workstream changes. Update this file—not
 `AGENTS.md`—when an agenda opens or closes, priorities change, a release moves,
 or a current-work pointer changes.
 
@@ -13,7 +15,8 @@ ledger.
 
 | Area | Current state | Canonical detail |
 | --- | --- | --- |
-| MCP upgrade roadmap | Composite cell reads and structured target refusals are implemented — including the evidence-based auth/edit-scope denial taxonomy (`edit_scope_required` / `auth_required` / `session_census_denied`, classified by a read-scope probe); `restart_kernel` is implemented; notebook-server start/stop/switch remain operator-owned | [`mcp-upgrade-roadmap.md`](mcp-upgrade-roadmap.md) |
+| Native-first comparison | Evidence wave in progress: the existing 0.24.x baseline was exercised on Windows in an isolated lock-exact environment after test-harness portability repairs; the pinned 0.25.1 CLI has only a source audit, and the comparison fixture has only static oracle checks. No default interface selected | [`agenda-native-marimo-pair-convergence.md`](agenda-native-marimo-pair-convergence.md) · [`agenda.md`](../agenda.md) |
+| MCP upgrade roadmap | Secondary feature backlog while the native-first comparison is open. Composite cell reads and structured target refusals are implemented — including the evidence-based auth/edit-scope denial taxonomy (`edit_scope_required` / `auth_required` / `session_census_denied`, classified by a read-scope probe); `restart_kernel` is implemented; notebook-server start/stop/switch remain operator-owned | [`mcp-upgrade-roadmap.md`](mcp-upgrade-roadmap.md) |
 | Consumer findings | Round 2 fully closed — T18 resolved: server discovery is not session discovery (a launch creates no session; a `marimo run` server registers but is never discoverable, its census answering 401), on top of the browser-first recipe (marimo 0.24 edit mode without `--session-ttl`) and truthful `provenance`/`owner: "unknown"` with scoped counts | [`agenda-udv-consumer-findings.md`](agenda-udv-consumer-findings.md) |
 | Remote topology | Tailnet-only R2 (remote MCP co-located with loopback marimo) is the supported shared co-work mode; R1 (local client/MCP targeting an explicit non-loopback marimo server) is supported but not preferred. Both controlled two-machine paths prove discovery, reads, safe scratchpad execution, and structured unreachable refusals. Protected marimo is detected and refused as `auth_required`; lifecycle supervision, timeout/version policy, remote UI elements, and multi-checkout sharing remain open | [`deployment-topologies.md`](deployment-topologies.md) · [`agenda-remote-marimo-mcp.md`](agenda-remote-marimo-mcp.md) |
 | Live tests | Current commands, mechanics, and exact counts | [`live-tests.md`](live-tests.md) |

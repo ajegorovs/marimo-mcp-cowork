@@ -1,10 +1,11 @@
 # Agenda (open issue): native-first marimo convergence — core `marimo pair` vs the MCP wrapper
 
-> **Status:** **Planning complete; execution gated — this document records a plan
-> and its reasoning, not results.** Tasks 1–3 are plan-ready as a bounded evidence
-> wave; Tasks 4–6 are separately gated. No experiment, install, notebook server,
-> migration or dependency change has been executed, and **no repository-future
-> outcome is selected in advance.**
+> **Status:** **Evidence wave in progress; no interface decision.** Task 1's
+> Windows baseline ran in an isolated locked environment after test-harness
+> portability repairs; the comparison fixture passed only static checks, and the
+> pinned native CLI received a source audit but has not been installed or
+> exercised. Tasks 4–6 remain separately gated. See the short
+> [current agenda](../agenda.md) for the next gate and blockers.
 > **Created:** 2026-10-05
 > **Related:** [project-status.md](project-status.md) ·
 > [marimo-version-support.md](marimo-version-support.md) ·
@@ -294,16 +295,21 @@ no repository rename, no wholesale client extraction, no service deployment.
 
 ## Next execution gate
 
-Tasks 1–3 are plan-ready with the reviewer's native-stack amendment incorporated.
-Remain planning-only until execution is explicitly instructed. After the evidence
-wave, review results before remote work or product implementation; **no
-repository-future outcome is selected in advance.**
+The Windows 0.24.x baseline is now exercised, but native arm B has only a
+source-grounded CLI contract. Next, validate an isolated 0.25.1 CLI install and
+its `help(cm)` path, review the external grader's runtime and saved-artifact
+checks, then run a bounded A4 comparison on disposable loopback notebooks.
+Do not use a green static fixture check as a live/durability result. Review the
+evidence before remote work or product implementation; **no repository-future
+outcome is selected in advance.**
 
 ## Standing notes carried from planning
 
-- The planning pass was **read-only**: no tests were re-executed, no environment was
-  changed. Historical ledger claims are not new verification (Task 1 re-establishes
-  the baseline).
+- The original planning pass was **read-only**; its historical ledger claims
+  were not new verification. Subsequent Windows baseline work exercised the
+  locked 0.24.x environment in bounded file groups after test-harness fixes.
+  This is **not** a single all-live invocation or a 0.25.x compatibility result;
+  platform-scoped counts belong in [live-tests.md](live-tests.md).
 - **Release staleness is separate from unpushed work.** A release tag marks the last
   release, not the head of `main`; a large gap between them is expected during
   development and is not itself a defect.

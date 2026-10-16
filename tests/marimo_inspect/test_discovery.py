@@ -388,6 +388,7 @@ class TestGetRegistryDir:
         path = _get_registry_dir()
         assert path.is_absolute()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX registry contract")
     @patch.dict(os.environ, {"XDG_STATE_HOME": "/tmp/xdg-test"}, clear=False)
     def test_posix_uses_xdg_state_home(self):
         """POSIX honors XDG_STATE_HOME."""
@@ -396,6 +397,7 @@ class TestGetRegistryDir:
         path = _get_registry_dir()
         assert path == Path("/tmp/xdg-test/marimo/servers")
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX registry contract")
     @patch.dict(os.environ, {}, clear=True)
     def test_posix_defaults_to_local_state(self):
         """POSIX without XDG_STATE_HOME defaults to ~/.local/state."""
