@@ -848,6 +848,40 @@ and a path deleted-and-recreated as a different notebook is untested, as stated
 in the packaged reference. These counts come from one isolated environment, not
 a version matrix.
 
+## Integration checkpoint — merged `main` (Windows, 2026-10-16)
+
+The stack #3 → #4 → #8 was integrated in order (merge commits `24fedd6`, `8820b8e`,
+`9776f60`). Each merge was verified on the merged tree before pushing; the counts
+below are the measured state of `main` at `9776f60` on this checkout
+(`core.autocrlf=true`), in the same isolated lock-exact environment:
+
+```text
+pytest -m "not live"                       => 737 passed, 6 skipped, 88 deselected
+ruff check / ruff format --check           => clean
+marimo check notebooks examples            => clean (exit 0)
+pytest tests/marimo_inspect/live/ -m live  => 85 passed, 3 failed  (4m45s)
+```
+
+**The three live failures are pre-existing at `8820b8e` — they are not a merge
+regression.** They come from PR #4's benchmark probes and fail identically without
+#8's commits (re-measured at `8820b8e`: same three names, same assertion), and the
+counts recorded for #8's branch (`88 passed`) were measured on the branch's own
+tree.
+
+| Test | Failure |
+| --- | --- |
+| `test_benchmark_fixture.py::test_clean_fixture_executes_and_slider_reacts` | `assert copy.read_bytes() == original` — the copy is written from `FIXTURE.read_text()` (newline-normalised, LF) while `original` is the working-tree bytes, which git checks out with CRLF under `core.autocrlf=true` |
+| `test_benchmark_cycle_probe.py::test_wrapper_cycle_creation_is_atomic_on_disposable_fixture` | same byte comparison across the text round-trip |
+| `test_benchmark_timeout_probe.py::test_wrapper_run_cell_timeout_is_not_proof_of_non_execution` | same |
+
+So the assertion compares bytes across a text round-trip and is therefore
+line-ending dependent: it holds where the working tree is LF (Linux/macOS, or
+`core.autocrlf=false`) and fails on a Windows checkout that normalises on
+checkout. The fix belongs with those tests' owner (PR #4 / issue #5): write the
+copy byte-exactly, or compare against the same round-tripped text it handed over —
+not inside a merge. Recorded here so a fresh session does not mistake it for a
+regression, and so the live tier's green claim is read together with this row.
+
 ## Related docs
 
 - `docs/live-test-redesign-plan.md` — the redesign plan that made this green
