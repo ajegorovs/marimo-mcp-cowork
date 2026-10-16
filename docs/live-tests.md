@@ -649,6 +649,21 @@ On Windows marimo uses `%USERPROFILE%/.marimo/servers`, not
 `XDG_STATE_HOME`. Byte-identical notebook copies use text writes with
 `newline=""` to preserve committed CRLF bytes.
 
+## Evidence-hardening check (2026-10-16; Windows)
+
+On the comparison branch after planning revision `3a26352`, the isolated Python
+3.12.10 baseline environment was rebuilt from `uv export --locked --all-extras
+--no-emit-project` and installed with uv outside the checkout. With `PYTHONPATH`
+pointing at this checkout's `src`, `python -m pytest -m "not live" -q` returned
+**672 passed, 6 skipped, 82 deselected** (49.90 s). The added stale-verdict and
+churn-channel tests are kernel-free; their focused group returned **24 passed**
+both normally and under `python -O` (the optimized pytest run emitted its expected
+assertion-optimization warning). No wrapper live suite rerun is claimed here.
+
+Native 0.25.1 standalone probe results and their live-rerun blocker are recorded
+in the [benchmark runbook](native-pair-benchmark-runbook.md#evidence-hardening-rerun-2026-10-16).
+These results do not replace the historical baseline or establish A4 clearance.
+
 ## Current status (verified 2026-09-20)
 
 **The live suite is green.** On this tree the two tiers pin the same collection

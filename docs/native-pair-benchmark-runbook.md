@@ -69,6 +69,37 @@ This check protects **only the guarded code-mode operation in that command**, no
 
 The owner approved evaluating the single-selector adapter; its stable-session mismatch gate passed, but the observed ID reuse leaves the larger fail-closed target contract unresolved. Do not lift A5 for this partial mitigation. A future binding/churn design needs separate owner review and a verified no-wrong-write gate. No product or upstream CLI change is authorized by this experiment.
 
+## Evidence-hardening rerun (2026-10-16)
+
+The stale probe now uses always-on setup/verdict checks and rejects non-JSON CLI
+stdout rather than synthesizing a structured refusal. Real disposable runs in a
+fresh isolated Python 3.12.10 / marimo 0.25.1 environment passed both
+`python benchmark/native_stale_probe.py` and
+`python -O benchmark/native_stale_probe.py`: exit 1 / `success=false` for the
+attempted edit, `StaleCellError` present, generic `KeyError` absent, then
+`NATIVE_STALE_PROBE_PASS` after live/disk/canonical integrity checks.
+
+Churn capture now retains raw subprocess stderr as well as stdout, and checks
+both plus carried payload stdout/stderr/output for the sentinel while preserving
+structured stale-refusal requirements. Kernel-free regressions pass, but **both
+normal and optimized real churn reruns were blocked before reaching that check**:
+rotation did not settle to orphaned within the bounded wait. The first attempts also exposed cleanup running before server teardown on
+exception, so a locked marimo log raised Windows `PermissionError`, masking the
+structured blocker. A kernel-free failure-path regression reproduced that ordering;
+cleanup now stops the server before removing the temporary tree on failure as
+well as success. The post-fix normal rerun returned exit 3 with
+`NATIVE_CHURN_PROBE_BLOCKER: rotation did not settle to orphaned`, without the
+cleanup traceback.
+No new `NATIVE_CHURN_PROBE_PASS` or successful live channel-validation result is
+claimed. Historical churn observations above remain historical; this rerun does
+not invalidate them or establish a product regression's cause.
+
+The fresh native environment pinned marimo 0.25.1, numpy 2.5.3 and matplotlib
+3.11.1; transitive dependencies were newly resolved, not proven identical to the
+historical environment. The checkout environment, lock and committed fixture were
+not changed. Suite counts belong in [live-tests.md](live-tests.md); current work
+and the blocked rerun's next action belong in issue #5. A4/A5 are not cleared.
+
 ## Review contract
 
 Keep this page to historical measurements, their limits and reproduction instructions; maintain current execution state in issue #5. Put raw private transcripts under ignored scratch storage and publish only sanitized, reproducible evidence in the PR. The root agenda is only a compatibility pointer to the work index. No dependency upgrade, migration, release, or merge is implied by this draft.
