@@ -285,9 +285,14 @@ The read-before-edit guard and the change-detection snapshot are keyed by
 notebook. So the tracker also records *which notebook* each id's entries belong
 to, and invalidates on every identity transition:
 
-- a binding statement about an id whose entries cannot be attributed to the
-  notebook being bound forgets that id's entries (an unsaved notebook included).
-  The decision uses the tracker's own process-wide record, **not** the calling
+- stating which notebook an id serves is **one** operation (`adopt_notebook`),
+  used by a bind and by every resolution, and it keeps previously recorded
+  fingerprints only when the recorded owner is the same notebook. Otherwise —
+  a different notebook, or entries with no recorded owner — the snapshots and
+  read baselines are dropped first, so re-attributing an id can never leave
+  another notebook's baseline behind. An unsaved notebook counts as a different
+  identity;
+- the decision uses the tracker's own process-wide record, **not** the calling
   context's previous state — the tracker is process-global while a binding is per
   MCP session, so a *fresh* context binding a reused id has no previous path and
   must still invalidate;

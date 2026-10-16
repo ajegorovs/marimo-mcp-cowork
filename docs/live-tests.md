@@ -803,11 +803,20 @@ Coverage:
   recording the path, state/fallback isolation and the empty-anchor rule, the
   rotation repair, reuse refusal, explicit-target pass-through, the
   restated-bound-id and URL-alias routes, and the reported path for every
-  mutation handler. The tracker-invalidation rules are covered including the
-  second review round: a *fresh* MCP context binding a server-reused id still
-  invalidates (the decision comes from the tracker's own record of which
-  notebook an id serves, not from the context's previous state), which reaches
-  `edit_cell` as a fresh `needs_read`.
+  mutation handler. The tracker-invalidation rules are covered across the review
+  rounds: a *fresh* MCP context binding a server-reused id still invalidates (the
+  decision comes from the tracker's own record of which notebook an id serves,
+  not from the context's previous state), a resolution that re-attributes an id
+  to another notebook drops the previous baseline instead of relabelling it
+  (including a replacement id that already carried another notebook's
+  fingerprints), and the end-to-end sequence — read A, id reused for B, explicit
+  `get_cell_map` of B, fresh-context bind onto B — reaches `edit_cell` as a fresh
+  `needs_read` with nothing dispatched. Agreeing resolutions keep the caller's
+  reads.
+  reads. Seven pre-existing tracker tests seeded fingerprints that production
+  never records — entries with no recorded owner, and mocked sessions reporting
+  no notebook file — so they now seed the way production does (adopt, then
+  record, with a session that names its notebook).
 - `TestRestartKernelNotebookAnchoring` in `test_lifecycle.py`, plus the
   repaired-restart tracker invalidation case.
 - Live anchored readbacks in `live/test_mutation.py` and `live/test_restart.py`.
@@ -826,7 +835,7 @@ Measured on this checkout with an isolated lock-exact environment (marimo
 0.24.0, fastmcp 4.0.3, pytest 9.1.1), `python -m pytest`:
 
 ```text
--m "not live"                             => 732 passed, 6 skipped, 88 deselected
+-m "not live"                             => 736 passed, 6 skipped, 88 deselected
 tests/marimo_inspect/live/ -m live        => 88 passed
 ```
 
