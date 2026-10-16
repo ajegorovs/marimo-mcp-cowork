@@ -44,7 +44,7 @@
       "committed_fixture_unchanged": true
     }
   },
-  "reproductions": 2,
+  "reproductions": 4,
   "finding": "On one server, an id that a caller correctly recorded as notebook A silently became B: resolve_session returned B's path without raising, execute returned status ok while reading B's kernel, and a live cell creation issued with that id landed in B and persisted to B's file on disk. The caller's intended notebook was untouched and still reachable under its rotated id, so nothing in the responses signals the substitution. Our tool surface accepts only session_id (no file selector), so the native CLI's combined-selector form is untriggerable here -- but the reuse hazard is not; the wrapper's only defence is that an id is unknown, which reuse defeats.",
   "why_input_validation_cannot_close_it": "The request is not malformed and the id was correct when recorded; the server reassigned it afterwards. A boundary validator at the MCP layer sees a well-formed id for an existing session. Cross-server wrong-session refusal is verified separately and still holds; same-server reuse is what defeats it.",
   "limits": [
@@ -53,5 +53,28 @@
     "Reads and the write step were driven through MarimoClient directly, not through a live FastMCP client session, so this proves the client/transport layer and the tool resolver's shared view, not an end-to-end MCP wire trace.",
     "No product fix is proposed as implemented; no scope for one is granted here.",
     "A4 remains no-go and A5 held."
-  ]
+  ],
+  "mitigation_candidate": {
+    "candidate": "Re-resolve the notebook by filesystem path at call time instead of trusting a recorded session id.",
+    "observation": {
+      "resolve_by_path_returned_basename": "wrapper_churn_a.py",
+      "matched_callers_intended_notebook": true,
+      "returned_id_differs_from_recorded_id": true,
+      "read_reached": "WRAPPER_CHURN_COPY_A",
+      "write_status": "ok",
+      "disk_change_landed_in_intended_notebook": true,
+      "disk_change_landed_in_other_notebook": false
+    },
+    "attribution_assertions": {
+      "stale_id_write_touched_intended_notebook": false,
+      "path_anchored_write_touched_other_notebook": false,
+      "committed_fixture_unchanged": true
+    },
+    "conclusion": "Anchoring on the notebook path removed the observed failure mode in this sequence; anchoring on a recorded id did not. The census maps each path to its current id, so a rotation displaces the id the caller recorded but not the path it intended.",
+    "residual_limits": [
+      "The census read and the execute POST remain separate requests, so a rebind inside that gap is still unaddressed; path anchoring narrows and largely avoids the observed case, it is not atomic prevention.",
+      "A path is assumed not to be deleted and recreated as a different notebook; that case is untested.",
+      "Only the observable sequence was exercised; no adversarial concurrency was attempted."
+    ]
+  }
 }

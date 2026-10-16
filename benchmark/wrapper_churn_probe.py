@@ -406,6 +406,7 @@ async def run() -> int:
             b_before_cells = json.loads(before_line)[1] if before_line else None
             b_after_cells = json.loads(after_line)[1] if after_line else None
             b_after_write = copy_b.read_bytes()
+            a_after_stale_write = copy_a.read_bytes()
             print(
                 "WRITE_BY_STALE_ID",
                 "status",
@@ -423,25 +424,81 @@ async def run() -> int:
                 "copy_b_changed_on_disk_by_this_write",
                 b_after_write != b_before_write,
                 "copy_a_changed_on_disk_by_this_write",
-                copy_a.read_bytes() != a_before_write,
+                a_after_stale_write != a_before_write,
+            )
+
+            # --- Mitigation candidate: anchor on the notebook path ---------
+            # The census maps each notebook's *current* id, so re-resolving the
+            # caller's intended notebook by path at call time cannot be
+            # displaced by a rotated id the way a recorded id can.
+            path_resolved = await client.resolve_session(file_path=str(copy_a))
+            print(
+                "RESOLVE_BY_PATH",
+                "resolved_basename",
+                path_resolved.basename,
+                "caller_intended_basename",
+                copy_a.name,
+                "differs_from_recorded_id",
+                path_resolved.session_id != sid_a,
+            )
+            a_before_path_write = copy_a.read_bytes()
+            b_before_path_write = copy_b.read_bytes()
+            path_read, path_read_error = await try_execute(
+                client, path_resolved.session_id, READ_CODE
+            )
+            path_line = marker_line(path_read) if path_read else None
+            path_tag = json.loads(path_line)[0] if path_line else None
+            path_write, path_write_error = await try_execute(
+                client, path_resolved.session_id, WRITE_CODE
+            )
+            a_after_path_write = copy_a.read_bytes()
+            b_after_path_write = copy_b.read_bytes()
+            print(
+                "PATH_ANCHORED_CALL",
+                "read_status",
+                path_read.status if path_read else None,
+                "read_error",
+                path_read_error,
+                "read_tag_reached",
+                path_tag,
+                "intended_tag",
+                TAG_A,
+                "write_status",
+                path_write.status if path_write else None,
+                "write_error",
+                path_write_error,
+                "copy_a_changed_on_disk_by_this_write",
+                a_after_path_write != a_before_path_write,
+                "copy_b_changed_on_disk_by_this_write",
+                b_after_path_write != b_before_path_write,
             )
 
             # --- Integrity contract --------------------------------------
-            # This probe deliberately writes, so the caller's *intended*
-            # notebook and the committed fixture must be untouched; a change to
-            # copy_b is the measured harm, reported above, not a probe failure.
-            if copy_a.read_bytes() != a_before:
-                raise AssertionError("caller's intended notebook changed on disk")
+            # This probe deliberately writes twice, so each write's on-disk
+            # effect is attributed rather than both copies asserted frozen.
             if FIXTURE.read_bytes() != fixture_before:
                 raise AssertionError("committed fixture changed")
-            print("INTENDED_NOTEBOOK_UNCHANGED True")
+            if copy_a.read_bytes() != a_after_path_write:
+                raise AssertionError("copy_a changed after its attributed write")
+            if copy_b.read_bytes() != b_after_path_write:
+                raise AssertionError("copy_b changed after its attributed write")
+            if a_after_stale_write != a_before:
+                raise AssertionError("stale-id write touched the intended notebook")
+            if b_after_path_write != b_before_path_write:
+                raise AssertionError("path-anchored write touched copy_b")
+            print("ATTRIBUTION intended_notebook_touched_by_stale_id_write", False)
+            print("ATTRIBUTION copy_b_touched_by_path_anchored_write", False)
             print("FIXTURE_UNCHANGED True")
             print(
                 "WRAPPER_CHURN_VERDICT exposition-characterization-not-a-fix",
-                "wrong_target_reached",
+                "recorded_id_reached_wrong_notebook",
                 read_tag == TAG_B,
-                "wrong_target_disk_change",
+                "recorded_id_disk_change_in_wrong_notebook",
                 b_after_write != b_before_write,
+                "path_anchor_reached_intended_notebook",
+                path_tag == TAG_A,
+                "path_anchor_disk_change_in_intended_notebook",
+                a_after_path_write != a_before_path_write,
             )
             print("WRAPPER_CHURN_PROBE_PASS")
             return 0
