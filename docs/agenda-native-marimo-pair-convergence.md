@@ -90,6 +90,77 @@ No lifecycle MCP tools, no multi-cell transaction wrapper, no richer output API,
 binding expansion, no auto-discovery of remote endpoints, no blanket 0.25 migration,
 no repository rename, no wholesale client extraction, no service deployment.
 
+## Target binding — feasibility of a server-enforced precondition
+
+**Question the A4 gate must answer:** can the pinned server be made to refuse a
+mutation whose resolved session is not the notebook the caller named, atomically
+with the mutation itself?
+
+Source inspection of the pinned environment (marimo **0.25.1**, Windows):
+
+- Routing is by the mutable `Marimo-Session-Id` request header alone.
+  `AppState.get_current_session_id()` reads that header and
+  `require_current_session()` looks the session up by it
+  (`_server/api/deps.py:135-160`). No file, path or identity parameter exists on
+  the lookup.
+- `/api/kernel/execute` therefore resolves its session from that header and
+  queues `ExecuteScratchpadCommand`; the request body carries only `code`
+  (`_server/api/endpoints/execution.py:310-413`). There is no field the caller
+  could use to assert which notebook it believes it is addressing.
+- Session IDs are mutable by design. `SessionRepository.update_session_id_sync`
+  moves the *same* session object to a new key and deletes the old
+  (`_session/session_repository.py:152-167`), and `maybe_resume_session(new_id,
+  file_key)` attaches an existing file's session to a **caller-supplied** id
+  (`_server/session_manager.py:508-521`). That is the mechanism by which a stale
+  id later denotes a different notebook.
+- The session object *does* carry a durable file identity: `app_file_manager.path`
+  (absolute path) and `initialization_id` (the file key it was created under),
+  compared together in `get_all_by_file_key`
+  (`_session/session_repository.py:62-81`).
+
+**Conclusion:** the identity data a precondition needs is present in the same
+handler that resolves the session, but nothing in the pinned wire contract lets a
+caller state what it expects. A server-enforced atomic precondition therefore
+requires an upstream change; it cannot be built in this package without one. The
+wrapper is unaffected by this gap — it addresses a server by URL and a session by
+id and refuses an unknown session (`session_not_found`) — but it also has no file
+selector, so it is not a drop-in substitute for the native file-targeting path.
+
+### Proposed upstream contract (proposal only — not implemented, not authorized)
+
+Add one optional request field or header carrying the caller's expected notebook
+identity, and have the executing handler compare it against the resolved session's
+`app_file_manager.path` **before** queueing the command, refusing with a typed
+error when they differ. Refusing on mismatch, not merely reporting it afterwards,
+is what makes it prevention rather than detection. An epoch or generation counter
+on the session, bumped by every id rebinding, would additionally close the case
+where the same path is reopened as a different session.
+
+### Falsifying test for that contract
+
+The contract is only real if a test can go red. On one loopback server holding
+disposable copies A and B: rotate A's id (open a new `/sse` for A's file under a
+new id), present the stale A id together with B's file, then attempt a mutating
+execute that asserts A — and require a typed refusal with **both** copies and the
+committed fixture byte-identical afterwards. The current benchmark already
+demonstrates the setup half: the stale id is accepted for B's orphaned kernel and
+a read by it reaches B (`benchmark/native_churn_probe.py`,
+`benchmark/evidence/native_sse_disconnect_20261016.json` for the disconnect
+behaviour that gates the rotation step). What is missing is a wire field to assert
+against, so the test cannot yet be written to fail for the right reason.
+
+### Alternative if that change is not pursued
+
+An owner-approved **restricted** comparison: one server, one session per arm, no id
+reuse, with the adapter as the sole caller. That measures interface and version
+differences honestly but explicitly stops grading the shipped CLI's unconstrained
+targeting, so any A5 result could not be cited as evidence about the native CLI's
+safety. The trade-off must be recorded in the decision, not implied.
+
+Implementing the contract, or adopting the restricted scope, needs its own
+authorization. This section is feasibility evidence and a proposal, not a selected
+implementation.
+
 ## Standing notes carried from planning
 
 - The original planning pass was **read-only**; its historical ledger claims
