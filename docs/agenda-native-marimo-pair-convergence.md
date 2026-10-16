@@ -122,9 +122,23 @@ Source inspection of the pinned environment (marimo **0.25.1**, Windows):
 handler that resolves the session, but nothing in the pinned wire contract lets a
 caller state what it expects. A server-enforced atomic precondition therefore
 requires an upstream change; it cannot be built in this package without one. The
-wrapper is unaffected by this gap — it addresses a server by URL and a session by
-id and refuses an unknown session (`session_not_found`) — but it also has no file
-selector, so it is not a drop-in substitute for the native file-targeting path.
+wrapper escapes the *combined-selector* form only: no MCP tool accepts a file and a
+session together, so `--file B --session A` has no equivalent input on that surface,
+and an unknown session is refused (`session_not_found`). It does **not** escape the
+reuse hazard. Its tools resolve an id from a session census and then execute with
+that id, so a rebind in the gap lands on the wrong notebook just as it does natively;
+the wrapper's only defence is that the id is unknown, which is exactly what reuse
+defeats. `MarimoClient.resolve_session(file_path, session_id)` additionally gives
+`session_id` precedence and ignores `file_path` when both are supplied
+(`src/marimo_inspection/client.py:263-283`) — the same precedence-without-cross-check
+shape as the CLI, latent because no current tool exposes both. Input validation
+cannot close the gap at either layer: nothing about the request is invalid, because
+the id was correct when the caller recorded it and the server reassigned it
+afterwards. Only the server can compare atomically with the write.
+
+Cross-server wrong-session refusal was verified for the wrapper; the **same-server
+reuse case has not been tested on the wrapper arm**, which is a bounded probe
+available without any upstream or product change.
 
 ### Proposed upstream contract (proposal only — not implemented, not authorized)
 
