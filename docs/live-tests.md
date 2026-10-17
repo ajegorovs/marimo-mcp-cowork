@@ -882,6 +882,39 @@ copy byte-exactly, or compare against the same round-tripped text it handed over
 not inside a merge. Recorded here so a fresh session does not mistake it for a
 regression, and so the live tier's green claim is read together with this row.
 
+## Byte-exact benchmark setup correction — Windows, 2026-10-17
+
+Issue #5 selected a harness correction, retaining all benchmark probes in the
+standing live gate. `notebook_server` now accepts `str | bytes`: bytes use
+`write_bytes()`, while existing text callers retain `write_text(newline="")`.
+The fixture, cycle and timeout probes pass `FIXTURE.read_bytes()`; their
+behavioral and disk-integrity assertions are unchanged. No production code,
+dependencies, fixture contents, version or release tag changed.
+
+`test_notebook_server_factory.py` verifies LF and CRLF byte inputs through real
+server boots, preserves existing text behavior, and checks a byte-identical copy
+of the committed benchmark fixture. Initial test scaffolding used an ordinary
+Python script, which marimo correctly refused; the regression uses a valid
+minimal marimo document. This setup failure is not evidence against the fix.
+
+Author-run verification on Windows with `core.autocrlf=true`, Python 3.12,
+marimo 0.24.0 and the isolated lock-exact environment (not a platform matrix):
+
+```text
+Affected benchmark probes (fixture/cycle/error/timeout) => 6 passed
+Factory contract tests                                => 3 passed
+Complete live suite                                   => 91 passed (344.07s)
+Non-live suite                                        => 737 passed, 6 skipped, 91 deselected
+ruff check . / ruff format --check src tests            => clean
+marimo check notebooks examples / git diff --check     => clean
+```
+
+The complete suite was rerun after restoring the out-of-scope error-probe edit;
+that probe remains unchanged. The historical integration failures above remain
+provenance, not the state of this corrected branch. Merge awaits review; release
+selection and final merged-tree validation remain separate decisions. A4 stays
+no-go.
+
 ## Related docs
 
 - `docs/live-test-redesign-plan.md` — the redesign plan that made this green

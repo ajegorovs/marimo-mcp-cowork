@@ -36,7 +36,7 @@ async def test_clean_fixture_executes_and_slider_reacts(notebook_server):
     """Prove real-kernel behaviour without claiming the mission was completed."""
     original = FIXTURE.read_bytes()
     _manager, server_url, session_id, copy = await notebook_server(
-        FIXTURE.read_text(encoding="utf-8"), name=FIXTURE.name
+        FIXTURE.read_bytes(), name=FIXTURE.name
     )
     assert copy.read_bytes() == original
     await _assert_bound(server_url, session_id, copy)
@@ -61,7 +61,7 @@ async def test_wrapper_metric_survives_a_fresh_server(notebook_server):
     """Separate runtime result from actual saved-file/fresh-kernel evidence."""
     original = FIXTURE.read_bytes()
     manager, server_url, session_id, copy = await notebook_server(
-        FIXTURE.read_text(encoding="utf-8"), name="mission_saved.py"
+        FIXTURE.read_bytes(), name="mission_saved.py"
     )
     await _assert_bound(server_url, session_id, copy)
     assert manager.process is not None
@@ -118,7 +118,7 @@ async def test_wrapper_a4_missing_target_and_duplicate_are_atomic(notebook_serve
     """A refusal must neither claim a write nor alter the bound copy."""
     original = FIXTURE.read_bytes()
     _manager, url, sid, copy = await notebook_server(
-        FIXTURE.read_text(encoding="utf-8"), name="mission_a4_wrapper.py"
+        FIXTURE.read_bytes(), name="mission_a4_wrapper.py"
     )
     await _assert_bound(url, sid, copy)
     boot = await run_cell(mode="all", session_id=sid, server_url=url)
