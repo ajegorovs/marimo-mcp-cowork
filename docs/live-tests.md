@@ -936,6 +936,41 @@ GitHub CI is configured. Optional CRLF string-input coverage is deferred until
 the factory's text contract next changes; LF and CRLF byte inputs are covered.
 No release or tag was cut. A4 remains no-go and the dependency bound is unchanged.
 
+## PR #10 merged-tree checkpoint and the prompt line-ending defect — Windows, 2026-10-17
+
+Reviewed head `c6ae2aff31bd34d20d5b843ad69ae9eabb8eaff6` was merged unchanged
+into `main` as `ffc34363e56f7456442784acb453d69237095e42`; the merged tree is
+byte-identical to the reviewed head (`git diff --stat <reviewed> HEAD` empty).
+
+Gates on that merged tree, same isolated lock-exact Windows environment with
+`core.autocrlf=true`:
+
+```text
+pytest tests/marimo_inspect/live/ -m live  => 91 passed (340.53s)
+pytest -m "not live"                      => 2 failed, 1153 passed, 6 skipped, 91 deselected
+ruff check . / ruff format --check .      => clean
+marimo check notebooks / git diff --check => exit 0 / clean
+```
+
+The live gate is green and unchanged by PR #10 (its additions are kernel-free).
+The two non-live failures are a **fresh-checkout defect**, not a PR #10
+regression, and they do not reproduce in the tree the branch was developed in:
+
+```text
+FAILED tests/marimo_inspect/test_benchmark_arm_run.py::test_prompt_is_mission_plus_blank_line_plus_interface_note
+FAILED tests/marimo_inspect/test_benchmark_arm_run.py::test_prompt_file_is_written_byte_exactly
+```
+
+Cause: git stores `benchmark/prompts/*.md` as LF, but with `core.autocrlf=true`
+and no `.gitattributes` the working tree materialises them as CRLF, so the
+harness's byte-exact prompt expectations held or failed depending on which
+checkout was running them. Fixed by pinning `benchmark/prompts/*.md text eol=lf`
+in `.gitattributes`, with a regression asserting the committed prompt inputs carry
+no CR in the working tree. Verified from a fresh clone of the fix branch
+(`core.autocrlf=true`): prompt inputs `w/lf`, focused **118 passed**, non-live
+**1156 passed, 6 skipped, 91 deselected**, Ruff clean. The same clone of `main`
+shows the two failures above. Released by PR #11.
+
 ## Related docs
 
 - `docs/live-test-redesign-plan.md` — the redesign plan that made this green
