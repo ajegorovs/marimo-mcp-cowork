@@ -174,6 +174,7 @@ def _stage(
         canonical_path=str(canonical),
         root=str(root),
         state_dir=str(root / "state"),
+        ledger_path=str(root / "ledger.jsonl"),
     )
     return manifest, notebook, root
 
