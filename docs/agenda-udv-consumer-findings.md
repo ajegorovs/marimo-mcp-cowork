@@ -361,8 +361,9 @@ One line each, with the pointer that holds the detail. Ordered by item id.
   `templates/ui.py` (guard + read-back), `tools/ui.py` (stderr rejection scan,
   payload semantics), the widget tests, and `co-work-loop.md` §5 (per-widget
   shape table). **Ownership decided (2026-09-10):** package-install /
-  harness-onboarding material stays in `README.md` §Install and connect an MCP
-  client plus `docs/harness-integration/`; the three packaged resources remain
+  harness-onboarding material stays in the root `README.md` §Quick start (renamed
+  since this decision — it was §Install and connect an MCP client)
+  plus `docs/harness-integration/`; the three packaged resources remain
   **runtime-only** and no fourth resource is added (their authority is the
   co-work loop, not environment setup).
 - **T11** ✅ *A failed run reports through `run_cell`, not `get_errors`* — the

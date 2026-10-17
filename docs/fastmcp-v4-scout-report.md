@@ -183,7 +183,9 @@ All FastMCP docs sourced from https://gofastmcp.com/:
 
 ## Proposed Tool Set
 
-Based on the 1:1 comparison in `marimo-inspection-tools-comparison.md`.
+Based on the 1:1 comparison in `marimo-inspection-tools-comparison.md` — a
+source-inspection snapshot against earlier machinery, kept for provenance;
+current positioning is in `docs/interface-positioning.md`.
 
 ### Tier 1: Core Inspection (Essential)
 

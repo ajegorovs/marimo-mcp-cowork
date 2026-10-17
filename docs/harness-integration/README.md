@@ -41,8 +41,8 @@ uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3
 ```
 
 Pin the tag in a committed `pyproject.toml`; this is a normal, non-editable
-installation in the consumer project's environment. 📄 `AGENTS.md` §Remote /
-publishing; `README.md` §Release and development boundary (what the pinned tag
+installation in the consumer project's environment. 📄 [`AGENTS.md`](../../AGENTS.md) §Remote /
+publishing; [`README.md`](../../README.md) §Release and development boundary (what the pinned tag
 ships versus what `main` documents) and §Quick start.
 
 ### A2. Local checkout, editable — provider-contributor override only ✅
@@ -92,7 +92,7 @@ end-to-end install verification exist. Use A1 for normal consumers.
 
 Verified resolution on this machine during the original integration pass:
 `fastmcp 4.0.3`, `marimo 0.24.0`, `marimo-inspect 0.3.1` — a point-in-time
-record, not the current release (see `README.md` §Release and development
+record, not the current release (see [`README.md`](../../README.md) §Release and development
 boundary).
 
 ---
@@ -197,7 +197,7 @@ async def main():
 asyncio.run(main())
 ```
 
-📄 `README.md` §1; public API in `src/marimo_inspection/__init__.py`
+📄 [`README.md`](../../README.md) §1; public API in `src/marimo_inspection/__init__.py`
 (`MarimoClient`, `discover_servers`, `SessionInfo`, `DiscoveredServer`,
 `ExecuteResult`). This is the only path that works without `fastmcp`.
 
@@ -261,7 +261,7 @@ Registry location (from `discovery.py::_get_registry_dir`): ✅
 > **Which surface this describes.** This is the current development surface on
 > `main`. The pinned `v0.3.3` release ships **14** of these — it has no
 > `restart_kernel` — and predates the notebook-path binding anchor, so its
-> refusal vocabulary is smaller. See `README.md` §Release and development
+> refusal vocabulary is smaller. See [`README.md`](../../README.md) §Release and development
 > boundary before promising a tool in a pin.
 
 `list_active_notebooks` · `set_active_session` · `get_cell_map` ·
@@ -385,7 +385,7 @@ hit each.
 
 ## Related docs
 
-- `AGENTS.md` §Remote/publishing — the canonical consumer install command.
+- [`AGENTS.md`](../../AGENTS.md) §Remote/publishing — the canonical consumer install command.
 - `docs/marimo-version-support.md` — **read before touching marimo deps.**
 - `docs/agent-onboarding-demo-mcp.md` — the demo runbook; its Prerequisites
   section is the best description of the session-materialization gotcha.
