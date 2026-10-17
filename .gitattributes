@@ -1,0 +1,11 @@
+# Line-ending policy.
+#
+# The comparison harness feeds the mission and the interface notes to an agent
+# byte-for-byte and asserts those bytes in tests. Git stores them as LF, but a
+# Windows checkout with `core.autocrlf=true` used to materialise them as CRLF,
+# so the byte assertions held on one machine's checkout and failed on a fresh
+# one — a harness input that silently changes with the checkout policy is the
+# same defect class the benchmark fixture copying was fixed for.
+#
+# Pin the text inputs to LF in the working tree, in every checkout.
+benchmark/prompts/*.md text eol=lf
