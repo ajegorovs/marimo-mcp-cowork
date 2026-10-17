@@ -911,9 +911,30 @@ marimo check notebooks examples / git diff --check     => clean
 
 The complete suite was rerun after restoring the out-of-scope error-probe edit;
 that probe remains unchanged. The historical integration failures above remain
-provenance, not the state of this corrected branch. Merge awaits review; release
-selection and final merged-tree validation remain separate decisions. A4 stays
-no-go.
+provenance, not the state of this corrected branch. PR #9 was subsequently
+approved and merged as `a95e31e`; see the merged-tree checkpoint below.
+
+## PR #9 merged-tree checkpoint — Windows, 2026-10-17
+
+Reviewed head `b9903317d25ef98786b00e47981f90352f3634a8` was merged unchanged
+into `main` as `a95e31e8c6ddca235660a4027356e383916e878a`. The complete gates
+were rerun on that merged tree before pushing, in the same isolated lock-exact
+Windows environment with `core.autocrlf=true`:
+
+```text
+pytest -m "not live"                      => 737 passed, 6 skipped, 91 deselected (49.74s)
+pytest tests/marimo_inspect/live/ -m live  => 91 passed (336.95s)
+ruff check .                             => clean
+ruff format --check src tests            => 84 files already formatted
+marimo check notebooks examples           => exit 0
+git diff --check                         => clean
+```
+
+The three historical Windows failures are resolved without excluding any
+benchmark probes. These are author-run local results, not an OS matrix; no
+GitHub CI is configured. Optional CRLF string-input coverage is deferred until
+the factory's text contract next changes; LF and CRLF byte inputs are covered.
+No release or tag was cut. A4 remains no-go and the dependency bound is unchanged.
 
 ## Related docs
 
