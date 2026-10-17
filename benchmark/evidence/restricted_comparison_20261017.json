@@ -1,0 +1,176 @@
+{
+  "evidence_contract": "Summary of author-generated grades, not an independently replayable verification package. Ledger entries, saved notebooks and a protected record of all tool invocations are omitted; ledger integrity cannot be independently recomputed from this bundle. The agent-writable ledger is not tamper-resistant.",
+  "agent_reported_frictions": {
+    "native": [
+      "The shim wraps the agent code into one code-mode program, so a created cell executes immediately and its stdout returns in the same JSON.",
+      "A cell whose code rebound the helper name was refused by the in-kernel graph check, reported only as a truncated traceback (cut at 400 chars).",
+      "In-kernel helpers are reachable, so capabilities beyond the documented subcommands were available.",
+      "set_ui triggers a live re-run rather than a queued edit, and saving is marimo serializer behaviour: __generated_with moved 0.24.0 -> 0.25.1 and the plot cell return was rewritten. That is a FRAMEWORK-VERSION effect, not an interface effect."
+    ],
+    "wrapper": [
+      "No shell or file tool: the agent could not read the notebook file itself, so persistence evidence came from mutation payloads plus lint.",
+      "Discovery is the only way to bind; when it fails there is no way to name a target, and every other tool answers session_required.",
+      "set_ui_value verifies the widget value only and says so, so downstream effects had to be re-read.",
+      "A materialized session is not a run: cells start stale with an empty variable namespace.",
+      "create_cell payload field is source, not code; a first call was rejected pre-handler as a schema error."
+    ]
+  },
+  "harness_confirmation_run_excluded_from_the_comparison": {
+    "agent_seconds": 92.6,
+    "arm": "wrapper",
+    "grade_pass": true,
+    "note": "single pre-flight run used to confirm the state-dir fix before spending the batch"
+  },
+  "limits": [
+    "One Windows machine, one framework version per arm, one mission, two runs per arm.",
+    "Author-run; the reviewer has not re-executed these runs.",
+    "No token or cost measurement was captured; only wall-clock seconds per run.",
+    "The arms necessarily share an in-kernel code channel (the mission requires it); the restriction constrains targeting, not what submitted code may attempt.",
+    "Both arms succeeded on a fresh, trivially clean notebook with a single new cell; difficulty was not varied, so this does not rank the interfaces on harder work."
+  ],
+  "not_a_safety_verdict": "The guards are snapshot detection, not atomic prevention. A4 remains no-go; no adoption or migration decision is licensed by this file.",
+  "parameters": {
+    "max_turns": 30,
+    "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+    "model": "deepseek-v4.1-flash",
+    "native_framework": "marimo 0.25.1, marimo pair CLI through the restricted shim",
+    "order": [
+      "wrapper",
+      "native",
+      "native",
+      "wrapper"
+    ],
+    "outer_budget_fingerprint_both_arms": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+    "provider": "opencode-go",
+    "reasoning": "medium",
+    "run_budget_seconds": 600,
+    "targeting": "adapter takes no target argument; one loopback server, one notebook, one session per arm; byte-identical disposable copy; anchor control copy verified each run",
+    "wrapper_framework": "marimo 0.24.0, this repository MCP server"
+  },
+  "runs": [
+    {
+      "agent_exit": 0,
+      "agent_seconds": 76.8,
+      "arm": "wrapper",
+      "budget_fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+      "checks": {
+        "canonical_fixture_unchanged": true,
+        "kernel_gain_is_default": true,
+        "kernel_normalized_matches_oracle": true,
+        "kernel_zero_cell_errors": true,
+        "normalized_cell_saved": true,
+        "reopen_rotated_identity": true
+      },
+      "grade_pass": true,
+      "interface_sha256": "db6b2c1a47bb2c66204978054cb5e62b197be17117cd4682b5b2cbe33b8f189d",
+      "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+      "observed": {
+        "anchor": "control_verified",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "gain": 2.0,
+        "normalized": 1.25
+      },
+      "run": 1,
+      "toolsets": [
+        "marimo-inspect"
+      ]
+    },
+    {
+      "agent_exit": 0,
+      "agent_seconds": 327.5,
+      "arm": "native",
+      "budget_fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+      "checks": {
+        "canonical_fixture_unchanged": true,
+        "kernel_gain_is_default": true,
+        "kernel_normalized_matches_oracle": true,
+        "kernel_zero_cell_errors": true,
+        "normalized_cell_saved": true,
+        "reopen_rotated_identity": true
+      },
+      "grade_pass": true,
+      "interface_sha256": "ccf190e182eb5d5b290b9dda2d4053effc292e8838bec0505243e0d0375c27ad",
+      "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+      "observed": {
+        "anchor": "control_verified",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "gain": 2.0,
+        "normalized": 1.25
+      },
+      "run": 2,
+      "toolsets": [
+        "terminal"
+      ]
+    },
+    {
+      "agent_exit": 0,
+      "agent_seconds": 99.6,
+      "arm": "native",
+      "budget_fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+      "checks": {
+        "canonical_fixture_unchanged": true,
+        "kernel_gain_is_default": true,
+        "kernel_normalized_matches_oracle": true,
+        "kernel_zero_cell_errors": true,
+        "normalized_cell_saved": true,
+        "reopen_rotated_identity": true
+      },
+      "grade_pass": true,
+      "interface_sha256": "ccf190e182eb5d5b290b9dda2d4053effc292e8838bec0505243e0d0375c27ad",
+      "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+      "observed": {
+        "anchor": "control_verified",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "gain": 2.0,
+        "normalized": 1.25
+      },
+      "run": 3,
+      "toolsets": [
+        "terminal"
+      ]
+    },
+    {
+      "agent_exit": 0,
+      "agent_seconds": 122.0,
+      "arm": "wrapper",
+      "budget_fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+      "checks": {
+        "canonical_fixture_unchanged": true,
+        "kernel_gain_is_default": true,
+        "kernel_normalized_matches_oracle": true,
+        "kernel_zero_cell_errors": true,
+        "normalized_cell_saved": true,
+        "reopen_rotated_identity": true
+      },
+      "grade_pass": true,
+      "interface_sha256": "db6b2c1a47bb2c66204978054cb5e62b197be17117cd4682b5b2cbe33b8f189d",
+      "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+      "observed": {
+        "anchor": "control_verified",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "gain": 2.0,
+        "normalized": 1.25
+      },
+      "run": 4,
+      "toolsets": [
+        "marimo-inspect"
+      ]
+    }
+  ],
+  "spread": {
+    "native_agent_seconds": [
+      327.5,
+      99.6
+    ],
+    "note": "Two runs per arm; the ranges overlap, so no efficiency claim is made.",
+    "wrapper_agent_seconds": [
+      76.8,
+      122.0
+    ]
+  },
+  "what_this_is": "Restricted interface comparison, first complete batch. Two arms, two runs each, alternating order. Independent grading per run."
+}

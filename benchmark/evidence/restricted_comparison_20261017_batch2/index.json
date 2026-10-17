@@ -1,0 +1,478 @@
+{
+  "evidence_contract": "Summary of author-generated grades, not an independently replayable verification package. Ledger entries, saved notebooks and a protected record of all tool invocations are omitted; ledger integrity cannot be independently recomputed from this bundle. The agent-writable ledger is not tamper-resistant.",
+  "how_to_check": "Each run records the independent grade verdict with its per-check detail and the SHA-256 of the manifest, the ledger (native arm only) and the saved notebook. The transcript is the agent's own output, unedited apart from path substitution.",
+  "parameters": {
+    "grader": "nine checks, including kernel reactivity at gain=4 and the native ledger audit",
+    "max_turns": 30,
+    "model": "deepseek-v4.1-flash",
+    "native_framework": "marimo 0.25.1 `marimo pair` CLI through the restricted shim",
+    "note": "run5 is the live native re-validation after the ledger fix; runs 2 and 3 are the pre-fix runs whose ledger check failed and exposed it.",
+    "order": [
+      "wrapper",
+      "native",
+      "native",
+      "wrapper",
+      "native (post-fix live run)"
+    ],
+    "provider": "opencode-go",
+    "reasoning": "medium",
+    "run_budget_seconds": 600,
+    "wrapper_framework": "marimo 0.24.0 with this repository's MCP server"
+  },
+  "runs": [
+    {
+      "arm": "wrapper",
+      "artifacts": {
+        "manifest.json": "c0ba1d11936115bb8d3a438ffe9b379e7f4e5f233888f082c5f79713bb558a15",
+        "root/ledger.jsonl": null,
+        "root/notebook.py": "4fa8757baf627c077cba38adea8c5fd7b42857aa05ec82c75f552e34e93413fc"
+      },
+      "checks": [
+        {
+          "detail": "canonical matches 35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+          "name": "canonical_fixture_unchanged",
+          "pass": true
+        },
+        {
+          "detail": "cell 6 assigns 'normalized' reading ['processed', 'input_vector']",
+          "name": "normalized_cell_saved",
+          "pass": true
+        },
+        {
+          "detail": "fresh process and session id, same notebook",
+          "name": "reopen_rotated_identity",
+          "pass": true
+        },
+        {
+          "detail": "kernel normalized 1.25 == oracle 1.25",
+          "name": "kernel_normalized_matches_oracle",
+          "pass": true
+        },
+        {
+          "detail": "gain 2.0 == default",
+          "name": "kernel_gain_is_default",
+          "pass": true
+        },
+        {
+          "detail": "gain 4.0 -> normalized 2.5 == oracle 2.5",
+          "name": "kernel_reactivity_at_gain_4",
+          "pass": true
+        },
+        {
+          "detail": "gain back at 2.0 -> normalized 1.25 == oracle 1.25",
+          "name": "kernel_restored_to_default",
+          "pass": true
+        },
+        {
+          "detail": "no cell errors (run status: ok)",
+          "name": "kernel_zero_cell_errors",
+          "pass": true
+        },
+        {
+          "detail": "not applicable: the wrapper arm has no shim, so its tool calls are not captured in a ledger",
+          "name": "interface_ledger_intact",
+          "pass": true
+        }
+      ],
+      "grade_pass": true,
+      "metadata": {
+        "arm": "wrapper",
+        "elapsed_s": 98.57800000021234,
+        "ended_at": "2026-10-17T10:10:37.699501+00:00",
+        "exit_code": 0,
+        "fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+        "interface_sha256": "db6b2c1a47bb2c66204978054cb5e62b197be17117cd4682b5b2cbe33b8f189d",
+        "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+        "started_at": "2026-10-17T10:08:59.110645+00:00",
+        "terminal_state": "completed",
+        "toolsets": [
+          "marimo-inspect"
+        ]
+      },
+      "observed": {
+        "anchor": "control_verified",
+        "canonical_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "expected_metric_at_gain_4": 2.5,
+        "fresh_process_id": 66292,
+        "fresh_session_id": "a20d00a7-d21a-4c55-8ebb-539c81541d90",
+        "gain": 2.0,
+        "gain_at_4": 4.0,
+        "gain_restored": 2.0,
+        "ledger_applicable": false,
+        "manifest_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "normalized": 1.25,
+        "normalized_at_4": 2.5,
+        "normalized_cell_structural": true,
+        "normalized_restored": 1.25,
+        "reader": "wrapper"
+      },
+      "run": "run1-wrapper"
+    },
+    {
+      "arm": "native",
+      "artifacts": {
+        "manifest.json": "78883089be083763b00c2112a094eabe156a7fc5873ea318a4a4f206599abbb3",
+        "root/ledger.jsonl": "b9282196452121aba8653adf32d75e7360dff8923cbda09679135ad943fb4613",
+        "root/notebook.py": "1156bdd2fb9d349a809f2f53d0582eb1cd80c0fc422e82d9ee6651e19b778697"
+      },
+      "checks": [
+        {
+          "detail": "canonical matches 35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+          "name": "canonical_fixture_unchanged",
+          "pass": true
+        },
+        {
+          "detail": "cell 6 assigns 'normalized' reading ['processed', 'input_vector']",
+          "name": "normalized_cell_saved",
+          "pass": true
+        },
+        {
+          "detail": "fresh process and session id, same notebook",
+          "name": "reopen_rotated_identity",
+          "pass": true
+        },
+        {
+          "detail": "kernel normalized 1.25 == oracle 1.25",
+          "name": "kernel_normalized_matches_oracle",
+          "pass": true
+        },
+        {
+          "detail": "gain 2.0 == default",
+          "name": "kernel_gain_is_default",
+          "pass": true
+        },
+        {
+          "detail": "gain 4.0 -> normalized 2.5 == oracle 2.5",
+          "name": "kernel_reactivity_at_gain_4",
+          "pass": true
+        },
+        {
+          "detail": "gain back at 2.0 -> normalized 1.25 == oracle 1.25",
+          "name": "kernel_restored_to_default",
+          "pass": true
+        },
+        {
+          "detail": "no cell errors (run status: ok)",
+          "name": "kernel_zero_cell_errors",
+          "pass": true
+        },
+        {
+          "detail": "ledger entry 4 does not chain to entry 3: sha256_before '1156bdd2fb9d349a809f2f53d0582eb1cd80c0fc422e82d9ee6651e19b778697' != '35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608'",
+          "name": "interface_ledger_intact",
+          "pass": false
+        }
+      ],
+      "grade_pass": false,
+      "metadata": {
+        "arm": "native",
+        "elapsed_s": 122.45300000021234,
+        "ended_at": "2026-10-17T10:12:51.638699+00:00",
+        "exit_code": 0,
+        "fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+        "interface_sha256": "ccf190e182eb5d5b290b9dda2d4053effc292e8838bec0505243e0d0375c27ad",
+        "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+        "started_at": "2026-10-17T10:10:49.186587+00:00",
+        "terminal_state": "completed",
+        "toolsets": [
+          "terminal"
+        ]
+      },
+      "observed": {
+        "anchor": "control_verified",
+        "canonical_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "expected_metric_at_gain_4": 2.5,
+        "fresh_process_id": 80448,
+        "fresh_session_id": "175d22ab-3aec-4e9d-9d5b-91bd3f53ee7b",
+        "gain": 2.0,
+        "gain_at_4": 4.0,
+        "gain_restored": 2.0,
+        "ledger_applicable": true,
+        "ledger_entry_count": 14,
+        "manifest_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "normalized": 1.25,
+        "normalized_at_4": 2.5,
+        "normalized_cell_structural": true,
+        "normalized_restored": 1.25,
+        "reader": "native"
+      },
+      "run": "run2-native"
+    },
+    {
+      "arm": "native",
+      "artifacts": {
+        "manifest.json": "a23fe80869f4d8cc01381468bb2c6cee4f1715aa0d4a11ee95021f8c97e88030",
+        "root/ledger.jsonl": "b8e349670ae307b43bfc1d708c7c17bb2590d34490b8025d0119784457cb1924",
+        "root/notebook.py": "4845a5610a30a5112b6344876f5774931e5d55d01a30675df92e67bc4ed02321"
+      },
+      "checks": [
+        {
+          "detail": "canonical matches 35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+          "name": "canonical_fixture_unchanged",
+          "pass": true
+        },
+        {
+          "detail": "cell 6 assigns 'normalized' reading ['processed', 'input_vector']",
+          "name": "normalized_cell_saved",
+          "pass": true
+        },
+        {
+          "detail": "fresh process and session id, same notebook",
+          "name": "reopen_rotated_identity",
+          "pass": true
+        },
+        {
+          "detail": "kernel normalized 1.25 == oracle 1.25",
+          "name": "kernel_normalized_matches_oracle",
+          "pass": true
+        },
+        {
+          "detail": "gain 2.0 == default",
+          "name": "kernel_gain_is_default",
+          "pass": true
+        },
+        {
+          "detail": "gain 4.0 -> normalized 2.5 == oracle 2.5",
+          "name": "kernel_reactivity_at_gain_4",
+          "pass": true
+        },
+        {
+          "detail": "gain back at 2.0 -> normalized 1.25 == oracle 1.25",
+          "name": "kernel_restored_to_default",
+          "pass": true
+        },
+        {
+          "detail": "no cell errors (run status: ok)",
+          "name": "kernel_zero_cell_errors",
+          "pass": true
+        },
+        {
+          "detail": "ledger entry 3 does not chain to entry 2: sha256_before '4845a5610a30a5112b6344876f5774931e5d55d01a30675df92e67bc4ed02321' != '35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608'",
+          "name": "interface_ledger_intact",
+          "pass": false
+        }
+      ],
+      "grade_pass": false,
+      "metadata": {
+        "arm": "native",
+        "elapsed_s": 91.17200000025332,
+        "ended_at": "2026-10-17T10:14:38.194917+00:00",
+        "exit_code": 0,
+        "fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+        "interface_sha256": "ccf190e182eb5d5b290b9dda2d4053effc292e8838bec0505243e0d0375c27ad",
+        "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+        "started_at": "2026-10-17T10:13:07.020683+00:00",
+        "terminal_state": "completed",
+        "toolsets": [
+          "terminal"
+        ]
+      },
+      "observed": {
+        "anchor": "control_verified",
+        "canonical_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "expected_metric_at_gain_4": 2.5,
+        "fresh_process_id": 82152,
+        "fresh_session_id": "c4fe6953-1471-49eb-8a72-83046202b2bf",
+        "gain": 2.0,
+        "gain_at_4": 4.0,
+        "gain_restored": 2.0,
+        "ledger_applicable": true,
+        "ledger_entry_count": 13,
+        "manifest_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "normalized": 1.25,
+        "normalized_at_4": 2.5,
+        "normalized_cell_structural": true,
+        "normalized_restored": 1.25,
+        "reader": "native"
+      },
+      "run": "run3-native"
+    },
+    {
+      "arm": "wrapper",
+      "artifacts": {
+        "manifest.json": "8e1ab4b2d734d6be0cc4b5300605d73679b050a31022500870ded9e74966cd99",
+        "root/ledger.jsonl": null,
+        "root/notebook.py": "513d0f3074593495e08323f0dfb1cf8e010480d1e1adf74e1b9d556def52315c"
+      },
+      "checks": [
+        {
+          "detail": "canonical matches 35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+          "name": "canonical_fixture_unchanged",
+          "pass": true
+        },
+        {
+          "detail": "cell 5 assigns 'normalized' reading ['processed', 'input_vector']",
+          "name": "normalized_cell_saved",
+          "pass": true
+        },
+        {
+          "detail": "fresh process and session id, same notebook",
+          "name": "reopen_rotated_identity",
+          "pass": true
+        },
+        {
+          "detail": "kernel normalized 1.25 == oracle 1.25",
+          "name": "kernel_normalized_matches_oracle",
+          "pass": true
+        },
+        {
+          "detail": "gain 2.0 == default",
+          "name": "kernel_gain_is_default",
+          "pass": true
+        },
+        {
+          "detail": "gain 4.0 -> normalized 2.5 == oracle 2.5",
+          "name": "kernel_reactivity_at_gain_4",
+          "pass": true
+        },
+        {
+          "detail": "gain back at 2.0 -> normalized 1.25 == oracle 1.25",
+          "name": "kernel_restored_to_default",
+          "pass": true
+        },
+        {
+          "detail": "no cell errors (run status: ok)",
+          "name": "kernel_zero_cell_errors",
+          "pass": true
+        },
+        {
+          "detail": "not applicable: the wrapper arm has no shim, so its tool calls are not captured in a ledger",
+          "name": "interface_ledger_intact",
+          "pass": true
+        }
+      ],
+      "grade_pass": true,
+      "metadata": {
+        "arm": "wrapper",
+        "elapsed_s": 73.26499999966472,
+        "ended_at": "2026-10-17T10:16:06.895742+00:00",
+        "exit_code": 0,
+        "fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+        "interface_sha256": "db6b2c1a47bb2c66204978054cb5e62b197be17117cd4682b5b2cbe33b8f189d",
+        "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+        "started_at": "2026-10-17T10:14:53.629022+00:00",
+        "terminal_state": "completed",
+        "toolsets": [
+          "marimo-inspect"
+        ]
+      },
+      "observed": {
+        "anchor": "control_verified",
+        "canonical_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "expected_metric_at_gain_4": 2.5,
+        "fresh_process_id": 37704,
+        "fresh_session_id": "289a9bc1-d832-4b2e-b4d2-384629d9d2a5",
+        "gain": 2.0,
+        "gain_at_4": 4.0,
+        "gain_restored": 2.0,
+        "ledger_applicable": false,
+        "manifest_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "normalized": 1.25,
+        "normalized_at_4": 2.5,
+        "normalized_cell_structural": true,
+        "normalized_restored": 1.25,
+        "reader": "wrapper"
+      },
+      "run": "run4-wrapper"
+    },
+    {
+      "arm": "native",
+      "artifacts": {
+        "manifest.json": "e4f440cbb23c05821cb8f1209d72804c0a6835c6ef65492713074691ea5853c4",
+        "root/ledger.jsonl": "6cc2e53dbe97a7dcef6f2d37cb6f0dbcd7c6222cad619f03172201f21fdab426",
+        "root/notebook.py": "ab122efac2f9b3b41395a5bdcb3c9d05d823498e351e49005609163a88fbdb1d"
+      },
+      "checks": [
+        {
+          "detail": "canonical matches 35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+          "name": "canonical_fixture_unchanged",
+          "pass": true
+        },
+        {
+          "detail": "cell 6 assigns 'normalized' reading ['processed', 'input_vector']",
+          "name": "normalized_cell_saved",
+          "pass": true
+        },
+        {
+          "detail": "fresh process and session id, same notebook",
+          "name": "reopen_rotated_identity",
+          "pass": true
+        },
+        {
+          "detail": "kernel normalized 1.25 == oracle 1.25",
+          "name": "kernel_normalized_matches_oracle",
+          "pass": true
+        },
+        {
+          "detail": "gain 2.0 == default",
+          "name": "kernel_gain_is_default",
+          "pass": true
+        },
+        {
+          "detail": "gain 4.0 -> normalized 2.5 == oracle 2.5",
+          "name": "kernel_reactivity_at_gain_4",
+          "pass": true
+        },
+        {
+          "detail": "gain back at 2.0 -> normalized 1.25 == oracle 1.25",
+          "name": "kernel_restored_to_default",
+          "pass": true
+        },
+        {
+          "detail": "no cell errors (run status: ok)",
+          "name": "kernel_zero_cell_errors",
+          "pass": true
+        },
+        {
+          "detail": "14 ledger entries chain from the fixture hash to the saved notebook, including create_cell",
+          "name": "interface_ledger_intact",
+          "pass": true
+        }
+      ],
+      "grade_pass": true,
+      "metadata": {
+        "arm": "native",
+        "elapsed_s": 129.75,
+        "ended_at": "2026-10-17T10:39:40.962754+00:00",
+        "exit_code": 0,
+        "fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+        "interface_sha256": "ccf190e182eb5d5b290b9dda2d4053effc292e8838bec0505243e0d0375c27ad",
+        "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+        "started_at": "2026-10-17T10:37:31.202707+00:00",
+        "terminal_state": "completed",
+        "toolsets": [
+          "terminal"
+        ]
+      },
+      "observed": {
+        "anchor": "control_verified",
+        "canonical_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "cell_errors": 0,
+        "expected_metric": 1.25,
+        "expected_metric_at_gain_4": 2.5,
+        "fresh_process_id": 52996,
+        "fresh_session_id": "d441568f-b436-4aee-9506-308b359d8e51",
+        "gain": 2.0,
+        "gain_at_4": 4.0,
+        "gain_restored": 2.0,
+        "ledger_applicable": true,
+        "ledger_entry_count": 14,
+        "manifest_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+        "normalized": 1.25,
+        "normalized_at_4": 2.5,
+        "normalized_cell_structural": true,
+        "normalized_restored": 1.25,
+        "reader": "native"
+      },
+      "run": "run5-native-live"
+    }
+  ],
+  "what_this_is": "Sanitized provenance for one restricted interface-comparison batch. Absolute machine paths are replaced; nothing outside the batch is copied."
+}

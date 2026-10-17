@@ -1,0 +1,91 @@
+{
+  "arm": "native",
+  "artifacts": {
+    "manifest.json": "78883089be083763b00c2112a094eabe156a7fc5873ea318a4a4f206599abbb3",
+    "root/ledger.jsonl": "b9282196452121aba8653adf32d75e7360dff8923cbda09679135ad943fb4613",
+    "root/notebook.py": "1156bdd2fb9d349a809f2f53d0582eb1cd80c0fc422e82d9ee6651e19b778697"
+  },
+  "checks": [
+    {
+      "detail": "canonical matches 35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+      "name": "canonical_fixture_unchanged",
+      "pass": true
+    },
+    {
+      "detail": "cell 6 assigns 'normalized' reading ['processed', 'input_vector']",
+      "name": "normalized_cell_saved",
+      "pass": true
+    },
+    {
+      "detail": "fresh process and session id, same notebook",
+      "name": "reopen_rotated_identity",
+      "pass": true
+    },
+    {
+      "detail": "kernel normalized 1.25 == oracle 1.25",
+      "name": "kernel_normalized_matches_oracle",
+      "pass": true
+    },
+    {
+      "detail": "gain 2.0 == default",
+      "name": "kernel_gain_is_default",
+      "pass": true
+    },
+    {
+      "detail": "gain 4.0 -> normalized 2.5 == oracle 2.5",
+      "name": "kernel_reactivity_at_gain_4",
+      "pass": true
+    },
+    {
+      "detail": "gain back at 2.0 -> normalized 1.25 == oracle 1.25",
+      "name": "kernel_restored_to_default",
+      "pass": true
+    },
+    {
+      "detail": "no cell errors (run status: ok)",
+      "name": "kernel_zero_cell_errors",
+      "pass": true
+    },
+    {
+      "detail": "ledger entry 4 does not chain to entry 3: sha256_before '1156bdd2fb9d349a809f2f53d0582eb1cd80c0fc422e82d9ee6651e19b778697' != '35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608'",
+      "name": "interface_ledger_intact",
+      "pass": false
+    }
+  ],
+  "grade_pass": false,
+  "metadata": {
+    "arm": "native",
+    "elapsed_s": 122.45300000021234,
+    "ended_at": "2026-10-17T10:12:51.638699+00:00",
+    "exit_code": 0,
+    "fingerprint": "5f8e5e7b2ca8fdce0b9aca27eed22feed12afef80cd7bc5814447e7bf65ec514",
+    "interface_sha256": "ccf190e182eb5d5b290b9dda2d4053effc292e8838bec0505243e0d0375c27ad",
+    "mission_sha256": "fdb98d9d462f92cf0417d14bd6438ad8fbf67d81cb9ad1127da5fc89383b8029",
+    "started_at": "2026-10-17T10:10:49.186587+00:00",
+    "terminal_state": "completed",
+    "toolsets": [
+      "terminal"
+    ]
+  },
+  "observed": {
+    "anchor": "control_verified",
+    "canonical_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+    "cell_errors": 0,
+    "expected_metric": 1.25,
+    "expected_metric_at_gain_4": 2.5,
+    "fresh_process_id": 80448,
+    "fresh_session_id": "175d22ab-3aec-4e9d-9d5b-91bd3f53ee7b",
+    "gain": 2.0,
+    "gain_at_4": 4.0,
+    "gain_restored": 2.0,
+    "ledger_applicable": true,
+    "ledger_entry_count": 14,
+    "manifest_sha256": "35a423834ba163769ebbc5f279ab1e44ba5b3d1d614056209afd4b660fae1608",
+    "normalized": 1.25,
+    "normalized_at_4": 2.5,
+    "normalized_cell_structural": true,
+    "normalized_restored": 1.25,
+    "reader": "native"
+  },
+  "run": "run2-native"
+}
