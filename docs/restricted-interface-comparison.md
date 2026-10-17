@@ -58,6 +58,56 @@ notes is the variable under test*, so neither is padded to help its arm.
   framework lacks the feature the reader uses, which reads as a failed mission on
   work that actually succeeded.
 
+## First complete batch — results
+
+Two runs per arm, alternating order (wrapper → native → native → wrapper), model
+`deepseek-v4.1-flash` on `opencode-go`, reasoning medium, 30 turns, 600 s wall
+clock, identical budget fingerprint on both arms. Every run was graded out of
+band by a separate process that never trusted the agent's report.
+
+| Run | Arm | Grade | `normalized` | Oracle | Cell errors | Anchor | Agent wall time |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | wrapper (marimo 0.24) | pass | 1.25 | 1.25 | 0 | control_verified | 77 s |
+| 2 | native (marimo 0.25.1) | pass | 1.25 | 1.25 | 0 | control_verified | 328 s |
+| 3 | native (marimo 0.25.1) | pass | 1.25 | 1.25 | 0 | control_verified | 100 s |
+| 4 | wrapper (marimo 0.24) | pass | 1.25 | 1.25 | 0 | control_verified | 122 s |
+
+All six checks passed in all four runs: canonical fixture unchanged, `normalized`
+cell saved on disk, reopen rotated both process and session, kernel value equal to
+the independent oracle, `gain` back at its default, zero cell errors. One extra
+pre-flight wrapper run was used to confirm a harness fix before spending the batch
+and is deliberately **not** counted here.
+
+`wrapper` 77–122 s, `native` 100–328 s. **The ranges overlap at two runs per arm,
+so no efficiency conclusion is drawn** — more repeats, in both orders, are needed
+before any such claim, and no token or cost data was captured.
+
+Raw per-run records: [`benchmark/evidence/restricted_comparison_20261017.json`](../benchmark/evidence/restricted_comparison_20261017.json).
+
+### Interface frictions the agents reported
+
+Self-reported and therefore context, not evidence — but they are the material a
+next iteration would act on.
+
+Wrapper arm: no shell or file tool at all, so the agent could not read the
+notebook file itself; discovery is the only way to bind, and when it fails there
+is no way to name a target (every tool answers `session_required`); `set_ui_value`
+certifies only the widget value, so downstream effects had to be re-read; a
+materialised session is not a run (cells start `stale` with an empty variable
+namespace); the cell-creation payload field is `source`, and a first call was
+rejected pre-handler as a schema error.
+
+Native arm: the shim wraps submitted code into one code-mode program, so a created
+cell executes immediately and its stdout returns in the same JSON; a cell that
+rebound the helper name was refused by the in-kernel graph check with only a
+truncated traceback (cut at 400 chars); in-kernel helpers are reachable, so
+capabilities beyond the documented subcommands were available.
+
+One native observation is a **framework-version effect, not an interface effect**:
+saving under 0.25.1 bumped `__generated_with` from 0.24.0 and rewrote the plot
+cell's `return ax, fig` to a bare `return`. It belongs to marimo's serializer, and
+it must not be read as a difference between the two agent surfaces.
+
 ## What it does and does not establish
 
 Establishes: whether one interface let an agent complete a fixed mission on a
