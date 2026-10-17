@@ -925,6 +925,7 @@ def _validate(
     max_turns: object,
     run_budget: object,
     state_dir: str | os.PathLike[str] | None,
+    workdir: str | os.PathLike[str] | None,
     manifest: str | os.PathLike[str] | None,
     shim: str | os.PathLike[str] | None,
     mcp_command: str | None,
@@ -954,6 +955,23 @@ def _validate(
     # fingerprint line: a blank, relative or missing dir would let the child's
     # registry discovery fall back to the operator's state.
     validate_state_dir(state_dir)
+    # The child is launched with ``--in <workdir>``; a missing directory makes the
+    # child exit before it does anything, which then looks like a failed arm
+    # rather than a failed harness. Observed live: one attempt died in 1.8 s with
+    # "Error: --in directory not found" and graded as a failed run.
+    require(
+        workdir is not None and str(workdir).strip() != "",
+        "workdir must be supplied: it is the agent's starting directory",
+    )
+    workdir_path = Path(str(workdir))
+    require(
+        workdir_path.is_absolute(),
+        f"the workdir must be absolute: {workdir}",
+    )
+    require(
+        workdir_path.is_dir(),
+        f"the workdir must be an existing directory: {workdir}",
+    )
     if arm == "native":
         require(
             manifest is not None and str(manifest).strip() != "",
@@ -1093,6 +1111,7 @@ def perform_run(
         max_turns=max_turns,
         run_budget=run_budget,
         state_dir=state_dir,
+        workdir=workdir,
         manifest=manifest,
         shim=shim,
         mcp_command=mcp_command,

@@ -146,6 +146,9 @@ def write_arm_manifest(
 
 def _case(tmp_path, home_name="home"):
     """The shared arguments for one run, all under ``tmp_path``."""
+    # The harness stages the arm's working directory; ``arm_run`` refuses a
+    # missing one rather than launching a child that would die on ``--in``.
+    (tmp_path / "work").mkdir(parents=True, exist_ok=True)
     return {
         "home": tmp_path / home_name,
         # The arm's isolated marimo state dir: required with no default, and it
@@ -494,6 +497,9 @@ def test_prompt_assembly_refuses_an_empty_source():
 
 
 def _argv(tmp_path, arm, *, drop=None, override=None):
+    # The real harness stages the workdir; arm_run refuses a missing one, so the
+    # test harness has to stage it too rather than relying on the child failing.
+    (tmp_path / "work").mkdir(parents=True, exist_ok=True)
     arguments = [
         "--arm",
         arm,
@@ -1844,3 +1850,26 @@ def test_the_privacy_patterns_would_catch_a_real_machine_path():
         caught = [p.pattern for p in _MACHINE_PATTERNS if p.search(clean)]
         if caught:
             raise AssertionError(f"{clean!r} was flagged by {caught}")
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_non_existent_workdir_is_refused_for_both_arms(tmp_path, capsys, arm):
+    """Observed live: a missing --in directory killed the child in 1.8 s, and the
+    run then read as a failed arm instead of a failed harness."""
+    missing = tmp_path / "no-such-workdir"
+
+    detail = _refusal(
+        tmp_path, capsys, _argv(tmp_path, arm, override=("--workdir", str(missing)))
+    )
+
+    require("existing directory" in detail, detail)
+    require(not missing.exists(), missing)
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_a_relative_workdir_is_refused_for_both_arms(tmp_path, capsys, arm):
+    detail = _refusal(
+        tmp_path, capsys, _argv(tmp_path, arm, override=("--workdir", "relative/work"))
+    )
+
+    require("workdir must be absolute" in detail, detail)

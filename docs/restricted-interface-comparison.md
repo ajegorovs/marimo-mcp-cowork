@@ -158,6 +158,13 @@ entries**, exit 0, 129.75 s, with the grader observing 1.25 → 2.5 → 1.25 on 
 restored gain. The check did not loosen to make those pass: the ledger became
 complete, and the attribution rule is stricter than "an entry said create_cell".
 
+That live re-validation took three attempts, and the first two failed on harness
+invocation rather than on the arm: a relative `--shim` path was correctly refused,
+and a missing working directory killed the child in 1.8 s (now refused up front,
+and recorded as `exit_code 1, terminal_state completed` instead of a silent
+success). Failed attempts stay in the record: a harness that hides its own
+misfires cannot be trusted with an arm's.
+
 The first batch's verdicts stay labelled as what they were — passes of the six
 checks that existed then.
 
