@@ -82,6 +82,7 @@ mission_setup.py --canonical benchmark/notebooks/mission_clean.py --root <ROOT> 
   --manifest <MANIFEST> --control-dir <CONTROL>
 
 arm_run.py --arm {native,wrapper} --home <HOME> --workdir <WORK> \
+  --state-dir <STATE> \
   --mission benchmark/prompts/mission.md --interface benchmark/prompts/<ARM>-interface.md \
   --transcript <TRANSCRIPT> --model <MODEL> --provider <PROVIDER> --reasoning <LEVEL> \
   --max-turns <TURNS> --run-budget <SECONDS> \

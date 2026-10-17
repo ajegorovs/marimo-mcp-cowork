@@ -2,18 +2,26 @@
 
 ``benchmark/arm_run.py`` prepares ONE arm — an ephemeral ``HERMES_HOME``, a
 prompt built from the shared mission plus the arm's interface note, the arm's
-toolset list and budget — and launches its agent as a separate ``hermes chat``
-process. These tests exercise the real entry point against ``tmp_path`` and an
-**injected launch seam**, so nothing here invokes a model, boots a server or
-launches a child process.
+toolset surfaces, budget and isolated marimo state dir — and launches its agent
+as a separate ``hermes chat`` process. These tests exercise the real entry point
+against ``tmp_path`` and an **injected launch seam**, so nothing here invokes a
+model, boots a server or launches a child process.
 
 Covered: the wrapper arm's configuration declaring exactly its one MCP server and
-the native arm's declaring none; a byte-exact prompt (mission, one blank line,
-interface note); a missing budget argument refusing for both arms; a fingerprint
-identical for two runs that differ only by arm; the native ``pair`` launcher
-passing options through and quoting the manifest path safely; the dry run
-executing nothing; the child argv and environment; the run metadata; and a scan
-proving neither file carries a machine-specific absolute path.
+the native arm's declaring none; both arms' ``platform_toolsets`` pinning the
+built-in surface (native ``[terminal]``, wrapper an explicit empty list); the
+``-t`` value being the bare MCP server name for the wrapper arm, never
+``mcp-<server>``; a byte-exact prompt (mission, one blank line, interface note);
+a missing budget argument refusing for both arms; a fingerprint identical for two
+runs that differ only by arm; the native ``pair`` launcher passing options
+through and quoting the manifest path safely; the native child's ``PATH`` **and**
+``ORIGINAL_PATH`` carrying the launcher directory (the login-shell rebuild drops
+a ``PATH``-only entry); ``--yolo`` on both arms' command line; the dry run
+executing nothing; the child argv and environment; the run metadata; a required
+``--state-dir`` (no default) refusing a blank, relative, missing or non-directory
+value for both arms and carried in the child environment as
+``USERPROFILE``/``XDG_STATE_HOME``/``HOME``, identically for both arms; and a
+scan proving neither file carries a machine-specific absolute path.
 
 Every verdict uses an always-on ``require`` (a bare ``assert`` would be stripped
 under ``-O``, which is exactly the silent-pass this benchmark cannot afford).
@@ -101,10 +109,21 @@ class Recorder:
         return self.exit_code
 
 
+def _state_dir(tmp_path):
+    """An existing absolute state dir under ``tmp_path`` (created on demand)."""
+    state = tmp_path / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    return state
+
+
 def _case(tmp_path, home_name="home"):
     """The shared arguments for one run, all under ``tmp_path``."""
     return {
         "home": tmp_path / home_name,
+        # The arm's isolated marimo state dir: required with no default, and it
+        # must already exist — a child that cannot see the staged server's
+        # registry entry hangs in discovery instead of failing fast.
+        "state_dir": _state_dir(tmp_path),
         "workdir": tmp_path / "work",
         "transcript": tmp_path / "out" / "arm.txt",
         "manifest": tmp_path / "manifest.json",
@@ -164,6 +183,8 @@ def test_wrapper_configuration_declares_exactly_the_one_mcp_server(tmp_path):
         "      - --transport\n"
         "      - stdio\n"
         "    timeout: 60\n"
+        "platform_toolsets:\n"
+        "  cli: []\n"
     )
     require(text == expected, text)
 
@@ -180,11 +201,74 @@ def test_native_configuration_declares_no_mcp_server(tmp_path):
 
     require(
         text == "# Ephemeral home for one arm's run (generated; do not edit).\n"
-        "mcp_servers: {}\n",
+        "mcp_servers: {}\n"
+        "platform_toolsets:\n"
+        "  cli:\n"
+        "    - terminal\n",
         text,
     )
     require(_mcp_server_blocks(text) == {}, text)
     require(arm_run.MCP_SERVER_NAME not in text, text)
+
+
+# --------------------------------------------------------------------------- #
+# 1b. The config pins the built-in surface: -t is only the MCP spawn allowlist
+# --------------------------------------------------------------------------- #
+
+
+def test_wrapper_configuration_pins_an_empty_builtin_toolset_list(tmp_path):
+    """The wrapper arm's only interface is its MCP server; no built-in tool.
+
+    ``-t`` is the MCP *spawn* allowlist, not a built-in selector, so the
+    narrowing has to be in the config. An explicit empty list is a fail-closed
+    zero-tool selection, not "no restriction".
+    """
+    text = arm_run.render_config(
+        "wrapper", mcp_command=str(tmp_path / "marimo-inspect")
+    )
+
+    platforms = _platform_toolsets(text)
+    require(list(platforms) == [arm_run.CHILD_PLATFORM], platforms)
+    require(platforms[arm_run.CHILD_PLATFORM] == [], platforms)
+    require("  cli: []" in text, text)
+    require("terminal" not in text, text)
+    require("file" not in text, text)
+
+
+def test_native_configuration_pins_exactly_the_terminal_toolset(tmp_path):
+    text = arm_run.render_config("native")
+
+    platforms = _platform_toolsets(text)
+    require(list(platforms) == [arm_run.CHILD_PLATFORM], platforms)
+    require(platforms[arm_run.CHILD_PLATFORM] == ["terminal"], platforms)
+    require("  cli: []" not in text, text)
+    require("file" not in text, text)
+
+
+def test_the_platform_toolset_lists_come_from_the_module_constants():
+    require(
+        arm_run.config_toolsets("native") == arm_run.NATIVE_TOOLSETS == ("terminal",),
+        arm_run.config_toolsets("native"),
+    )
+    require(
+        arm_run.config_toolsets("wrapper") == arm_run.WRAPPER_BUILTIN_TOOLSETS == (),
+        arm_run.config_toolsets("wrapper"),
+    )
+    require("file" not in arm_run.config_toolsets("native"), "file leaked in")
+    with pytest.raises(arm_run.ArmRunRefusal, match="arm must be one of"):
+        arm_run.config_toolsets("serial")
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_written_config_file_carries_the_platform_toolset_block(tmp_path, arm):
+    """What lands on disk is what the child reads: the block survives the write."""
+    _run(tmp_path, arm)
+
+    written = (tmp_path / "home" / arm_run.CONFIG_FILENAME).read_text(encoding="utf-8")
+    expected = arm_run.config_toolsets(arm)
+    require(
+        _platform_toolsets(written)[arm_run.CHILD_PLATFORM] == list(expected), written
+    )
 
 
 def test_written_config_file_matches_the_rendered_text(tmp_path, capsys):
@@ -213,16 +297,33 @@ def test_native_configuration_refuses_an_mcp_command(tmp_path):
         arm_run.render_config("native", mcp_command="anything")
 
 
-def _mcp_server_blocks(text: str) -> dict:
-    """Parse the ``mcp_servers`` block: ``{}`` -> no servers, else name -> fields."""
+def _config_sections(text: str) -> dict:
+    """The generated config's top-level ``key:`` blocks, as their body lines."""
     lines = text.splitlines()
     require(lines and lines[0].startswith("#"), "no generated-file header")
-    require(lines[1].startswith("mcp_servers:"), lines[:2])
-    if lines[1] == "mcp_servers: {}":
+    sections: dict[str, list[str]] = {}
+    key = None
+    for line in lines[1:]:
+        if line and not line.startswith(" "):
+            key = line.split(":", 1)[0]
+            sections[key] = []
+        elif line == "":
+            key = None
+        elif key is not None:
+            sections[key].append(line)
+        else:  # pragma: no cover - a shape this parser does not expect
+            raise AssertionError(f"config line outside any section: {line!r}")
+    return sections
+
+
+def _mcp_server_blocks(text: str) -> dict:
+    """Parse the ``mcp_servers`` block: ``{}`` -> no servers, else name -> fields."""
+    body = _config_sections(text).get("mcp_servers", [])
+    if not body:
         return {}
     servers: dict[str, dict] = {}
     current: dict | None = None
-    for line in lines[2:]:
+    for line in body:
         if line.startswith("    "):
             key, _, value = line.strip().partition(":")
             if value:
@@ -231,11 +332,35 @@ def _mcp_server_blocks(text: str) -> dict:
             name = line.strip().rstrip(":")
             current = {}
             servers[name] = current
-        elif line == "":
-            break
         else:  # pragma: no cover - a shape this parser does not expect
-            raise AssertionError(f"unexpected config line: {line!r}")
+            raise AssertionError(f"unexpected mcp_servers line: {line!r}")
     return servers
+
+
+def _platform_toolsets(text: str) -> dict:
+    """Parse ``platform_toolsets``: ``{platform: [toolset names]}``.
+
+    An explicit empty list (``cli: []``) stays distinguishable from an absent
+    platform because it is recorded as an empty list, not dropped.
+    """
+    body = _config_sections(text).get("platform_toolsets", [])
+    result: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in body:
+        stripped = line.strip()
+        if line.startswith("    "):
+            require(stripped.startswith("- "), f"unexpected toolset entry: {line!r}")
+            require(current is not None, line)
+            result[current].append(stripped[2:])
+        elif line.startswith("  "):
+            name, _, value = stripped.partition(":")
+            name, value = name.strip(), value.strip()
+            require(value in ("", "[]"), f"unexpected platform value: {line!r}")
+            result.setdefault(name, [])
+            current = name
+        else:  # pragma: no cover - a shape this parser does not expect
+            raise AssertionError(f"unexpected platform_toolsets line: {line!r}")
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -332,6 +457,8 @@ def _argv(tmp_path, arm, *, drop=None, override=None):
         arm,
         "--home",
         str(tmp_path / "home"),
+        "--state-dir",
+        str(_state_dir(tmp_path)),
         "--workdir",
         str(tmp_path / "work"),
         "--mission",
@@ -474,9 +601,31 @@ def test_the_arms_toolset_lists_are_narrow_and_disjoint():
     wrapper = arm_run.effective_toolsets("wrapper")
 
     require(native == arm_run.NATIVE_TOOLSETS == ("terminal",), native)
-    require(wrapper == arm_run.WRAPPER_TOOLSETS == (arm_run.MCP_TOOLSET,), wrapper)
+    require(wrapper == arm_run.WRAPPER_TOOLSETS == (arm_run.MCP_SERVER_NAME,), wrapper)
     require("file" not in native and "file" not in wrapper, (native, wrapper))
     require(not set(native) & set(wrapper), (native, wrapper))
+
+
+def test_the_wrapper_toolset_is_the_bare_server_name_not_mcp_prefixed():
+    """``-t`` is the MCP spawn allowlist matched against ``mcp_servers`` keys.
+
+    ``mcp-<server>`` is neither a server key nor a toolset name, so it selects
+    nothing; the bare configured server name is the value that works. A
+    regression to the ``mcp-`` form is the exact defect this pins.
+    """
+    wrapper = arm_run.effective_toolsets("wrapper")
+
+    require(wrapper == ("marimo-inspect",), wrapper)
+    require(wrapper[0] == arm_run.MCP_SERVER_NAME, wrapper)
+    require(not wrapper[0].startswith("mcp-"), wrapper)
+    require(
+        f"mcp-{arm_run.MCP_SERVER_NAME}" not in wrapper,
+        "the wrapper arm regressed to the mcp-<server> spelling",
+    )
+    # The config's built-in list is a different surface again: empty for wrapper.
+    require(
+        arm_run.config_toolsets("wrapper") == (), arm_run.config_toolsets("wrapper")
+    )
 
 
 @pytest.mark.parametrize(
@@ -521,6 +670,9 @@ def test_fingerprint_covers_exactly_the_documented_settings():
         set(arm_run.FINGERPRINT_KEYS) == set(json.loads(payload)),
         arm_run.FINGERPRINT_KEYS,
     )
+    # The state dir is recorded in the metadata instead: each arm stages its own
+    # server under its own dir, so hashing it in would break the comparison.
+    require("state_dir" not in arm_run.FINGERPRINT_KEYS, arm_run.FINGERPRINT_KEYS)
 
 
 def test_fingerprint_line_is_printed_for_both_arms(tmp_path, capsys):
@@ -621,11 +773,81 @@ def test_native_dry_run_writes_the_launcher_and_prepends_its_bin_dir(tmp_path, c
     )
 
     env = arm_run.build_child_env(
-        tmp_path / "home", "native", base_env={"PATH": "rest"}
+        tmp_path / "home",
+        "native",
+        state_dir=_state_dir(tmp_path),
+        base_env={"PATH": "rest"},
     )
     require(env["PATH"].startswith(str(bin_dir)), env["PATH"])
     require(env["PATH"].endswith("rest"), env["PATH"])
     require(env["PATH"] == str(bin_dir) + os.pathsep + "rest", env["PATH"])
+
+
+def test_native_child_env_declares_the_bin_dir_in_original_path_too(tmp_path):
+    """The login shell rebuilds PATH from ORIGINAL_PATH, so both must carry it.
+
+    Git-bash's ``/etc/profile`` does ``ORIGINAL_PATH="${ORIGINAL_PATH:-${PATH}}"``
+    and then rebuilds ``PATH`` from it: an entry added only to ``PATH`` is
+    discarded and the bare ``pair`` command is not found. Pinning the entry in
+    both lists is what makes the interface note's "already on your PATH" claim
+    true on Windows/git-bash.
+    """
+    home = tmp_path / "home"
+    bin_dir = str(home / arm_run.BIN_DIRNAME)
+    env = arm_run.build_child_env(
+        home,
+        "native",
+        state_dir=_state_dir(tmp_path),
+        base_env={"PATH": "rest", "ORIGINAL_PATH": "other"},
+    )
+
+    require(env["PATH"] == bin_dir + os.pathsep + "rest", env["PATH"])
+    require(
+        env["ORIGINAL_PATH"] == bin_dir + os.pathsep + "other", env["ORIGINAL_PATH"]
+    )
+    require(env["ORIGINAL_PATH"].startswith(bin_dir), env["ORIGINAL_PATH"])
+
+
+def test_native_child_env_tolerates_a_missing_original_path(tmp_path):
+    """POSIX (and any shell without the variable): the PATH entry is the whole story."""
+    env = arm_run.build_child_env(
+        tmp_path / "home",
+        "native",
+        state_dir=_state_dir(tmp_path),
+        base_env={"PATH": "rest"},
+    )
+
+    require("ORIGINAL_PATH" not in env, env.get("ORIGINAL_PATH"))
+
+
+def test_native_child_env_does_not_duplicate_the_bin_dir(tmp_path):
+    home = tmp_path / "home"
+    bin_dir = str(home / arm_run.BIN_DIRNAME)
+    env = arm_run.build_child_env(
+        home,
+        "native",
+        state_dir=_state_dir(tmp_path),
+        base_env={"PATH": f"a{os.pathsep}{bin_dir}", "ORIGINAL_PATH": bin_dir},
+    )
+
+    require(env["PATH"].count(bin_dir) == 1, env["PATH"])
+    require(env["ORIGINAL_PATH"].count(bin_dir) == 1, env["ORIGINAL_PATH"])
+    require(env["PATH"] == bin_dir + os.pathsep + "a", env["PATH"])
+
+
+def test_native_child_env_leaves_an_empty_path_clean(tmp_path):
+    home = tmp_path / "home"
+    env = arm_run.build_child_env(
+        home,
+        "native",
+        state_dir=_state_dir(tmp_path),
+        base_env={"PATH": "", "ORIGINAL_PATH": ""},
+    )
+
+    require(env["PATH"] == str(home / arm_run.BIN_DIRNAME), env["PATH"])
+    require(
+        env["ORIGINAL_PATH"] == str(home / arm_run.BIN_DIRNAME), env["ORIGINAL_PATH"]
+    )
 
 
 def test_wrapper_run_writes_no_launcher(tmp_path, capsys):
@@ -705,6 +927,162 @@ def test_the_launched_argv_is_the_printed_argv(tmp_path, capsys):
 
 
 # --------------------------------------------------------------------------- #
+# 6b. The marimo state dir: required, validated, exported, recorded
+# --------------------------------------------------------------------------- #
+
+
+def test_the_state_dir_variables_are_the_documented_three():
+    """Every name marimo may resolve its registry directory from is covered."""
+    require(
+        tuple(arm_run.STATE_DIR_ENV_VARS) == ("USERPROFILE", "XDG_STATE_HOME", "HOME"),
+        arm_run.STATE_DIR_ENV_VARS,
+    )
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_state_dir_is_a_required_cli_argument_for_both_arms(tmp_path, capsys, arm):
+    """No default: a run cannot silently fall back to the operator's state."""
+    with pytest.raises(SystemExit) as exit_info:
+        arm_run.main(_argv(tmp_path, arm, drop="--state-dir"))
+
+    require(exit_info.value.code not in (0, None), exit_info.value.code)
+    captured = capsys.readouterr()
+    require("--state-dir" in captured.err, captured.err)
+    require(captured.out == "", "a refused run still printed a fingerprint")
+    require(
+        not (tmp_path / "home").exists(), "a refused run wrote its configuration home"
+    )
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+@pytest.mark.parametrize("bogus", ["relative/state", ""], ids=["relative", "blank"])
+def test_blank_or_relative_state_dir_is_refused_for_both_arms(
+    tmp_path, capsys, arm, bogus
+):
+    """Refused with JSON, and before anything is printed or written."""
+    detail = _refusal(
+        tmp_path, capsys, _argv(tmp_path, arm, override=("--state-dir", bogus))
+    )
+
+    require("state dir" in detail, detail)
+    require(
+        not (tmp_path / "home").exists(), "a refused run wrote its configuration home"
+    )
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_non_existent_state_dir_is_refused_for_both_arms(tmp_path, capsys, arm):
+    missing = tmp_path / "no-such-state"
+
+    detail = _refusal(
+        tmp_path, capsys, _argv(tmp_path, arm, override=("--state-dir", str(missing)))
+    )
+
+    require("existing directory" in detail, detail)
+    require(not missing.exists(), missing)
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_a_state_dir_that_is_a_file_is_refused(tmp_path, capsys, arm):
+    a_file = tmp_path / "state-file"
+    a_file.write_text("not a directory", encoding="utf-8")
+
+    detail = _refusal(
+        tmp_path, capsys, _argv(tmp_path, arm, override=("--state-dir", str(a_file)))
+    )
+
+    require("existing directory" in detail, detail)
+
+
+def test_perform_run_requires_the_state_dir_keyword(tmp_path):
+    """No default at the API either: omitting it is a TypeError, not a fallback."""
+    with pytest.raises(TypeError):
+        arm_run.perform_run(
+            arm="native",
+            home=tmp_path / "home",
+            workdir=tmp_path / "work",
+            mission=MISSION,
+            interface=NATIVE_NOTE,
+            transcript=tmp_path / "arm.txt",
+            model="a-model",
+            provider="a-provider",
+            reasoning="medium",
+            max_turns=12,
+            run_budget=240.0,
+            manifest=tmp_path / "manifest.json",
+            shim=BENCH / "pair_cli.py",
+        )  # no state_dir
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_child_env_carries_the_state_dir_in_all_three_variables(tmp_path, arm):
+    """All three names point at the arm's own dir; the operator's are overwritten.
+
+    marimo's registry discovery reads the state dir *its own process* resolves,
+    so the child must resolve the dir ``mission_setup`` staged the server in. The
+    mapping is identical for both arms, so it favours neither interface.
+    """
+    state = _state_dir(tmp_path)
+    base_env = {
+        "PATH": "rest",
+        "HOME": "operator-home",
+        "USERPROFILE": "operator-profile",
+        "XDG_STATE_HOME": "operator-state",
+    }
+
+    env = arm_run.build_child_env(
+        tmp_path / "home", arm, state_dir=state, base_env=base_env
+    )
+
+    for name in arm_run.STATE_DIR_ENV_VARS:
+        require(name in env, name)
+        require(env[name] == str(state), (name, env[name]))
+    for stale in ("operator-home", "operator-profile", "operator-state"):
+        require(stale not in env.values(), (stale, env))
+    require("rest" in env["PATH"], env["PATH"])
+
+
+def test_both_arms_get_the_same_state_dir_variables(tmp_path):
+    state = _state_dir(tmp_path)
+    built = {
+        arm: arm_run.build_child_env(
+            tmp_path / f"{arm}-home", arm, state_dir=state, base_env={"PATH": "rest"}
+        )
+        for arm in arm_run.ARMS
+    }
+
+    for name in arm_run.STATE_DIR_ENV_VARS:
+        require(
+            built["native"][name] == built["wrapper"][name] == str(state),
+            (name, built),
+        )
+
+
+def test_build_child_env_refuses_a_state_dir_that_is_not_an_existing_dir(tmp_path):
+    for bogus, match in (
+        (str(tmp_path / "missing"), "existing directory"),
+        ("relative/state", "must be absolute"),
+    ):
+        with pytest.raises(arm_run.ArmRunRefusal, match=match):
+            arm_run.build_child_env(
+                tmp_path / "home", "native", state_dir=bogus, base_env={}
+            )
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_the_launched_child_env_and_metadata_carry_the_state_dir(tmp_path, arm):
+    recorder = Recorder(exit_code=0)
+
+    metadata, _recorder, case = _run(tmp_path, arm, recorder=recorder)
+
+    require(metadata["state_dir"] == str(case["state_dir"]), metadata)
+    require(len(recorder.calls) == 1, recorder.calls)
+    env = recorder.calls[0][1]
+    for name in arm_run.STATE_DIR_ENV_VARS:
+        require(env[name] == metadata["state_dir"], (name, env[name], metadata))
+
+
+# --------------------------------------------------------------------------- #
 # The child argv and environment themselves
 # --------------------------------------------------------------------------- #
 
@@ -739,8 +1117,37 @@ def test_child_argv_is_one_shot_isolated_and_names_the_arm(tmp_path, arm):
     require(argv[argv.index("--source") + 1] == f"arm-{arm}", argv)
     # Rules, AGENTS.md and memory injection are off; no session is resumed.
     require("--ignore-rules" in argv, argv)
+    # Unattended: a non-interactive child cannot answer an approval prompt.
+    require("--yolo" in argv, argv)
     for forbidden in ("--resume", "-r", "--continue", "-c", "--safe-mode"):
         require(forbidden not in argv, (forbidden, argv))
+
+
+@pytest.mark.parametrize("arm", ["native", "wrapper"])
+def test_both_arms_run_unattended_with_the_same_yolo_flag(tmp_path, arm):
+    """``--yolo`` is the CLI's unattended switch and must be identical per arm.
+
+    It is one entry in the shared argv builder, applied to both arms, so it
+    cannot favour either interface; without it the native arm can stall on an
+    approval prompt it can never answer.
+    """
+    argv = arm_run.build_child_argv(
+        command="hermes",
+        prompt=tmp_path / "prompt.md",
+        workdir=tmp_path / "work",
+        model="a-model",
+        provider="a-provider",
+        reasoning="medium",
+        max_turns=12,
+        run_budget=240.0,
+        toolsets=arm_run.effective_toolsets(arm),
+        source=f"arm-{arm}",
+    )
+
+    require(argv.count("--yolo") == 1, argv)
+    require(argv[argv.index("--yolo")] == "--yolo", argv)
+    # It is a boolean switch: it must not swallow the following token.
+    require(argv[argv.index("--yolo") + 1] != "", argv)
 
 
 def _toolsets_in_argv(argv):
@@ -774,7 +1181,8 @@ def test_built_argv_grants_only_the_arms_own_toolsets(tmp_path, arm):
     if arm == "native":
         require(toolsets == ["terminal"], toolsets)
     else:
-        require(toolsets == [arm_run.MCP_TOOLSET], toolsets)
+        require(toolsets == [arm_run.MCP_SERVER_NAME], toolsets)
+        require(toolsets != [f"mcp-{arm_run.MCP_SERVER_NAME}"], toolsets)
     # The generic file toolset is granted to neither arm: the mission forbids
     # file-tool edits, so it would be a violation path neither interface needs.
     require("file" not in toolsets, toolsets)
@@ -792,7 +1200,7 @@ def test_native_command_line_has_the_terminal_toolset_and_no_file_toolset(
     require("file" not in toolsets, (toolsets, line))
     # ``--query-file`` names the prompt path; it is not the file toolset.
     require("--query-file" in line, line)
-    require(arm_run.MCP_TOOLSET not in toolsets, (toolsets, line))
+    require(arm_run.MCP_SERVER_NAME not in toolsets, (toolsets, line))
 
 
 def test_wrapper_command_line_has_only_the_mcp_toolset(tmp_path, capsys):
@@ -801,8 +1209,8 @@ def test_wrapper_command_line_has_only_the_mcp_toolset(tmp_path, capsys):
     line = _printed(capsys, "COMMAND: ")
     toolsets = _toolsets_in_printed_line(line)
 
-    require(toolsets == [arm_run.MCP_TOOLSET], (toolsets, line))
-    require(arm_run.MCP_SERVER_NAME in toolsets[0], (toolsets, line))
+    require(toolsets == [arm_run.MCP_SERVER_NAME], (toolsets, line))
+    require(not toolsets[0].startswith("mcp-"), (toolsets, line))
     require("file" not in toolsets, (toolsets, line))
     require("terminal" not in toolsets, (toolsets, line))
 
@@ -835,7 +1243,10 @@ def test_every_budget_flag_is_identical_across_the_two_arms(tmp_path):
 
 def test_build_child_env_points_at_the_ephemeral_home(tmp_path):
     env = arm_run.build_child_env(
-        tmp_path / "home", "wrapper", base_env={"PATH": "rest", "KEEP": "1"}
+        tmp_path / "home",
+        "wrapper",
+        state_dir=_state_dir(tmp_path),
+        base_env={"PATH": "rest", "KEEP": "1"},
     )
 
     require(env["HERMES_HOME"] == str(tmp_path / "home"), env)
@@ -844,8 +1255,12 @@ def test_build_child_env_points_at_the_ephemeral_home(tmp_path):
 
 
 def test_build_child_env_refuses_an_unknown_arm(tmp_path):
+    # The arm is checked first: the state dir is required, so it is passed here
+    # even though the unknown arm is what must be refused.
     with pytest.raises(arm_run.ArmRunRefusal, match="arm must be one of"):
-        arm_run.build_child_env(tmp_path / "home", "serial")
+        arm_run.build_child_env(
+            tmp_path / "home", "serial", state_dir=_state_dir(tmp_path)
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -861,6 +1276,7 @@ def test_metadata_carries_the_documented_keys(tmp_path, capsys):
         == {
             "arm",
             "fingerprint",
+            "state_dir",
             "toolsets",
             "mission_sha256",
             "interface_sha256",
@@ -872,6 +1288,7 @@ def test_metadata_carries_the_documented_keys(tmp_path, capsys):
         sorted(metadata),
     )
     require(metadata["arm"] == "wrapper", metadata)
+    require(metadata["state_dir"] == str(tmp_path / "state"), metadata)
     require(metadata["ended_at"] == FIXED_TIME, metadata)
     require(metadata["exit_code"] == 0, metadata)
 

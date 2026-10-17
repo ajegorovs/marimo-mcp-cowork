@@ -22,12 +22,31 @@ What the arms differ in
 marimo       ``0.24`` (this repo's pinned range)         ``0.25.1``
 interface    this repo's MCP server, ``marimo-inspect``  a ``pair`` launcher
 guidance     the server's packaged MCP resources         the CLI's own ``--help``
-toolsets     ``mcp-marimo-inspect`` only                  ``terminal`` only
+``-t``       ``marimo-inspect`` (the server name)        ``terminal``
+built-ins    ``[]`` (the server is the whole interface)  ``[terminal]``
 ===========  =========================================  ==========================
 
 Everything else is identical by construction: the same mission file, the same
 model, provider, reasoning level, turn limit and wall-clock budget, and one
 fresh session with no resumed context.
+
+What ``-t/--toolsets`` actually means (measured, not assumed)
+------------------------------------------------------------
+``-t`` is **not** a toolset-name selector for the built-in surface. It is the
+**process-wide MCP spawn allowlist**: ``hermes_cli/mcp_startup.py``
+``set_mcp_server_filter()`` splits the value on commas and stores it, and every
+discovery path keeps only the servers whose ``mcp_servers`` **key** is in that
+list (``[n for n in pending if n in _mcp_server_filter]``). Built-in toolset
+names in the list are inert there — they simply never match a server key.
+
+So the wrapper arm's value is the **bare configured server name**
+(``marimo-inspect``), never ``mcp-<server>``: ``hermes_cli/tools_config.py``
+``CONFIGURABLE_TOOLSETS`` has no ``mcp`` entry and no ``mcp-<server>`` form, so
+``mcp-marimo-inspect`` matches no server and narrows nothing. An unknown
+``-t`` list does **not** narrow the built-in tools either — the native arm's
+``terminal`` survives a rewrite of the wrapper arm's list. Narrowing the
+built-in surface therefore has to be written into the arm's own config as well
+(below).
 
 Each arm is granted exactly the tools its own interface needs and nothing more:
 the native arm gets a shell (to invoke the ``pair`` shim), the wrapper arm gets
@@ -45,17 +64,75 @@ of the interface under test, so it is recorded separately in the run metadata
 would make the two arms' fingerprints differ by construction and destroy the
 comparability check.
 
+Unattended mode
+---------------
+Both arms run ``hermes chat --yolo``. Terminal commands in a non-interactive
+child cannot answer an approval prompt, so without the CLI's unattended switch
+the native arm (which *must* go through a shell to run ``pair``) can be stopped
+dead by a prompt no one can answer. ``--yolo`` is applied to **both** arms by
+construction — it is one entry in :func:`build_child_argv` for either arm — so it
+cannot favour one interface over the other; it removes a way for the run to
+stall, not a restriction on either arm.
+
 The configuration home
 ----------------------
 ``--home`` receives a ``config.yaml`` that declares the wrapper arm's single MCP
 server (``marimo-inspect``) and *nothing else*; for the native arm it declares
 no MCP servers at all, because the native arm reaches the notebook only through
-the ``pair`` launcher. The launcher is two files — a POSIX ``sh`` script and a
-``.cmd`` batch file — inside ``<home>/bin``, and that directory is prepended to
-the *native* child's ``PATH`` so the bare command ``pair`` resolves. Both
-launchers pass their arguments through to the shim untouched, with the manifest
-path quoted for their own shell; the shim keeps the manifest the only place the
-notebook and session identifiers come from.
+the ``pair`` launcher. The same file pins the **built-in** toolset list under
+``platform_toolsets.<platform>``, because ``-t`` is only the MCP spawn allowlist
+(above): the native arm gets exactly ``[terminal]``, and the wrapper arm gets an
+**empty** list, so its sole interface is the declared MCP server. The platform
+key is ``cli`` — the child is ``hermes chat``, which resolves its toolsets for
+``platform="cli"`` (``hermes_cli/oneshot.py``). An explicitly saved list is
+authoritative in ``hermes_cli/tools_config.py`` ``_get_platform_tools`` (via
+``parse_platform_toolsets_value``), and an explicit *empty* list is a fail-closed
+zero-tool selection rather than "no restriction"
+(``_platform_toolsets_explicitly_saved``).
+
+The launcher is two files — a POSIX ``sh`` script and a ``.cmd`` batch file —
+inside ``<home>/bin``, and that directory is prepended to the *native* child's
+``PATH`` so the bare command ``pair`` resolves. On Windows/git-bash that prepend
+is not sufficient on its own: Hermes runs terminal commands through a **login**
+bash, and git-bash's ``/etc/profile`` rebuilds ``PATH`` from ``$ORIGINAL_PATH``
+when it is set, discarding anything added only to ``PATH``. The entry is
+therefore added to both ``PATH`` and ``ORIGINAL_PATH`` (see
+:func:`build_child_env`). Both launchers pass their arguments through to the
+shim untouched, with the manifest path quoted for their own shell; the shim
+keeps the manifest the only place the notebook and session identifiers come
+from.
+
+The child's marimo state
+------------------------
+marimo's discovery is **registry-based**: a server records itself in a ``servers``
+registry under the state directory *its own process* resolves (``XDG_STATE_HOME``
+on POSIX, ``%USERPROFILE%`` on Windows), and ``discover_servers()`` only ever
+reads the registry of that same directory. ``mission_setup`` launches the arm's
+staged server with an isolated state dir — it exports ``USERPROFILE`` and
+``XDG_STATE_HOME`` for that server — so the staged server's registry entry lives
+there and nowhere else.
+
+A wrapper-arm child that simply inherited the operator's environment therefore
+read the *operator's* registry, found no entry for the staged server, and —
+measured, not assumed — ``discover_servers()`` did not finish within 90 s
+(``{"seconds": 90.0, "timeout": true}``); run against the arm's own state dir the
+same discovery returned in **0.2 s** with exactly the one staged server. In the
+two real runs this surfaced as ``list_active_notebooks`` — the wrapper arm's
+documented discovery entry point — hanging until the MCP client cut it off at
+60 s: no session was ever bound, every other tool then refused with
+``session_required``, and the wrapper arm has no shell with which to work around
+it. Pointing the child at the arm's own state dir is what makes discovery
+succeed.
+
+``--state-dir`` is therefore **required and has no default**, so a run cannot
+silently fall back to the operator's state, and it is validated (absolute, and
+an existing directory) before anything is printed or written. The directory is
+exported to the child as ``USERPROFILE``, ``XDG_STATE_HOME`` **and** ``HOME``
+(:data:`STATE_DIR_ENV_VARS` — all three, because which one a given platform's
+marimo consults differs), and the mapping is applied to **both arms
+identically**, so it is not an advantage for either: the native arm reaches the
+same staged server through the ``pair`` launcher, which resolves that same
+registry. The dir is recorded in the run metadata.
 
 Prompt assembly
 ---------------
@@ -98,17 +175,19 @@ from pathlib import Path
 __all__ = [
     "ARMS",
     "BIN_DIRNAME",
+    "CHILD_PLATFORM",
     "CONFIG_FILENAME",
     "FINGERPRINT_KEYS",
     "MCP_SERVER_NAME",
-    "MCP_TOOLSET",
     "NATIVE_TOOLSETS",
     "PAIR_LAUNCHER",
     "PAIR_LAUNCHER_CMD",
     "PROMPT_FILENAME",
     "REASONING_LEVELS",
     "RUN_BUDGET_GRACE_S",
+    "STATE_DIR_ENV_VARS",
     "TRANSPORT_ARGS",
+    "WRAPPER_BUILTIN_TOOLSETS",
     "WRAPPER_TOOLSETS",
     "ArmRunRefusal",
     "assemble_prompt",
@@ -116,6 +195,7 @@ __all__ = [
     "build_child_argv",
     "build_child_env",
     "cmd_launcher",
+    "config_toolsets",
     "effective_toolsets",
     "main",
     "meta_path_for",
@@ -126,24 +206,41 @@ __all__ = [
     "run_child",
     "sha256_bytes",
     "utc_now",
+    "validate_state_dir",
     "write_launcher",
 ]
 
 ARMS = ("native", "wrapper")
 
-#: The wrapper arm's one MCP server, and the toolset name its tools land in
-#: (Hermes registers MCP tools under ``mcp-<server>``).
+#: The wrapper arm's one MCP server. It is also the value of that arm's
+#: ``-t/--toolsets``: ``-t`` is the **MCP spawn allowlist**, matched against the
+#: ``mcp_servers`` keys (``hermes_cli/mcp_startup.py`` ``set_mcp_server_filter``),
+#: so the bare server name is what selects it. ``mcp-<server>`` is *not* a
+#: toolset name (``hermes_cli/tools_config.py`` ``CONFIGURABLE_TOOLSETS`` has no
+#: ``mcp`` entry and no ``mcp-<server>`` form) and matches no server key, so it
+#: narrows nothing — see the module docstring.
 MCP_SERVER_NAME = "marimo-inspect"
-MCP_TOOLSET = f"mcp-{MCP_SERVER_NAME}"
 
-#: Each arm's toolset list, as narrow as its own interface allows. The native
-#: arm's only interface is the ``pair`` command, so it needs a shell and nothing
-#: else. The wrapper arm's only interface is the MCP server, so it needs that
-#: server's tools and nothing else. Neither arm gets the generic file toolset:
-#: the mission forbids editing the notebook with file tools, so granting it
-#: would add a violation path that neither interface requires.
+#: The platform ``hermes chat`` resolves its toolsets for, so the key the arm's
+#: own config must use under ``platform_toolsets`` (``hermes_cli/oneshot.py``).
+CHILD_PLATFORM = "cli"
+
+#: Each arm's ``-t/--toolsets`` value. The native arm's only interface is the
+#: ``pair`` command, so it needs a shell and nothing else (and a built-in name in
+#: the allowlist is inert). The wrapper arm's only interface is the MCP server, so
+#: its allowlist names exactly that server — the bare name, not ``mcp-<server>``.
 NATIVE_TOOLSETS = ("terminal",)
-WRAPPER_TOOLSETS = (MCP_TOOLSET,)
+WRAPPER_TOOLSETS = (MCP_SERVER_NAME,)
+
+#: The **built-in** toolset list each arm's own config pins under
+#: ``platform_toolsets.<platform>``. ``-t`` only gates MCP server spawning, so it
+#: cannot narrow the built-in surface; the saved config list can, and an explicit
+#: empty list is a fail-closed zero-tool selection rather than "no restriction".
+#: The wrapper arm therefore gets no built-in toolset at all — its declared MCP
+#: server is its whole interface. Neither arm gets the generic file toolset: the
+#: mission forbids editing the notebook with file tools, so granting it would add
+#: a violation path that neither interface requires.
+WRAPPER_BUILTIN_TOOLSETS: tuple[str, ...] = ()
 
 #: Transport the generated MCP entry runs the server with, and its call timeout.
 TRANSPORT_ARGS = ("--transport", "stdio")
@@ -188,6 +285,12 @@ RUN_BUDGET_GRACE_S = 60.0
 #: Default command name for the agent under test; ``$HERMES_BIN`` overrides it.
 HERMES_COMMAND = "hermes"
 
+#: The environment variables through which a child's marimo resolves the state
+#: directory (and therefore the ``servers`` registry) it reads. All three are set
+#: to the arm's own ``--state-dir`` so the child's registry discovery sees the
+#: staged server instead of the operator's registry — see the module docstring.
+STATE_DIR_ENV_VARS = ("USERPROFILE", "XDG_STATE_HOME", "HOME")
+
 #: Session source tag prefix, so a run is filterable by the arm it belongs to.
 SOURCE_PREFIX = "arm-"
 
@@ -216,17 +319,42 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def effective_toolsets(arm: str) -> tuple[str, ...]:
-    """The explicit toolset list for *arm*.
+    """The ``-t/--toolsets`` value for *arm*.
 
-    The native arm gets exactly :data:`NATIVE_TOOLSETS` (a shell, to invoke the
-    ``pair`` shim); the wrapper arm gets exactly :data:`WRAPPER_TOOLSETS` (the
-    MCP server's tools, its one interface). Neither list contains the generic
-    file toolset, and the two lists are disjoint — the arm's interface is the
-    variable under test, so each arm is granted only its own.
+    ``-t`` is the **MCP spawn allowlist**, matched against ``mcp_servers`` keys
+    (``hermes_cli/mcp_startup.py`` ``set_mcp_server_filter``): built-in names in
+    the list never match a server key, and a server name does not narrow the
+    built-in surface. So the native arm gets exactly :data:`NATIVE_TOOLSETS` (a
+    shell, to invoke the ``pair`` shim) and the wrapper arm gets exactly
+    :data:`WRAPPER_TOOLSETS` — the **bare server name**, which is what actually
+    selects the server; ``mcp-<server>`` selects nothing. Neither list contains
+    the generic file toolset, and the two lists are disjoint.
+
+    The built-in surface is pinned separately, in the arm's own config — see
+    :func:`config_toolsets`.
     """
     require(arm in ARMS, f"arm must be one of {ARMS}, got {arm!r}")
     if arm == "wrapper":
         return WRAPPER_TOOLSETS
+    return NATIVE_TOOLSETS
+
+
+def config_toolsets(arm: str) -> tuple[str, ...]:
+    """The built-in toolset list *arm*'s config pins under ``platform_toolsets``.
+
+    ``-t`` is only the MCP spawn allowlist, so the built-in surface has to be
+    narrowed in the arm's own ``config.yaml`` (as ``platform_toolsets.<platform>``
+    for :data:`CHILD_PLATFORM`). The native arm gets exactly
+    :data:`NATIVE_TOOLSETS`; the wrapper arm gets :data:`WRAPPER_BUILTIN_TOOLSETS`,
+    an explicit **empty** list, so its declared MCP server is its only interface
+    and no built-in tool leaks in.
+
+    Raises:
+        ArmRunRefusal: On an unknown arm.
+    """
+    require(arm in ARMS, f"arm must be one of {ARMS}, got {arm!r}")
+    if arm == "wrapper":
+        return WRAPPER_BUILTIN_TOOLSETS
     return NATIVE_TOOLSETS
 
 
@@ -286,8 +414,16 @@ def render_config(arm: str, *, mcp_command: str | None = None) -> str:
 
     The wrapper arm declares exactly one MCP server — ``marimo-inspect``, run
     with *mcp_command* over stdio — and no others. The native arm declares no MCP
-    servers at all. Nothing else is written into the file, so the two arms'
-    configurations differ in exactly the way the comparison intends.
+    servers at all.
+
+    Both arms additionally pin the **built-in** toolset list under
+    ``platform_toolsets.<platform>`` (:data:`CHILD_PLATFORM`), because
+    ``-t/--toolsets`` is only the MCP spawn allowlist and cannot narrow the
+    built-in surface (see the module docstring). The native arm gets exactly
+    :data:`NATIVE_TOOLSETS`; the wrapper arm gets an explicit **empty** list, so
+    its declared MCP server is its whole interface and no built-in tool leaks in.
+    Nothing else is written into the file, so the two arms' configurations differ
+    in exactly the way the comparison intends.
 
     Raises:
         ArmRunRefusal: On an unknown arm, a missing or blank ``mcp_command`` for
@@ -316,6 +452,15 @@ def render_config(arm: str, *, mcp_command: str | None = None) -> str:
             "--mcp-command is only meaningful for the wrapper arm",
         )
         lines = [header, "mcp_servers: {}"]
+    lines.append("platform_toolsets:")
+    toolsets = config_toolsets(arm)
+    if toolsets:
+        lines.append(f"  {CHILD_PLATFORM}:")
+        lines.extend(f"    - {name}" for name in toolsets)
+    else:
+        # Explicit empty list: fail-closed zero built-in tools, not "no
+        # restriction" (hermes_cli.tools_config._platform_toolsets_explicitly_saved).
+        lines.append(f"  {CHILD_PLATFORM}: []")
     return "\n".join([*lines, ""])
 
 
@@ -494,8 +639,11 @@ def build_child_argv(
     One-shot mode with ``--query-file`` (nothing on the command line is
     shell-interpreted), ``--in`` for the starting directory, the same model,
     provider, reasoning level, turn limit and run budget for both arms, the
-    explicit narrow toolset list, ``--ignore-rules`` to skip AGENTS.md/SOUL.md/
-    memory/preloaded-skill injection, and ``--source`` naming the arm. No
+    explicit narrow ``-t`` value, ``--ignore-rules`` to skip
+    AGENTS.md/SOUL.md/memory/preloaded-skill injection, ``--yolo`` (the
+    unattended switch, applied identically to both arms — a non-interactive
+    child cannot answer a dangerous-command approval prompt, so without it the
+    native arm can stall on one), and ``--source`` naming the arm. No
     ``--resume``/``--continue`` is passed, so the child starts one fresh session
     with no resumed context.
     """
@@ -520,6 +668,7 @@ def build_child_argv(
         "-t",
         ",".join(toolsets),
         "--ignore-rules",
+        "--yolo",
         "--source",
         source,
         "--quiet",
@@ -528,27 +677,98 @@ def build_child_argv(
     ]
 
 
+def _prepend_path_entry(existing: str, entry: str) -> str:
+    """*existing* (``os.pathsep``-separated) with *entry* first, de-duplicated.
+
+    An empty *existing* yields just *entry*; an *entry* already present is moved
+    to the front rather than duplicated.
+    """
+    entries = [item for item in existing.split(os.pathsep) if item and item != entry]
+    return os.pathsep.join([entry, *entries])
+
+
+def validate_state_dir(state_dir: str | os.PathLike[str] | None) -> Path:
+    """The arm's isolated marimo state dir, refused unless absolute and existing.
+
+    The child's registry discovery reads the state directory *its own* process
+    resolves, so this must be the directory ``mission_setup`` launched this arm's
+    staged server with: a blank, relative or missing one would silently fall back
+    to the operator's registry and hang the wrapper arm's discovery (see the
+    module docstring).
+
+    Returns:
+        The state dir as a :class:`Path`.
+
+    Raises:
+        ArmRunRefusal: If *state_dir* is absent, blank, relative, or not an
+            existing directory.
+    """
+    require(
+        state_dir is not None and str(state_dir).strip() != "",
+        "the state dir must be supplied (--state-dir)",
+    )
+    path = Path(str(state_dir))
+    require(path.is_absolute(), f"the state dir must be absolute: {state_dir}")
+    require(
+        path.is_dir(),
+        f"the state dir must be an existing directory: {state_dir}",
+    )
+    return path
+
+
 def build_child_env(
     home: str | os.PathLike[str],
     arm: str,
     *,
+    state_dir: str | os.PathLike[str],
     base_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """The child's environment: an ephemeral ``HERMES_HOME``, plus ``bin`` for native.
+    """The child's environment: an ephemeral home, the marimo state, ``bin`` for native.
 
     ``HERMES_HOME`` points the child at the run's own configuration home, so the
-    active profile is neither read nor modified. The native arm also gets
+    active profile is neither read nor modified.
+
+    ``USERPROFILE``, ``XDG_STATE_HOME`` and ``HOME`` are all set to
+    *state_dir* (:data:`STATE_DIR_ENV_VARS`) — the isolated state directory
+    ``mission_setup`` launched this arm's staged marimo server with. marimo's
+    discovery is registry-based and reads the registry under the state directory
+    its own process resolves, so without this the wrapper arm's
+    ``list_active_notebooks`` reads the operator's registry, finds no staged
+    server and hangs until the MCP client times out (see the module docstring).
+    The mapping is applied to **both** arms identically.
+
+    The native arm also gets
     ``<home>/bin`` prepended to ``PATH``, which is what makes the bare command
-    ``pair`` resolve to its launcher.
+    ``pair`` resolve.
+
+    On Windows the entry is prepended to ``ORIGINAL_PATH`` as well, because
+    ``PATH`` alone is not enough there: Hermes runs the agent's terminal commands
+    through a **login** bash, and git-bash's ``/etc/profile`` rebuilds ``PATH``
+    from ``$ORIGINAL_PATH`` when that variable is set
+    (``ORIGINAL_PATH="${ORIGINAL_PATH:-${PATH}}"``) — so an entry added only to
+    ``PATH`` is discarded and the agent sees ``command not found``. The harness
+    therefore declares the directory in both lists when ``ORIGINAL_PATH`` is
+    present. On POSIX no such variable exists and the ``PATH`` entry is the whole
+    story. Names are added as-is (``os.pathsep``-joined): on Windows the MSYS
+    runtime converts Windows-form entries when bash starts, and ``ORIGINAL_PATH``
+    shares that form.
+
+    Raises:
+        ArmRunRefusal: On an unknown arm, or a state dir that is not an existing
+            absolute directory.
     """
     require(arm in ARMS, f"arm must be one of {ARMS}, got {arm!r}")
+    state = validate_state_dir(state_dir)
     env = dict(os.environ if base_env is None else base_env)
     home = Path(home)
     env["HERMES_HOME"] = str(home)
+    for name in STATE_DIR_ENV_VARS:
+        env[name] = str(state)
     if arm == "native":
         bin_dir = str(home / BIN_DIRNAME)
-        existing = env.get("PATH", "")
-        env["PATH"] = f"{bin_dir}{os.pathsep}{existing}" if existing else bin_dir
+        env["PATH"] = _prepend_path_entry(env.get("PATH", ""), bin_dir)
+        if "ORIGINAL_PATH" in env:
+            env["ORIGINAL_PATH"] = _prepend_path_entry(env["ORIGINAL_PATH"], bin_dir)
     return env
 
 
@@ -606,6 +826,7 @@ def _validate(
     reasoning: str,
     max_turns: object,
     run_budget: object,
+    state_dir: str | os.PathLike[str] | None,
     manifest: str | os.PathLike[str] | None,
     shim: str | os.PathLike[str] | None,
     mcp_command: str | None,
@@ -630,6 +851,11 @@ def _validate(
         and float(run_budget) > 0,
         f"run_budget must be a positive number of seconds, got {run_budget!r}",
     )
+    # The arm's marimo state dir, for both arms and checked here -- before
+    # anything is printed or written -- so a refused run never reaches the
+    # fingerprint line: a blank, relative or missing dir would let the child's
+    # registry discovery fall back to the operator's state.
+    validate_state_dir(state_dir)
     if arm == "native":
         require(
             manifest is not None and str(manifest).strip() != "",
@@ -680,6 +906,7 @@ def perform_run(
     *,
     arm: str,
     home: str | os.PathLike[str],
+    state_dir: str | os.PathLike[str],
     workdir: str | os.PathLike[str],
     mission: str | os.PathLike[str],
     interface: str | os.PathLike[str],
@@ -711,6 +938,11 @@ def perform_run(
         arm: One of :data:`ARMS`.
         home: The ephemeral configuration home for this run (exported as the
             child's ``HERMES_HOME``).
+        state_dir: The arm's isolated marimo state dir — the directory
+            ``mission_setup`` launched the staged server with. Required, with no
+            default, so a run cannot silently fall back to the operator's state;
+            exported to the child as ``USERPROFILE``, ``XDG_STATE_HOME`` and
+            ``HOME`` (:data:`STATE_DIR_ENV_VARS`), for both arms identically.
         workdir: The directory the agent starts in.
         mission: The shared mission file, identical for both arms.
         interface: The arm's interface note.
@@ -748,10 +980,12 @@ def perform_run(
         reasoning=reasoning,
         max_turns=max_turns,
         run_budget=run_budget,
+        state_dir=state_dir,
         manifest=manifest,
         shim=shim,
         mcp_command=mcp_command,
     )
+    state = validate_state_dir(state_dir)
     now = clock or utc_now
     toolsets = effective_toolsets(arm)
     fingerprint = budget_fingerprint(
@@ -786,12 +1020,17 @@ def perform_run(
         toolsets=toolsets,
         source=f"{SOURCE_PREFIX}{arm}",
     )
-    env = build_child_env(home, arm)
+    env = build_child_env(home, arm, state_dir=state)
     transcript = Path(transcript)
 
     metadata = {
         "arm": arm,
         "fingerprint": fingerprint,
+        # The arm's isolated marimo state dir, exported to the child as
+        # STATE_DIR_ENV_VARS. Recorded here, not hashed into the fingerprint:
+        # each arm stages its own server under its own dir, so a per-arm
+        # difference is expected and must not break the comparability check.
+        "state_dir": str(state),
         # Recorded here rather than hashed into the fingerprint: the toolset list
         # is part of the interface under test, so a per-arm difference in it is
         # expected and must not make the two arms look incomparable.
@@ -834,6 +1073,17 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--home",
         required=True,
         help="ephemeral configuration home for this run (the child's HERMES_HOME)",
+    )
+    parser.add_argument(
+        "--state-dir",
+        required=True,
+        dest="state_dir",
+        help=(
+            "the arm's isolated marimo state dir (the directory mission_setup"
+            " launched the staged server with; exported to the child as "
+            + ", ".join(STATE_DIR_ENV_VARS)
+            + ")"
+        ),
     )
     parser.add_argument(
         "--workdir", required=True, help="the agent's starting directory"
@@ -891,6 +1141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         metadata = perform_run(
             arm=args.arm,
             home=args.home,
+            state_dir=args.state_dir,
             workdir=args.workdir,
             mission=args.mission,
             interface=args.interface,
