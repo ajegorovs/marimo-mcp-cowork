@@ -1,5 +1,18 @@
 # Marimo Inspection Tools vs marimo-pair CM Scripts
 
+> **Historical (superseded as the authoritative comparison).** This document is a
+> source-inspection comparison of marimo's *built-in AI tools* against the
+> marimo-pair **CM scripts**, i.e. against earlier machinery than the core
+> `marimo pair` CLI this project now compares itself to. It is kept for its
+> provenance and its still-useful per-area notes; it is **not** current guidance
+> and must not be cited as the project's comparison with upstream.
+>
+> Current comparison: [`interface-positioning.md`](interface-positioning.md)
+> (positioning and evidence) and
+> [`restricted-interface-comparison.md`](restricted-interface-comparison.md)
+> (the measurement record). Some in-line statements below reflect the
+> pre-`restart_kernel`, pre-binding-work surface of that time.
+
 ## Overview
 
 This document compares two approaches for interacting with a live marimo

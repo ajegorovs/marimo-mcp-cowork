@@ -9,6 +9,11 @@
 This document is the operating contract for where the agent harness,
 `marimo-inspect`, and marimo run, how they connect, and which URLs are resolved
 by which process. It is not an installation guide or an experiment log.
+Tool-level semantics — how a call resolves its target, and what a refusal
+returns — belong to the packaged MCP resources; see
+[`mcp-contract.md`](mcp-contract.md) for the ownership map and
+[`interface-positioning.md`](interface-positioning.md) for how this package
+relates to upstream `marimo pair`.
 
 ## Terms and connection direction
 

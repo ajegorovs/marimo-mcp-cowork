@@ -79,7 +79,9 @@ contract therefore lives in `README.md` and the per-harness docs:
   for testing unreleased changes. It is not part of normal consumer onboarding
   and must never be committed into a consumer project's dependency source.
 - Once connected, clients list/read the packaged MCP resources for the live
-  co-work workflow and safety boundaries.
+  co-work workflow and safety boundaries. `docs/mcp-contract.md` is the
+  human-facing entry point to those rules: it orients and links, it does not
+  restate them.
 
 ## Tooling
 
@@ -217,12 +219,21 @@ The entries below are stable descriptions and read-before-acting pointers.
   changing remote deployment behavior or its documentation.
 - `docs/live-tests.md` — live-kernel test mechanics, commands, and canonical
   current counts. Read before changing or running the live suite.
+- `docs/mcp-contract.md` — human-readable orientation to the MCP contract (tool
+  groups, refusals, binding, mutation, execution, widget and output semantics)
+  plus the map of which document owns which topic. Read before describing the
+  MCP surface. The packaged resources stay authoritative for runtime semantics;
+  this file links to them and must not become a second copy.
 - `docs/bug-hunt-protocol.md` — evidence and closure protocol for MCP surface
   bug hunts. Read before hunting or triaging a hunt report.
 
 **Design and decisions:**
 
 - `docs/notebook-backend-protocol.md` — criteria for revisiting a backend seam.
+- `docs/interface-positioning.md` — how this package relates to upstream
+  `marimo pair`: the interface comparison, the measurement evidence behind it
+  and its stated limits. Read before making positioning, superiority,
+  migration or adoption claims.
 - `docs/live-test-redesign-plan.md` and `docs/agenda-live-test-redesign.md` —
   live-suite mechanics and their design trail.
 - `docs/agenda-remote-marimo-mcp.md` — remote kernel/server topology questions.
@@ -246,6 +257,9 @@ The entries below are stable descriptions and read-before-acting pointers.
 
 Historical reports under `docs/session-report-*.md` and the named progress,
 comparison, and scout reports are evidence snapshots, not current guidance.
+`docs/marimo-inspection-tools-comparison.md` carries an explicit historical
+banner: it compares against earlier machinery and is not this project's
+comparison with upstream.
 
 ## Privacy — do not overexpose
 

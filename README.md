@@ -1,21 +1,53 @@
 # marimo-inspect
 
-A pluggable toolkit for **inspecting and editing live marimo notebooks** — over
-the wire or from inside a notebook.
+Structured tooling for **co-working on a live marimo notebook**: read cells,
+variables and outputs, edit source, run cells, drive widgets, and verify what
+happened — over the wire, or from inside another notebook. Two surfaces over one
+implementation: a **Python client** (`MarimoClient`, `discover_servers`) that
+drives a live marimo session from any notebook or script, and a **FastMCP
+server** (`create_server`, and the `marimo-inspect` console script) that exposes
+the same tooling to AI agents over the Model Context Protocol.
 
-It packages live-session co-work primitives as a standalone, installable
-component you can add to any repo:
+## Why not just use upstream `marimo pair`?
 
-- A **Python client** for driving a live marimo session interactively.
-- A **FastMCP server** exposing that tooling to AI agents over the Model Context
-  Protocol.
+marimo now ships live-kernel code mode, a core `marimo pair` CLI and a vendor
+Agent Skill. That stack and this package drive the **same** live-kernel /
+code-mode machinery: they are not different execution engines, and official code
+mode can already perform many of the operations these tools expose. Our own
+two-arm comparison has not established an overall winner.
 
-## The two ways to use it
+What this package adds is *shape* — a structured, inspectable tool vocabulary:
 
-### 1. As a Python client (the "plug into any repo" path)
+| Dimension | Official `marimo pair` | marimo-inspect |
+| --- | --- | --- |
+| Agent interface | CLI + agent skill | structured MCP tools |
+| Access model | execute Python in the live kernel | named read, write, widget and verification operations |
+| Flexibility | general Python and code-mode operations | narrower, predefined tool vocabulary |
+| Python integration | native kernel/code-mode workflow | separately importable `MarimoClient` |
+| Error contract | native CLI and kernel feedback | structured tool responses with explicit refusal reasons |
+| Concurrency protection | depends on the underlying server behaviour | read-before-edit guard and notebook-path-anchored binding — detection, **not** atomic prevention |
+| Version evaluated | marimo 0.25.1 | marimo 0.24.x (pinned) |
 
-Install it into any project and co-work on a running marimo session from inside
-a notebook or script — no copy-paste of the framework:
+Two scope notes: the table compares **interfaces**, not feature counts — official
+marimo also ships *built-in AI tools* over its own MCP server endpoint, so
+structured MCP tooling is not unique to this project (source-inspected in the
+now-historical [`docs/marimo-inspection-tools-comparison.md`](docs/marimo-inspection-tools-comparison.md));
+and the "concurrency protection" row is not a safety claim.
+
+**Reach for this package** for an agent framework that already speaks MCP, for
+refusals as structured payloads rather than tracebacks, for driving a live session
+from Python, or for the read-before-edit guard and notebook-path-anchored binding
+on the MCP path. **Reach for upstream** for arbitrary code-mode operations,
+in-kernel helpers, or a shell-driven workflow. Neither is a lock: the guards here
+are detection on a captured snapshot, and `MarimoClient` used directly carries no
+notebook-identity precondition. Evidence:
+[`docs/interface-positioning.md`](docs/interface-positioning.md).
+
+## Quick start
+
+### 1. As a Python client
+
+Install it into any project and co-work on a running marimo session:
 
 ```python
 import asyncio
@@ -33,10 +65,11 @@ async def main():
 asyncio.run(main())
 ```
 
-Importing `marimo_inspection` does **not** require `fastmcp` — the MCP server
-is lazily imported only when you call `create_server()`.
+Importing `marimo_inspection` does **not** import `fastmcp` — the server is
+reached through a lazy `__getattr__`, and only `create_server()` loads it.
+`fastmcp` is still an install-time dependency of the package.
 
-### 2. As an MCP server (for AI agents)
+### 2. As an MCP server
 
 ```python
 from marimo_inspection import create_server
@@ -45,464 +78,99 @@ server = create_server()
 server.run(transport="stdio")
 ```
 
-Or run it directly:
-
-```bash
-marimo-inspect --transport stdio
-```
-
-For the supported local, explicit-remote, and Tailnet shared deployment shapes,
-including URL-resolution and multi-client binding rules, see
-[`docs/deployment-topologies.md`](docs/deployment-topologies.md).
-
-## MCP tools
-
-15 tools over the same live kernel.
-
-Reads / state: `list_active_notebooks`, `set_active_session`,
-`get_cell_map`, `get_cell_data`, `get_cell_outputs`, `get_variables`,
-`get_dependency_graph`, `get_errors`, `lint_notebook`.
-Writes: `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
-Widget interaction: `set_ui_value`.
-Lifecycle: `restart_kernel` (closes the kernel and re-materializes a fresh one;
-the server process survives, but the confirmed session id is point-in-time —
-`session_id_stable: false`). Its refused-census vocabulary is the same access
-taxonomy: `edit_scope_required` for a readable-but-scope-denied server (run
-mode), `auth_required` for a real auth gate, `session_census_denied` when the
-probes cannot tell them apart.
-
-`list_active_notebooks` discovers sessions and auto-binds the first one
-(`session_id` **and** `server_url`); every other tool falls back to that
-binding. The binding lives in the MCP session's server-side state plus a
-process-global fallback consulted only when that state has nothing bound.
-Restarting or spawning a fresh server process loses it (re-run
-`list_active_notebooks`); over one persistent stdio process, fresh MCP
-sessions still reach it through the fallback. Over HTTP the fallback is served
-only while the process has seen a single client session — once a second client
-session appears, argument-less calls fail closed with `reason:
-binding_ambiguous`. When in doubt, pass `session_id`/`server_url` explicitly
-(or call `set_active_session`).
-
-The bind also records the notebook **path** (the session's own file). A later call **on the bound id** — omitted, or restated — is anchored to that
-path, because a session id is not a
-durable handle — marimo re-keys a session and can hand a stale id to a
-*different* notebook's kernel:
-
-- **id-only rotation** — the bound id is gone but the same path is served under
-  a new id: the resolution **repairs** to the current id and proceeds.
-- **reused id** — the bound id now serves a **different** notebook: the call is
-  refused `reason: notebook_mismatch` rather than silently retargeted.
-- The anchor covers a call **on the bound id** — implicit, or the id restated
-  with the bound `server_url` (a trailing slash is normalised) — so a recorded
-  id cannot be replayed against another notebook.
-- Naming a **different** id is explicit targeting: the bound path is not
-  asserted against it. An explicit `server_url` does **not** detach the anchor —
-  two URL strings can name one server (`localhost` vs a loopback address, a DNS
-  alias, a proxy route), so string identity is not server identity. To move to
-  another server, bind again (`set_active_session`) or pass a different id.
-
-After target resolution, mutation results (`create_cell`, `edit_cell`,
-`run_cell`, `delete_cell`, `set_ui_value`, and `restart_kernel`) report
-`notebook_path`, the path the resolved session actually serves — read from the
-server census, not inferred after the fact. A repaired call reports the current
-id it resolved to in `session_id` (`notebook_repaired` on `restart_kernel`).
-A refusal that resolved nothing to operate on carries **no** `notebook_path`;
-`notebook_mismatch` names `bound_notebook` and `resolved_notebook` instead, so
-the notebook the id was reused for is never mistaken for the target.
-
-**What that protects, and what it does not:** only MCP tool calls resolved
-through the binding are checked. A call naming a **different** `session_id` is
-deliberate explicit targeting and is unchecked; the **Python client** used
-directly (`resolve_session`/`execute` with a recorded id) has no
-notebook-identity precondition at all; and nothing covers a session rebound
-*after* the check — that needs a server-side expected-identity precondition the
-pinned protocol does not offer. The read-before-edit guard follows the same
-identity rule: re-binding an id onto a different notebook forgets that id's read
-baselines — judged from the tracker's own record of which notebook an id
-serves, not from the calling context's state — and a confirmed rotation forgets
-the abandoned id before the restart request. Two limits are stated, not implied:
-the check pins the notebook path behind the id, not a server identity (two
-servers presenting the same id and path would pass it), and an **unsaved**
-notebook has no path to compare, so its read baselines stay unattributable. See
-`reference://marimo-inspect/fallbacks-and-limits`.
-
-**Binding is not ownership.** Each **session** row reports
-`provenance: "unknown"` and `owner: "unknown"` — marimo's public API exposes
-only a session's filename/path, so who created it and which client holds it are
-not knowable from here. The `summary` is scoped the same way: `total_notebooks`
-is the truthful session count (always equal to `session_count`), `session_count`
-counts sessions reported by `GET /api/sessions`, `result_row_count` is
-`len(notebooks)` — every row, including a connection-failure sentinel (keys
-exactly `name`/`path`/`session_id`/`server_url`/`error`, no
-`provenance`/`owner`), which is a row but not a session. `attached_client_count`
-is always `null` (marimo publishes no per-session client count, and the
-server-wide `/api/status/connections.active` value counts sessions with an open
-main consumer, not attached clients), and `active_connections` is a
-**deprecated** compatibility alias for `session_count` that was never a client
-count.
-
-### Target resolution and the common refusal
-
-Every cell/session-targeting tool (`get_cell_map`, `get_cell_data`,
-`get_cell_outputs`, `get_variables`, `get_dependency_graph`, `get_errors`,
-`lint_notebook`, `create_cell`, `edit_cell`, `run_cell`, `delete_cell`,
-`set_ui_value`) resolves its target through one shared step. A target problem is
-therefore a **structured payload**, not a tool-level exception, and it is always
-`status: error` with `target_resolved: false`, `operation_ran: false`, and
-`state_changed: false` — **no mutation is dispatched on a refusal**: a
-session-target refusal is built before any call at all, and a cell/anchor
-reference is checked against a read-only validation of the live cells before
-any write scratchpad is generated:
-
-- `session_required` — no explicit and no bound target (`session_id` /
-  `server_url`); discover/bind one with `list_active_notebooks` or pass both
-  explicitly.
-- `binding_ambiguous` — the bound target exists but this server process has
-  served more than one client session, so the process-global fallback was
-  withheld (see the binding rules above); `reason` is passed through unchanged.
-- `notebook_mismatch` — the **bound** id (omitted, or restated by the caller)
-  now serves a **different** notebook than the one bound, so the call is refused
-  rather than silently retargeted at the notebook the id happens to name now.
-  It covers the *bound* id — implicit or restated — so replaying a recorded id
-  does not bypass it, and an explicit `server_url` does not detach it (two URL
-  strings can name one server); only a different **id** is treated as explicit
-  targeting.
-- `session_not_found` — the requested id is not live on the selected server;
-  the payload's `available_sessions` is that **same** server's truthful census
-  (never another server's, never a guess) and `available_sessions_readable` is
-  `true`, because that census was actually read.
-- `server_unreachable` — the session census could not be reached at all.
-- `server_query_failed` — the census answered with a non-auth error (HTTP 500
-  included) or an unreadable body (truncated JSON or invalid UTF-8 included).
-- `edit_scope_required` — the census was denied for lack of **edit scope**
-  while a read-scope endpoint (`GET /api/version`) answered 200: the server is
-  reachable and readable, but the census itself needs `edit` mode. A
-  `marimo run` server is the typical case, and authenticating cannot fix it.
-- `auth_required` — the read-scope endpoint is denied with the **same** auth
-  body as the census, so the server requires marimo auth even for reads.
-- `session_census_denied` — the census was denied and the read-scope probes
-  could not tell an auth gate from a missing edit scope: the cause is reported
-  as undetermined instead of guessed.
-- `unknown_cell_ids` — a **cell** reference (`delete_cell`'s `cell_id`,
-  `edit_cell`'s `cell_id`, or `create_cell`'s `after`/`before` anchor) is not a
-  live cell, by id or by name. The payload echoes the reference (`anchor` +
-  `anchor_cell_id` for `create_cell`), lists it in `unknown_cell_ids`, and
-  dispatches nothing — the raw marimo `KeyError` traceback is never returned.
-- `conflicting_anchors` — `create_cell` was given **both** `before` and `after`.
-- `target_validation_failed` — the read-only live-cell validation itself failed,
-  so the reference could not be checked and nothing was dispatched.
-
-A denied census cannot classify itself. Pinned marimo 0.24.0 serves an API 403
-as `401 {"detail":"Authorization header required"}` and strips
-`WWW-Authenticate`, so a run-mode scope denial and a true auth gate look
-identical at the denied endpoint — which is why the reason comes from a
-**read-scope probe** (`GET /api/version`), never from a response header or a
-byte count. All three access refusals carry `read_scope_status_code` and
-`page_kind` as their evidence, and `set_active_session` / `restart_kernel`
-speak the same vocabulary.
-
-An explicit `session_id`/`server_url` pair that does not exist on the selected
-server is the `session_not_found` case, with the real session ids in
-`available_sessions` to correct it. Absence is concluded **only** from a census
-that was successfully read, so an unreadable census is `server_query_failed`
-and never `session_not_found`. `available_sessions_readable` reports which one
-you got: `true` when the list is a real census (a successful empty census
-counts), `false` when it is empty because nothing could be read.
-
-For human co-work, prefer **browser-first** (marimo 0.24 **edit mode without an
-explicit `--session-ttl`**): open the notebook so the page **becomes/holds the
-main consumer connection** for the session, then call
-`list_active_notebooks` and bind it — the payload `owner` still reads
-`"unknown"` because the public API does not publish that role. Creating the
-session yourself with the `/sse` handshake is for headless, agent-only work:
-without an explicit `--session-ttl`, closing that stream leaves the session an
-orphan (it outlives the stream) until a later connection takes it over — though
-a **configured `--session-ttl` can reap that orphan**. A human who opens the
-page must take over and re-run the notebook before its widgets respond, a
-second distinct client joins the same kernel as a **non-main, read-only
-consumer**, and a later reconnect can re-key the session id. The re-key is
-separate from a page-vs-session divergence observed once: its cause is not
-diagnosed, and neither the re-key nor any read-path explanation is confirmed as
-its cause — so do not assume one.
-
-**Discovering a server is not discovering a session.** Launching a server
-creates no session in marimo 0.24 — edit and run mode alike; only a client
-connect (`/ws`, or the browser's `/sse` stream) does. A fresh headless server is
-therefore discoverable with an empty census, and a session listed before any
-client attached is an earlier client's orphan on a still-running server (or the
-browser marimo auto-opened when the launch was not headless) — never a launch
-artifact, and never the on-disk `__marimo__` session cache, which stores cell
-outputs. A **`marimo run`** server is not discoverable at all: it registers under
-`--no-token` like an edit server, but `GET /api/sessions` requires `edit` scope
-and answers `401` in run mode, so the census-200 health check drops it and it is
-never counted by a discovery-based `servers_discovered`. Only an explicit
-`server_url` pointed at one reaches it, as a single connection-failure sentinel
-row (`session_count` 0, `servers_discovered` 1) — and a target-resolution or
-`restart_kernel` call against it is refused with `reason: edit_scope_required`
-(its read-scope endpoints answer normally, so it is not an auth problem).
-
-### Read before you edit
-
-`edit_cell` carries a staleness guard (`check_fresh=True` by default) and
-requires that you read that exact cell first:
-
-- first touch of a never-read cell → `status: "needs_read"` (unconditionally,
-  even on a session with no snapshot);
-- source changed since your last read → `status: "conflict"`.
-
-Recovery is a real re-read, then retry: call `get_cell_data` (which records the
-read baseline), then retry `edit_cell`. A `get_cell_map` preview does **not**
-record the baseline — a preview is not a source read. A successful edit
-returns the post-edit `code_hash`. `check_fresh=False` is an explicit force
-escape hatch, **not** the recovery path. A cell id that is not live is a
-structured refusal before anything is mutated (`reason: unknown_cell_ids`,
-`target_resolved`/`operation_ran`/`state_changed` all false) — the same family
-`delete_cell` and `create_cell`'s placement anchors use.
-
-### Running cells — and running the whole notebook
-
-`run_cell(cell_id, mode=...)` queues what the `mode` names, and reports what
-each target actually did. `cell_id` is a cell **id or cell name** (resolved the
-way `ctx.cells` resolves a key — a name that worked before the modes existed
-still works): `requested_cell_ids` always carries the resolved IDs, `cell_id`
-echoes your input, and `resolved_cell_id` reports the resolution.
-
-| mode | queues | needs |
-| --- | --- | --- |
-| `"cell"` (default) | just that cell | `cell_id` |
-| `"descendants"` | that cell + its kernel-graph descendants | `cell_id`, registered in the kernel graph |
-| `"all"` | every document cell, in one code-mode context | an **empty** `cell_id` |
-
-`mode="all"` is how an unreferenced cell (and the widgets it defines) finally
-runs on a fresh session: nothing else ever pulls it in, so `set_ui_value` on its
-widget returns `unknown_variable` until then. It is a **full re-run** — already
-idle cells run again. `mode="descendants"` refuses rather than degrades: a
-target the kernel graph has not registered (every document cell, on a fresh
-un-instantiated session) returns `status: error`, `reason: graph_unpopulated`
-and runs nothing. Passing `mode="all"` together with a `cell_id` is refused
-(`reason: cell_id_not_allowed`).
-
-The kernel may additionally run cells outside `requested_cell_ids` — stale
-ancestors, and registered descendants in autorun mode — and the relative order of
-independent cells is unspecified; `requested_cell_ids` is a set of targets, never
-an execution order. The response is per requested target: `cells[].runtime_state`
-and `cells[].errors` (with `errors_readable`; `errors` is `null` when the
-post-run error channel could not be read, and such a target is reported
-`not_run`/unverified, **never** `succeeded`), plus `succeeded_cell_ids` (`idle`
-with a readable, empty `errors`), `failed_cell_ids`
-(`exception`/`marimo-error`/`cancelled`/`interrupted` — it covers the requested
-targets only) and `not_run_cell_ids` / `unverified_cell_ids` (everything else,
-e.g. stale/disabled/unknown). `status` is `ok` only when every requested target
-is idle, `partial` when any failed or did not finish, and `error` for
-validation/planning/reporting failures (`cell_id_required`,
-`cell_id_not_allowed`, `unknown_cell_ids`, `graph_unpopulated`,
-`planning_failed`, `reporting_failed`). `mode` is a **literal enum** in the
-published input schema, so an out-of-enum value is rejected by the framework
-(`literal_error`) before the handler runs — it has no structured reason, and
-none is documented. Every failure — and a run whose batch
-call itself failed (`execution_error` + `stderr`) — carries a top-level `error`
-string alongside the structured `status`/`reason`, so a caller that checked the
-old `{"error": ...}` payload still sees the failure.
-
-### New cells are visible by default
-
-`create_cell` defaults to `hide_code=False`, so a new cell's code shows in the
-UI. (This changed from the earlier hidden-by-default behavior.) Pass
-`hide_code=True` explicitly for setup/implementation cells you want hidden.
-Note that no read tool echoes `hide_code`, so visibility is decided at creation
-time and cannot be confirmed back through the MCP read surface.
-
-### Widget interaction
-
-`set_ui_value(variable_name, value)` sets a live `mo.ui` element's value by its
-kernel-global name and accepts **no source code**. It never coerces the value:
-send the shape the element's declaration accepts — scalar for `slider`/`text`,
-bool for `checkbox`, the option key **inside a one-element list** for a
-`dropdown` (`["beta"]`), a list of keys (any length, `[]` clears it) for
-`multiselect`, a two-element list for `range_slider`. A shape the element cannot
-accept is refused before anything is applied: a `dropdown` in particular takes
-**exactly one** key, so a list whose length is not one is refused rather than
-applied (marimo would clear it to `None`). The error carries
-`reason: value_shape_mismatch` and the corrected payload in `did_you_mean` when
-one particular valid replacement can be inferred; when it cannot — an empty or
-multi-element list against a dropdown with several options — `did_you_mean` is
-**absent** and the message names the element's option keys instead.
-
-The element's value is read back before the call returns, so `status: ok` with
-`verified: true` means the read-back succeeded: either the widget's own value was
-observed to move (`applied: true`) or it already held that value
-(`applied: false` + `no_change: true`). A value marimo rejected — an unknown
-dropdown key, say — is returned as `status: error` with `reason:
-value_not_applied` and the kernel's message instead of a misleading success
-(a refused shape uses `reason: value_shape_mismatch`); a value the element's own
-`on_change` handler raised on is `reason: on_change_failed` with
-`handler_ran: true` — the value was accepted, with `applied: true` when it moved
-or `applied: false` + `no_change: true` when the element already held it, so
-only the callback failed.
-
-A `button`/`run_button` is the exception. Both expose a click **counter** as
-their frontend value, but their element value differs: a `button`'s value is its
-`on_click` return (unchanged when the handler only sets state), while a
-`run_button` has no `on_click` and its value is set to `True` on a click and
-reset to `False` after the dependent cells run — so either can show an unchanged
-`value` even though the click landed. Those payloads carry the frontend counter
-read (`frontend_value_before`/`after`), `click_delivered`, a tri-state
-`handler_invoked`, and `side_effects_verified: false`. `0` is the
-initialization sentinel (`handler_invoked: false`, no click — marimo processes
-no click for it); a nonzero counter that moved to the submitted value is
-`handler_invoked: true`; a counter that already held the submitted value is
-`null` (unknown — the read-back cannot see a repeated click, so neither
-"delivered" nor "skipped" is reported). A `button` whose `on_click` raises
-returns `reason: on_click_failed` with `handler_ran: true` and acknowledges that
-partial side effects may already have been applied; that marker is attributed
-only to a `button` clicked with a nonzero counter (never a `run_button` or any
-other element), otherwise the call fails as a generic `ui_update_failed` rather
-than mis-attributing it.
-
-The update is flushed and triggers reactive re-execution of dependent cells, but
-`set_ui_value` does not verify arbitrary downstream effects: in autorun mode the
-kernel re-runs dependent cells as part of the update, in lazy mode it only marks
-them stale — confirm a handler's effects (including a side-effect-only button's)
-with the read tools.
-
-## MCP resources
-
-The server also publishes three **static, read-only** documentation resources
-(`text/markdown`, packaged in the wheel and loaded via `importlib.resources`)
-that a client can read on demand:
-
-| URI | Content |
-| --- | --- |
-| `workflow://marimo-inspect/co-work-loop` | the MCP-first co-work loop, step by step |
-| `workflow://marimo-inspect/live-safety` | read-before-edit and live-kernel safety rules |
-| `reference://marimo-inspect/fallbacks-and-limits` | what MCP does not cover + intentional fallbacks |
-
-A client lists them with `list_resources()` and fetches one with
-`read_resource(uri)`; through the Python client you can also read them with
-FastMCP's in-process transport:
-
-```python
-from fastmcp import Client
-from marimo_inspection.server import create_server
-
-async with Client(transport=create_server()) as client:
-    for r in await client.list_resources():
-        print(r.uri, r.mime_type)
-    doc = await client.read_resource("workflow://marimo-inspect/live-safety")
-```
-
-FastMCP 4.0.3 resource annotations only carry
-`audience`/`priority`/`lastModified`, so read-only intent is carried by tags +
-description; tool annotations do support `readOnlyHint`/`destructiveHint`/
-`idempotentHint`/`openWorldHint` (used by `set_ui_value` and `restart_kernel`).
-
-## Output limits
-
-marimo's code-mode snapshot exposes **one main output per cell** plus console
-events — not every frontend UI registration. `get_cell_outputs` returns that
-main output and the serialized console events, so a widget rendered to the user
-may be absent from it; inspect the cell's variables instead.
-`get_cell_data` returns each cell's source and live `runtime_state`; its
-`data[].variables` is a deprecated compatibility placeholder (always `null`),
-so read live variables with `get_variables`. To fold the error read in, pass
-`include_errors=True`: every `data[]` row then also carries
-`structured_errors` and `console_stderr` (the same two separate channels
-`get_errors` reports) plus `has_console_exception` and
-`console_exception_evidence`, with `[]`/`[]`/`false`/`null` for a clean cell.
-The default (`include_errors=False`) omits those four keys, so the row shape
-is unchanged.
-`get_cell_map`'s `has_output` / `has_console_output` / `has_errors` flags are
-computed from live fields (`None` when a private field is unreadable, never
-faked). `get_errors` reports `cells[].structured_errors` (marimo `cell.errors`) and
-`cells[].console_stderr` (console events, including UI-handler tracebacks) as
-two separate per-cell channels; flagged entries name the matched marker in
-`cells[].console_exception_evidence`. Top-level error flags and totals summarize
-the two channels; `has_errors`/`total_errors` cover structured errors only.
-
-`lint_notebook` is static and in-process (the engine behind `marimo check`).
-Each diagnostic locates a position in the notebook **source file**:
-`rule`/`name`/`severity`/`message` plus `filename`, `line`, `column`, and
-`cell_index` — the flagged cell's positional index in the parsed document.
-`cell_index` is **not** a live cell id (those come from `get_cell_map`); the
-two are separate identifier spaces, so resolve the live id separately and
-navigate the source by `line`/`column`/`filename`.
-
-Arbitrary kernel probes, complex multi-operation CodeMode blocks, screenshots,
-and notebook-server lifecycle stay outside the MCP surface — see
-`reference://marimo-inspect/fallbacks-and-limits`.
-
-## Install and connect an MCP client
-
-The MCP resources explain how to operate a connected live notebook; they cannot
-bootstrap their own installation. Start here, then use the packaged resources
-once the harness reports the server connected.
-
-### Normal consumer installation
-
-Add a pinned release to the notebook project. This is the standard path for
-users and consumer-repository contributors; it is a normal, non-editable
-installation in that project's environment.
+`marimo-inspect --transport stdio` runs that same server directly. Add a pinned,
+non-editable release to the notebook project's own environment:
 
 ```bash
 uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3.3"
 uv sync
 ```
 
-Configure the harness to execute that environment's console script, not
-`uv run` and not a provider checkout:
+Then configure the harness to execute that environment's console script —
+`<project-root>/.venv/bin/marimo-inspect --transport stdio` — not `uv run` and not
+a provider checkout (verify it with `.venv/bin/marimo-inspect --help`).
+Per-harness configuration blocks:
+[`docs/harness-integration/README.md`](docs/harness-integration/README.md); local,
+explicit-remote and Tailnet topologies:
+[`docs/deployment-topologies.md`](docs/deployment-topologies.md). Start a notebook
+with `--no-token`, open it in a browser to materialize a session, call
+`list_active_notebooks`, then read the packaged resources for the co-work loop and
+safety rules. An **editable sibling checkout** is a provider-contributor override
+only, never a committed dependency source.
 
-```text
-<project-root>/.venv/bin/marimo-inspect --transport stdio
-```
+## Release and development boundary
 
-Use the relevant configuration block in
-[docs/harness-integration/README.md](docs/harness-integration/README.md), then
-verify the installed script with `.venv/bin/marimo-inspect --help`. Start a
-marimo notebook with `--no-token`, open it in a browser to materialize a
-session, and call `list_active_notebooks`. After connection, read the MCP
-resources for the co-work loop and safety rules.
+| | Released `v0.3.3` (newest tag) | `main`, documented here |
+| --- | --- | --- |
+| Tools | 14 — no `restart_kernel` | 15, including `restart_kernel` |
+| Binding | process/connection-scoped | MCP-session state **plus** a process-global fallback, anchored to the bound notebook path (an id-only rotation is repaired; a reused id refused `notebook_mismatch`) |
 
-### Provider contributors: local override only
+`main` carries substantial unreleased changes beyond `v0.3.3`, and the package
+version in `pyproject.toml` has not yet been advanced — so **there is no release
+for the newer surface yet**: a consumer pinning `v0.3.3` gets the older, smaller
+interface, which is a normal development gap rather than a defect in the tag.
+Read the tag, not the branch, when you need to know what a pin actually does.
 
-Use an editable sibling checkout only when testing unreleased changes to this
-provider against a consumer project. It is not a consumer-installation mode:
-replace the consumer's pinned dependency temporarily, resync, test, then
-restore the pinned version. Do not commit a machine-local dependency source.
+## The MCP tool surface
 
-## Examples
+15 tools over the same live kernel:
 
-[`examples/`](examples/) holds consumer-facing **marimo usage patterns**:
-notebooks that run on `marimo` alone, with none of this package's code or
-dependencies. They are patterns to copy, not fixtures — nothing under
-`examples/` is imported by tests and the package never needs them.
+- **Session** — `list_active_notebooks` (discovers sessions and auto-binds the
+  first, setting `session_id` **and** `server_url`), `set_active_session`.
+- **Reads** — `get_cell_map`, `get_cell_data`, `get_cell_outputs`,
+  `get_variables`, `get_dependency_graph`, `get_errors`, `lint_notebook`.
+- **Writes** — `create_cell`, `edit_cell`, `run_cell`, `delete_cell`.
+- **Widget interaction** — `set_ui_value`.
+- **Lifecycle** — `restart_kernel` (closes the kernel and re-materializes a
+  fresh one; the server process survives, and the confirmed session id is
+  point-in-time, not durable).
 
-| Example | Pattern |
+`edit_cell` carries a read-before-edit staleness guard (`check_fresh=True` by
+default): a never-read cell answers `needs_read`, a changed-since-read cell
+`conflict`, and only `get_cell_data` records the read baseline. Every
+cell/session-targeting tool resolves its target through one shared step, so a
+target problem is a structured payload (`status: error` with `target_resolved` /
+`operation_ran` / `state_changed` all `false`) rather than an exception, and **no
+mutation is dispatched on a refusal**. The full contract, written for a reader who
+has not connected a client yet: [`docs/mcp-contract.md`](docs/mcp-contract.md).
+
+## MCP resources
+
+Three **static, read-only** documentation resources ship in the wheel
+(`text/markdown`, loaded via `importlib.resources`), readable on demand by a
+connected client with `list_resources()` / `read_resource(uri)`:
+
+| URI | Content |
 | --- | --- |
-| [`patterns/cascading_sidebar_controls.py`](examples/patterns/cascading_sidebar_controls.py) | Two dependent controls (the child's options come from the parent's value) hosted in the sidebar. |
-| [`patterns/slider_with_step_buttons.py`](examples/patterns/slider_with_step_buttons.py) | A slider paired with step buttons over one shared `mo.state`, slicing a 2-D `f(x, y)` into 1-D profiles. |
+| `workflow://marimo-inspect/co-work-loop` | the MCP-first co-work loop, step by step |
+| `workflow://marimo-inspect/live-safety` | read-before-edit and live-kernel safety rules |
+| `reference://marimo-inspect/fallbacks-and-limits` | what MCP does not cover, and its intentional fallbacks |
 
-Check them statically (the full notebook check covers both trees):
-
-```bash
-uv run marimo check notebooks examples
-```
-
-Each example is also booted on a real kernel and executed whole by the live
-suite (`tests/marimo_inspect/live/test_examples.py`, run with `-m live`), which
-additionally drives their live controls. See
-[`examples/README.md`](examples/README.md) for the pattern notes and the
-verification split.
+The same three documents are readable without a connected client: in this
+repository at `src/marimo_inspection/resources/`, or in-process with
+`Client(transport=create_server())`.
 
 ## Requirements
 
 - Python 3.12+
-- A running marimo **edit** server (start it with `--no-token` for
-  registry-based discovery; see `discover_servers` — a `marimo run` server
-  registers but is not discoverable, because its session census requires edit
-  scope).
-- marimo **0.24.x** (private APIs are version-bound — see
-  [docs/marimo-version-support.md](docs/marimo-version-support.md) for the
-  pinned range and the upgrade validation procedure).
+- A running marimo **edit** server (`--no-token` for registry-based discovery; a
+  `marimo run` server registers but is not discoverable, because its session
+  census requires edit scope).
+- marimo **0.24.x**: private APIs are version-bound — see
+  [`docs/marimo-version-support.md`](docs/marimo-version-support.md).
+
+## Documentation map
+
+| Read this | For |
+| --- | --- |
+| [`docs/mcp-contract.md`](docs/mcp-contract.md) | Orientation to the MCP contract, and which document owns which topic |
+| [`docs/interface-positioning.md`](docs/interface-positioning.md) | The comparison with upstream `marimo pair`, with its evidence and limits |
+| The packaged MCP resources | Authoritative runtime semantics for an agent that is already connected |
+| [`docs/harness-integration/README.md`](docs/harness-integration/README.md) | Consumer installation and per-harness configuration |
+| [`docs/deployment-topologies.md`](docs/deployment-topologies.md) | Local, remote and Tailnet deployment shapes, URL resolution and the operator boundary |
+| [`examples/`](examples/) | Consumer-facing marimo usage patterns to copy, and how they are checked |
+| [`docs/live-tests.md`](docs/live-tests.md) | Live-kernel test mechanics and the current counts |
+| [`docs/project-status.md`](docs/project-status.md) | Current work, effort issues and durable design trails |
 
 ## Development
 
@@ -513,22 +181,12 @@ uv run pytest -m "not live"   # unit tests (fast, no kernel)
 uv run pytest -m live         # live kernel tests (boots its own headless server)
 ```
 
-The `live` tests need a real marimo kernel and are deselected by default. See
-[docs/live-tests.md](docs/live-tests.md) for how the live suite is run and its
-current status.
+The `live` tier deselects by default; read
+[`docs/live-tests.md`](docs/live-tests.md) before changing or running it.
 
 ## Agent skills
 
 Repo-local agent skills live in `.agents/skills/` — one Markdown `SKILL.md` per
-skill.
-
-Hermes Agent does not auto-load skills from a cloned repo: a `SKILL.md` is a set
-of instructions the agent follows, so it requires explicit opt-in. Once per repo,
-per machine:
-
-```bash
-hermes skills trust
-```
-
-Run it from anywhere inside the repo. It takes effect in your **next** session.
-`hermes skills list` shows the loaded skills.
+skill. Hermes Agent does not auto-load skills from a cloned repo, so they need an
+explicit opt-in, once per repo per machine: `hermes skills trust`, which takes
+effect in your next session. `hermes skills list` shows what is loaded.
