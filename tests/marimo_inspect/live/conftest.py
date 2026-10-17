@@ -410,6 +410,15 @@ async def notebook_server(tmp_path):
     without the repo fixture's deliberate error cell) instead of mutating a copy
     of ``notebooks/test_marimo.py``.
 
+    ``source`` may be **bytes** or **str**, and the distinction matters when a
+    test means "the disposable copy is byte-identical to the committed fixture":
+    ``bytes`` are written with ``write_bytes`` (no newline translation), while
+    ``str`` is written with ``write_text(newline="")`` — the caller's own line
+    endings, exactly as given. Pass ``read_bytes()`` when asserting byte
+    identity: ``read_text()`` decodes with universal newlines, so on a checkout
+    whose working tree carries CRLF (git ``core.autocrlf=true`` on Windows) a
+    text round-trip silently changes the bytes the test then compares.
+
     Teardown stops every server it started and re-checks that the repo fixture
     ``notebooks/test_marimo.py`` is byte-identical to what it was at boot (the
     same hermeticity gate ``mutation_server`` applies). The check runs only when
@@ -418,9 +427,12 @@ async def notebook_server(tmp_path):
     managers: list[MarimoServerManager] = []
     original_bytes = NOTEBOOK_PATH.read_bytes()
 
-    async def _boot(source: str, name: str = "notebook.py"):
+    async def _boot(source: str | bytes, name: str = "notebook.py"):
         notebook = tmp_path / name
-        notebook.write_text(source, newline="")
+        if isinstance(source, bytes):
+            notebook.write_bytes(source)
+        else:
+            notebook.write_text(source, newline="")
         manager = MarimoServerManager()
         await manager.start(str(notebook))
         await manager.create_session()

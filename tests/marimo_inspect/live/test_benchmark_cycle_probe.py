@@ -96,7 +96,7 @@ async def test_wrapper_cycle_creation_is_atomic_on_disposable_fixture(notebook_s
     """A one-context cyclic pair is all-or-nothing; a refusal touches nothing."""
     original = FIXTURE.read_bytes()
     _manager, url, sid, copy = await notebook_server(
-        FIXTURE.read_text(encoding="utf-8"), name="mission_cycle_probe.py"
+        FIXTURE.read_bytes(), name="mission_cycle_probe.py"
     )
     assert copy.read_bytes() == original, "booted copy is not byte-identical"
 

@@ -70,7 +70,7 @@ async def test_wrapper_run_cell_timeout_is_not_proof_of_non_execution(notebook_s
     """Characterize the wrapper's client-side timeout on a >30s kernel cell."""
     original = FIXTURE.read_bytes()
     _manager, url, sid, copy = await notebook_server(
-        FIXTURE.read_text(encoding="utf-8"), name="mission_wrapper_timeout.py"
+        FIXTURE.read_bytes(), name="mission_wrapper_timeout.py"
     )
     assert copy.read_bytes() == original
 
