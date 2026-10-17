@@ -186,7 +186,9 @@ marimo-inspect = "marimo_inspection.server:main"
 
 - Architecture doc: `docs/fastmcp-v4-scout-report.md`
 - Marito internals: `docs/marimo-agent-collaboration.md`
-- Tool comparison: `docs/marimo-inspection-tools-comparison.md`
+- Tool comparison (historical — marimo's built-in AI tools vs the marimo-pair CM
+  scripts): `docs/marimo-inspection-tools-comparison.md`; current positioning:
+  `docs/interface-positioning.md`
 - FastMCP v4 docs: https://gofastmcp.com/
 - Marimo MCP source: `.venv/Lib/site-packages/marimo/_mcp/server/main.py`
 
