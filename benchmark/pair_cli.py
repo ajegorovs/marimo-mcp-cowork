@@ -1,10 +1,9 @@
-"""Native-arm ``marimo pair`` CLI: the sole interface handed to a fresh agent.
+"""Native-arm ``marimo pair`` adapter for a prompt-constrained shell agent.
 
-The restricted comparison needs the native arm driven through exactly one narrow
-interface. A fresh agent must never be able to name a notebook file or a session
-itself: this CLI accepts **no** file, session or URL argument, reads those
-identifiers from an arm manifest written by the setup step, and refuses when the
-live census no longer matches that manifest.
+The comparison instructs the native agent to use this adapter, but the agent
+has a general shell and can bypass it. Within this CLI, no file, session or URL
+argument is accepted: identifiers come from the run manifest and a census
+mismatch refuses the call. This is not a sandbox for the agent.
 
 Contract
 --------
@@ -30,15 +29,13 @@ Every subcommand runs the same three steps in order:
 3. build ``<python> -m marimo pair execute --url <manifest url> --file
    <manifest notebook> -c <generated code>`` and run it with ``subprocess``.
 
-With ``--ledger PATH`` every successful call is appended to an append-only
-JSONL ledger: the notebook's SHA-256 before and after the call, the cells the
-call created, and the agent's own cell source for ``create_cell``. This is a
-**detector, not a boundary**: a shell-armed agent can still write the notebook
-itself, but such a write leaves the ledger's hash chain broken, so the
-independent grader can refuse the run instead of crediting a bypass. The ledger
-is deliberately part of the native arm's interface rather than a hidden hook:
-the grader reads it, the agent may read it, and neither can make a bypass look
-like a mediated call.
+With ``--ledger PATH`` calls that reach native execution are appended to a
+JSONL ledger, including failed calls: notebook hashes before and after, observed
+created cells, submitted source and status. The native ledger detects unrecorded
+file changes when the ledger itself remains intact. It is not a tamper-resistant
+audit log or proof that every command used the adapter. The agent has write
+access to both notebook and ledger and can modify them together; the grader
+checks internal consistency, not an independent protected command record.
 
 ``--url`` and ``--file`` come **only** from the manifest; command-line
 arguments can never supply, override or extend them. The code argument is one
@@ -236,7 +233,7 @@ def _is_sha256(value: object) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Ledger: the audit trail a bypass cannot fake
+# Ledger: consistency checks assuming the record remains intact
 # --------------------------------------------------------------------------- #
 
 

@@ -1,4 +1,5 @@
 {
+  "evidence_contract": "Summary of author-generated grades, not an independently replayable verification package. Ledger entries, saved notebooks and a protected record of all tool invocations are omitted; ledger integrity cannot be independently recomputed from this bundle. The agent-writable ledger is not tamper-resistant.",
   "how_to_check": "Each run records the independent grade verdict with its per-check detail and the SHA-256 of the manifest, the ledger (native arm only) and the saved notebook. The transcript is the agent's own output, unedited apart from path substitution.",
   "parameters": {
     "grader": "nine checks, including kernel reactivity at gain=4 and the native ledger audit",

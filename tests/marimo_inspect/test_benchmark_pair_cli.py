@@ -878,7 +878,7 @@ def test_gates_survive_optimized_mode(tmp_path, mode):
 
 
 # --------------------------------------------------------------------------- #
-# Ledger: the audit trail a bypass cannot fake
+# Ledger: consistency checks assuming the record remains intact
 # --------------------------------------------------------------------------- #
 
 

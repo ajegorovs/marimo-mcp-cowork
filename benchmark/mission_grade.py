@@ -330,13 +330,11 @@ def verify_ledger(
 ) -> tuple[bool, str, int]:
     """Whether the native arm's ledger is intact and chains to the saved file.
 
-    The ledger is what makes a bypass detectable. ``pair_cli.py`` appends one
-    entry per successful call carrying the notebook's SHA-256 before and after
-    that call, so an honest arm's entries form a chain that starts at the
-    disposable copy's initial hash and ends at the bytes now on disk. A write
-    that never went through the adapter — a shell redirect, a file API, a
-    ``marimo`` invocation the agent ran itself — changes the file without
-    appending an entry, and the chain no longer ends where the file does.
+    The ledger detects unrecorded file changes when the ledger remains intact.
+    It is agent-writable, not a tamper-resistant audit log or proof that every
+    command used the adapter. Coordinated notebook and ledger edits can satisfy
+    these internal consistency checks; no protected terminal record is compared.
+    ``pair_cli.py`` records hashes around calls that reach native execution.
 
     Every **call** is an entry, successful or not: the shim records a call it
     reported as failed too, because a failed call is not an ineffective one —

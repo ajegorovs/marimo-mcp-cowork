@@ -95,6 +95,21 @@ def test_a_complete_batch_yields_an_index_with_every_run(tmp_path):
     require((out / "runs" / "run2-native" / "transcript.md").is_file())
 
 
+def test_bundle_labels_grades_as_author_generated_not_replayable(tmp_path):
+    batch = tmp_path / "batch"
+    _run(batch, "run1-wrapper")
+    out = tmp_path / "bundle"
+    index = provenance.build_bundle(batch, out)
+    written = json.loads((out / "index.json").read_text(encoding="utf-8"))
+    require(written["evidence_contract"] == index["evidence_contract"])
+    require("author-generated grades" in written["evidence_contract"])
+    require("not an independently replayable" in written["evidence_contract"])
+    require(
+        "ledger integrity cannot be independently recomputed"
+        in written["evidence_contract"]
+    )
+
+
 def test_machine_paths_do_not_survive_into_the_bundle(tmp_path):
     batch = tmp_path / "batch"
     _run(batch, "run1-wrapper")

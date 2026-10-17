@@ -1902,6 +1902,30 @@ def test_grade_fails_when_the_notebook_was_written_outside_the_adapter(tmp_path)
     assert _check(verdict, "normalized_cell_saved")["pass"] is True
 
 
+def test_coordinated_notebook_and_ledger_edits_are_not_detected(tmp_path):
+    """Boundary, not a success claim: both files are writable by the agent.
+
+    Keep this paired with the unrecorded-write negative test. If a protected
+    command record is introduced later, update both this test and the limitation.
+    """
+    _canonical, notebook, manifest = _grade_case(tmp_path)
+    notebook.write_bytes(WITH_NORMALIZED + b"\n# unmediated write\n")
+    ledger_path = Path(manifest["ledger_path"])
+    entries = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    entries[-1]["sha256_after"] = _sha256(notebook.read_bytes())
+    _write_ledger(ledger_path, entries)
+
+    verdict = grade.grade(manifest, _FakeProber(result=_ok_result(notebook)))
+
+    assert _ledger_check(verdict)["pass"] is True, (
+        "If coordinated tampering is now detected, update the documented boundary"
+    )
+    contract = (
+        BENCHMARK.parent / "docs" / "restricted-interface-comparison.md"
+    ).read_text(encoding="utf-8")
+    assert "not a tamper-resistant audit log" in contract
+
+
 def test_grade_fails_when_no_ledger_was_captured(tmp_path):
     """An absent ledger is a failure, never "nothing happened"."""
     _canonical, notebook, manifest = _grade_case(tmp_path, ledger=None)

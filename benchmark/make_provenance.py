@@ -8,10 +8,17 @@ ledger — into the repository with every machine-specific path replaced.
 
 What is deliberately **not** copied:
 
-* the notebooks themselves (both are copies of the committed fixture, whose
-  digest is recorded instead);
+* the saved notebooks and ledger entries themselves (only their hashes are
+  recorded; saved notebooks can differ from the starting fixture);
 * provider credentials (never read by this script);
 * anything outside the batch directory.
+
+Evidence limit
+--------------
+The bundle is a summary of author-generated grades, not an independently
+replayable verification package. It omits ledger entries, saved notebooks and a
+protected record of all tool invocations; hashes alone cannot reproduce ledger
+integrity checks.
 
 Contract
 --------
@@ -187,6 +194,12 @@ def build_bundle(
             "Sanitized provenance for one restricted interface-comparison batch."
             " Absolute machine paths are replaced; nothing outside the batch is"
             " copied."
+        ),
+        "evidence_contract": (
+            "Summary of author-generated grades, not an independently replayable"
+            " verification package. Ledger entries, saved notebooks and a"
+            " protected record of all tool invocations are not included;"
+            " ledger integrity cannot be independently recomputed from this bundle."
         ),
         "how_to_check": (
             "Each run records the independent grade verdict with its per-check"

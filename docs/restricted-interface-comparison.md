@@ -35,23 +35,18 @@ notes is the variable under test*, so neither is padded to help its arm.
   copy (`read_bytes`/`write_bytes`) and refused when the census is anything but
   exactly one session resolving to that copy. A second session, a rotation, or a
   reused id invalidates the run rather than being silently followed.
-- **The adapter takes no target argument — targeting, not reach.** The native
-  arm reaches *the anchored notebook* only through `benchmark/pair_cli.py`, which
-  reads server, session and notebook from the run manifest and re-checks the
-  census before every subcommand; the agent cannot name a different target even
-  if it tries. **The command surface is not a boundary**: the arm's shell can run
-  any command, so a direct file write is possible and is *prompt-constrained*
-  only. What detects it is the ledger (below) plus artifact checks — never a
-  claim that the adapter was the only thing that ran.
-- **A ledger a bypass cannot fake.** `pair_cli.py --ledger PATH` appends one
-  entry per successful call: the notebook's SHA-256 before and after, the cells
-  the call created, the agent's own cell source, and the UI value it set. Grading
-  requires the saved notebook's hash to be the ledger's last recorded hash, the
-  entry sequence to be unbroken, and each entry to start where the previous one
-  ended; an out-of-band write breaks that chain and the verdict fails with
-  `interface_bypass_suspected` instead of crediting a mediated run. The ledger
-  covers the native arm only — the wrapper arm has no equivalent capture, and
-  that asymmetry is stated with every result rather than smoothed over.
+- **The adapter constrains its own calls, not the shell.** It reads target
+  identifiers from the manifest and re-checks the census. Other shell commands
+  can bypass it: exclusive adapter use is prompt-constrained, not enforced.
+- **Ledger consistency, not tamper resistance.** The shim appends hashes,
+  submitted source, observed created cells, UI values and status for calls that
+  reach native execution, including failed calls. The grader checks sequence,
+  hash continuity, the final saved-file hash and diagnostic-source attribution.
+  The native ledger detects unrecorded file changes when the ledger itself
+  remains intact. It is not a tamper-resistant audit log or proof that every
+  command used the adapter: the agent can modify notebook and ledger together.
+  Failure is `interface_ledger_intact: false` with explanatory text, not a
+  separate failure code. The wrapper records `ledger_applicable: false`.
 - **An anchor the arm is not pointed at.** `mission_setup --control-dir` writes a
   control copy of the identity plus a digest of the manifest file; grading
   refuses unless the two agree, and refuses outright without a control copy
@@ -71,6 +66,18 @@ notes is the variable under test*, so neither is padded to help its arm.
   CLI for the native arm). A single reader for both arms fails the arm whose
   framework lacks the feature the reader uses, which reads as a failed mission on
   work that actually succeeded.
+
+## Evidence contract for every result
+
+The committed bundles are **summaries of author-generated grades**, not
+independently replayable verification packages. They include grade output,
+selected metadata, sanitized final agent reports and artifact hashes, but omit
+the actual ledger entries, saved notebooks and a protected record of all tool
+invocations. A reviewer can inspect reported verdicts but cannot recompute ledger
+integrity or establish exclusive adapter use from these bundles. Artifact
+reactivity is graded independently of the agent report; this does not make the
+agent-writable ledger tamper-resistant. This limitation applies to every batch
+and follow-up run below.
 
 ## First complete batch — results
 
@@ -96,7 +103,7 @@ and is deliberately **not** counted here.
 so no efficiency conclusion is drawn** — more repeats, in both orders, are needed
 before any such claim, and no token or cost data was captured.
 
-Raw per-run records: [`benchmark/evidence/restricted_comparison_20261017.json`](../benchmark/evidence/restricted_comparison_20261017.json).
+Author-generated per-run grade summaries: [`benchmark/evidence/restricted_comparison_20261017.json`](../benchmark/evidence/restricted_comparison_20261017.json).
 
 ### Interface frictions the agents reported
 
@@ -144,8 +151,8 @@ Two things follow, and both are recorded rather than smoothed over:
   reports as failed, with its error status and the hashes around it, and the
   grader attributes the cell on disk to the `create_cell` code the ledger
   recorded — whichever status that call carried. Attribution, not just chaining.
-  A cell written straight into the file still answers to no mediated call and
-  still fails.
+  With an intact ledger, a cell written straight into the file answers to no
+  recorded call and fails; coordinated ledger edits are not excluded.
 - **The native interface's own shape**: `create_cell` creates and runs in one
   program, so a kernel error in the new cell is reported as a failed *creation*.
   Both agents recovered by running `pair run_all` afterwards. That is a

@@ -548,7 +548,7 @@ def posix_launcher(interpreter: str, shim: str, manifest: str, ledger: str) -> s
         "# The manifest is the only place the target identifiers come from; every\n"
         '# argument after it is passed through untouched ("$@").\n'
         "# --ledger records every call in the shim's audit trail, so a write that\n"
-        "# bypasses the adapter is detectable by the independent grader.\n"
+        "# bypasses the adapter may be detected if the ledger remains intact.\n"
         f"exec {sh_quote(interpreter)} {sh_quote(shim)}"
         f' --manifest {sh_quote(manifest)} --ledger {sh_quote(ledger)} "$@"\n'
     )
@@ -562,7 +562,7 @@ def cmd_launcher(interpreter: str, shim: str, manifest: str, ledger: str) -> str
         "rem The manifest is the only place the target identifiers come from; every\r\n"
         "rem argument after it is passed through untouched (%*).\r\n"
         "rem --ledger records every call in the shim's audit trail, so a write that\r\n"
-        "rem bypasses the adapter is detectable by the independent grader.\r\n"
+        "rem bypasses the adapter may be detected if the ledger remains intact.\r\n"
         f"{cmd_quote(interpreter)} {cmd_quote(shim)}"
         f" --manifest {cmd_quote(manifest)} --ledger {cmd_quote(ledger)} %*\r\n"
     )
