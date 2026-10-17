@@ -326,6 +326,7 @@ def verify_ledger(
     *,
     fixture_sha256: object,
     saved_sha256: object,
+    normalized_source: object = None,
 ) -> tuple[bool, str, int]:
     """Whether the native arm's ledger is intact and chains to the saved file.
 
@@ -337,6 +338,13 @@ def verify_ledger(
     ``marimo`` invocation the agent ran itself — changes the file without
     appending an entry, and the chain no longer ends where the file does.
 
+    Every **call** is an entry, successful or not: the shim records a call it
+    reported as failed too, because a failed call is not an ineffective one —
+    ``create_cell`` creates the cell, runs it, and only then reports, so a kernel
+    error in that run leaves the cell on disk while the call reports failure.
+    Recording only successes made such a call invisible and its write
+    indistinguishable from a bypass.
+
     Checked in this order, failing on the FIRST violation:
 
     1. the manifest names a path, and the file exists;
@@ -346,7 +354,10 @@ def verify_ledger(
     5. the first entry's ``sha256_before`` is the fixture's digest;
     6. every entry's ``sha256_before`` is the previous entry's ``sha256_after``;
     7. the last entry's ``sha256_after`` is the saved notebook's current digest;
-    8. at least one entry ran ``create_cell``.
+    8. at least one entry ran ``create_cell``;
+    9. the ``normalized`` cell now on disk is **attributable** to one of those
+       entries' recorded ``code`` (whitespace-normalized), so a cell written
+       straight into the file has no mediated call to answer for it.
 
     Honest limit of step 7: the shim measures each hash after letting marimo's
     queued save settle for a bounded wait, which is not an atomic boundary. A
@@ -360,6 +371,9 @@ def verify_ledger(
             initial hash.
         saved_sha256: The saved notebook's digest now, or ``None`` when it
             cannot be read.
+        normalized_source: The source of the ``normalized`` cell found in the
+            saved notebook, or ``None`` when no such cell was found (step 9 is
+            then skipped and the structural check carries that failure).
 
     Returns:
         ``(passed, detail, entry_count)``. ``entry_count`` is 0 for every
@@ -456,7 +470,10 @@ def verify_ledger(
             count,
         )
 
-    if not any(entry.get("command") == LEDGER_CREATE_COMMAND for entry in entries):
+    creates = [
+        entry for entry in entries if entry.get("command") == LEDGER_CREATE_COMMAND
+    ]
+    if not creates:
         return (
             False,
             (
@@ -465,6 +482,23 @@ def verify_ledger(
             ),
             count,
         )
+    if normalized_source is not None:
+        wanted = _collapse_source(str(normalized_source))
+        mediated = [
+            entry
+            for entry in creates
+            if _collapse_source(str(entry.get("code", ""))) == wanted
+        ]
+        if not mediated:
+            return (
+                False,
+                (
+                    "the normalized cell on disk answers to no mediated"
+                    f" {LEDGER_CREATE_COMMAND} call: its source matches none of"
+                    " the ledger's recorded code"
+                ),
+                count,
+            )
     return (
         True,
         (
@@ -647,6 +681,36 @@ def normalized_cell_shape(
         index, missing = incomplete
         return False, f"cell {index} assigns 'normalized' but never reads {missing}"
     return False, "no cell assigns 'normalized'"
+
+
+def _collapse_source(text: str) -> str:
+    """Whitespace-collapsed source, so indentation and line wrapping cannot hide
+    a match between a submitted cell and the cell now on disk."""
+    return " ".join(text.split())
+
+
+def normalized_cell_source(source: str, *, filepath: str = "notebook.py") -> str | None:
+    """The source of the cell that carries the mission's diagnostic.
+
+    Returns ``None`` when no cell assigns ``normalized`` while reading both
+    inputs — the structural check already fails in that case, and this function
+    makes no verdict of its own.
+    """
+    try:
+        cells = document_cell_sources(source, filepath=filepath)
+    except Exception:  # noqa: BLE001 - an unreadable notebook has no source
+        return None
+    for cell in cells:
+        try:
+            tree = ast.parse(cell)
+        except SyntaxError:
+            continue
+        if "normalized" not in _assigned_names(tree):
+            continue
+        referenced = _referenced_names(tree)
+        if all(name in referenced for name in NORMALIZED_REQUIRED_INPUTS):
+            return cell
+    return None
 
 
 def _measured_value(payload: dict, label: str) -> float:
@@ -1355,7 +1419,10 @@ def grade(
 
     # 2. The SAVED notebook carries a STRUCTURAL normalized cell: parsed into
     # cells, one of them must assign ``normalized`` reading both inputs. A bare
-    # constant and a comment mention both fail here.
+    # constant and a comment mention both fail here. ``saved_source`` is kept for
+    # the ledger's attribution step, which asks which mediated call wrote it.
+    saved_source: str | None = None
+    normalized_source: str | None = None
     notebook_path = manifest.get("notebook_path")
     if not notebook_path:
         add("normalized_cell_saved", False, "manifest carries no notebook_path")
@@ -1376,6 +1443,10 @@ def grade(
             )
             observed["normalized_cell_structural"] = shaped
             add("normalized_cell_saved", shaped, shape_detail)
+            if shaped:
+                normalized_source = normalized_cell_source(
+                    saved_source, filepath=str(notebook_path)
+                )
 
     # 3. Fresh boot + rotated identity + kernel reads.
     previous = None
@@ -1614,6 +1685,7 @@ def grade(
             manifest.get("ledger_path"),
             fixture_sha256=expected_sha,
             saved_sha256=saved_sha,
+            normalized_source=normalized_source,
         )
         observed["ledger_entry_count"] = ledger_entries
         add("interface_ledger_intact", ledger_passed, ledger_detail)

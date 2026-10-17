@@ -105,6 +105,7 @@ from session_guard import SessionAnchor, validate_census
 __all__ = [
     "ArmManifest",
     "PairCliError",
+    "build_ledger_entry",
     "code_for",
     "load_manifest",
     "main",
@@ -315,6 +316,45 @@ def _append_ledger(path: str | os.PathLike[str], entry: dict) -> None:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def build_ledger_entry(
+    *,
+    seq: int,
+    command: str,
+    status: str,
+    notebook_path: str,
+    sha256_before: str | None,
+    sha256_after: str | None,
+    created_cell_ids: list[str] | None = None,
+    options: Mapping[str, object] | None = None,
+) -> dict:
+    """One ledger record. ``status`` is ``"ok"`` or ``"error:<code>"``.
+
+    A **failed** call is recorded too, because a failed call is not an
+    ineffective one: ``create_cell`` creates the cell, runs it, and only then
+    reports; a kernel error in that run leaves the cell on disk while the call
+    reports failure. Recording only successes made such a call invisible and its
+    write indistinguishable from a bypass.
+    """
+    entry: dict = {
+        "seq": seq,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "command": command,
+        "status": status,
+        "notebook_path": notebook_path,
+        "sha256_before": sha256_before,
+        "sha256_after": sha256_after,
+        "created_cell_ids": list(created_cell_ids or []),
+    }
+    options = options or {}
+    if command in ("create_cell", "run_cell") and "code" in options:
+        entry["code"] = options["code"]
+    if command == "run_cell" and "cell_id" in options:
+        entry["cell_id"] = options["cell_id"]
+    if command == "set_ui" and "name" in options:
+        entry["ui"] = {"name": options["name"], "value": options.get("value")}
+    return entry
 
 
 def created_cell_ids(reported: str) -> list[str]:
@@ -877,11 +917,37 @@ def _main(
             if ledger_path is not None
             else None
         )
+
+        def record_failure(code: str) -> None:
+            """Record a failed call, because its effect may still have landed.
+
+            Best effort on purpose: the primary refusal must be the one the
+            caller sees, so a ledger write that fails here is swallowed.
+            """
+            if ledger_path is None:
+                return
+            try:
+                entry = build_ledger_entry(
+                    seq=len(ledger_entries) + 1,
+                    command=args.command,
+                    status=f"error:{code}",
+                    notebook_path=manifest.resolved_notebook_path,
+                    sha256_before=before,
+                    sha256_after=settle_sha256(manifest.resolved_notebook_path),
+                    created_cell_ids=[],
+                    options=options,
+                )
+                _append_ledger(ledger_path, entry)
+                ledger_entries.append(entry)
+            except OSError:
+                pass
+
         native = native_argv(manifest, code)
         native_env = dict(os.environ) if env is None else dict(env)
         try:
             completed = runner(native, native_env, NATIVE_TIMEOUT_S)
         except subprocess.TimeoutExpired as error:
+            record_failure("native_timeout")
             raise _problem(
                 "native_timeout",
                 f"native CLI exceeded {NATIVE_TIMEOUT_S}s",
@@ -889,6 +955,7 @@ def _main(
                 "native",
             ) from error
         except OSError as error:
+            record_failure("native_unlaunchable")
             raise _problem(
                 "native_unlaunchable",
                 f"cannot launch the native CLI: {error}",
@@ -896,24 +963,22 @@ def _main(
                 "native",
             ) from error
 
-        reported = tool_stdout(completed, manifest)
+        try:
+            reported = tool_stdout(completed, manifest)
+        except PairCliError as error:
+            record_failure(error.code)
+            raise
         if ledger_path is not None:
-            entry: dict = {
-                "seq": len(ledger_entries) + 1,
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "command": args.command,
-                "status": "ok",
-                "notebook_path": manifest.resolved_notebook_path,
-                "sha256_before": before,
-                "sha256_after": settle_sha256(manifest.resolved_notebook_path),
-                "created_cell_ids": created_cell_ids(reported),
-            }
-            if args.command == "create_cell":
-                entry["code"] = args.code
-            elif args.command == "run_cell":
-                entry["cell_id"] = args.cell_id
-            elif args.command == "set_ui":
-                entry["ui"] = {"name": args.name, "value": options["value"]}
+            entry = build_ledger_entry(
+                seq=len(ledger_entries) + 1,
+                command=args.command,
+                status="ok",
+                notebook_path=manifest.resolved_notebook_path,
+                sha256_before=before,
+                sha256_after=settle_sha256(manifest.resolved_notebook_path),
+                created_cell_ids=created_cell_ids(reported),
+                options=options,
+            )
             _append_ledger(ledger_path, entry)
             ledger_entries.append(entry)
         _emit(

@@ -982,3 +982,46 @@ def test_a_ledger_line_that_is_not_an_object_refuses(arm, capsys):
 
     require(code == cli.EXIT_LEDGER, payload)
     require(payload["code"] == "ledger_corrupt", payload)
+
+
+def test_a_failed_native_call_is_recorded_as_an_error_entry(arm, capsys):
+    """A failed call can still have written the notebook, so it must be recorded."""
+    arm.stdout = arm.tool_stdout("PAIR_CLI_CREATED cell-9")
+    # A tool envelope that reports failure: the cell may exist anyway.
+    arm.returncode = 1
+    arm.stdout = json.dumps({"success": False, "stdout": "PAIR_CLI_CREATED cell-9"})
+    code = arm.run_with_ledger("create_cell", "--code", "normalized = 1.25")
+    payload = refusal(capsys)
+
+    require(code != cli.EXIT_OK, payload)
+    entries = arm.ledger()
+    require(len(entries) == 1, entries)
+    entry = entries[0]
+    require(entry["status"].startswith("error:"), entry)
+    require(entry["command"] == "create_cell", entry)
+    require(entry["code"] == "normalized = 1.25", entry)
+
+
+def test_a_native_timeout_is_recorded_as_an_error_entry(arm, capsys):
+    arm.runner_error = subprocess.TimeoutExpired(cmd="marimo", timeout=1)
+    code = arm.run_with_ledger("run_all")
+    payload = refusal(capsys)
+
+    require(code == cli.EXIT_NATIVE_TIMEOUT, payload)
+    entries = arm.ledger()
+    require(len(entries) == 1, entries)
+    require(entries[0]["status"] == "error:native_timeout", entries[0])
+
+
+def test_error_entries_keep_the_hash_chain_unbroken(arm, capsys):
+    require(arm.run_with_ledger("variables") == cli.EXIT_OK, arm.result(capsys))
+    arm.runner_error = subprocess.TimeoutExpired(cmd="marimo", timeout=1)
+    require(arm.run_with_ledger("create_cell", "--code", "x = 1") != cli.EXIT_OK)
+    capsys.readouterr()
+    arm.runner_error = None
+    require(arm.run_with_ledger("variables") == cli.EXIT_OK, arm.result(capsys))
+
+    entries = arm.ledger()
+    require([entry["seq"] for entry in entries] == [1, 2, 3], entries)
+    require(entries[1]["sha256_before"] == entries[0]["sha256_after"], entries)
+    require(entries[2]["sha256_before"] == entries[1]["sha256_after"], entries)

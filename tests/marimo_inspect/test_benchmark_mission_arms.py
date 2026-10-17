@@ -433,11 +433,25 @@ def _healthy_ledger(notebook_bytes):
 
     The mission's own sequence: ``create_cell`` writes the diagnostic cell and a
     read-only call follows it, with every hash equal because the saved bytes no
-    longer change after the write.
+    longer change after the write. The entry carries the source it submitted,
+    because the grader attributes the cell on disk to a mediated call: a ledger
+    whose recorded code matches nothing on disk proves nothing.
     """
+    text = (
+        notebook_bytes.decode("utf-8")
+        if isinstance(notebook_bytes, bytes)
+        else notebook_bytes
+    )
     digest = _sha256(notebook_bytes)
     return [
-        _ledger_entry(1, "create_cell", digest, digest, created_cell_ids=["cell-1"]),
+        _ledger_entry(
+            1,
+            "create_cell",
+            digest,
+            digest,
+            created_cell_ids=["cell-1"],
+            code=grade.normalized_cell_source(text) or "normalized = 1.25",
+        ),
         _ledger_entry(2, "variables", digest, digest),
     ]
 
@@ -2060,3 +2074,53 @@ def test_modules_carry_no_machine_specific_paths():
             assert match is None, (
                 f"{path.name} matches {pattern.pattern}: {match.group(0)!r}"
             )
+
+
+def test_grade_fails_when_the_cell_on_disk_answers_to_no_mediated_call(tmp_path):
+    """Attribution: a cell nobody submitted through the adapter is not credited."""
+    digest = _sha256(WITH_NORMALIZED)
+    entries = [
+        _ledger_entry(1, "create_cell", digest, digest, code="normalized = 1.25"),
+        _ledger_entry(2, "variables", digest, digest),
+    ]
+    _canonical, notebook, manifest = _grade_case(tmp_path, ledger=entries)
+
+    verdict = grade.grade(manifest, _FakeProber(result=_ok_result(notebook)))
+
+    assert verdict["pass"] is False
+    check = _ledger_check(verdict)
+    assert check["pass"] is False
+    assert "answers to no mediated" in check["detail"]
+
+
+def test_a_failed_create_cell_still_attributes_the_cell_it_left_on_disk(tmp_path):
+    """A failed call is not an ineffective one: ``create_cell`` creates, then runs.
+
+    Observed live: ``pair create_cell`` reported ``tool_unsuccessful`` because the
+    cell it had just created failed to run (``processed`` was not in the kernel
+    namespace yet), yet the cell was already saved. The entry records the call
+    with its error status, and the cell on disk still answers to it.
+    """
+    text = WITH_NORMALIZED.decode("utf-8")
+    source = grade.normalized_cell_source(text)
+    assert source is not None
+    digest = _sha256(WITH_NORMALIZED)
+    entries = [
+        _ledger_entry(
+            1,
+            "create_cell",
+            digest,
+            digest,
+            created_cell_ids=[],
+            status="error:tool_unsuccessful",
+            code=source,
+        ),
+        _ledger_entry(2, "errors", digest, digest),
+    ]
+    _canonical, notebook, manifest = _grade_case(tmp_path, ledger=entries)
+
+    verdict = grade.grade(manifest, _FakeProber(result=_ok_result(notebook)))
+
+    assert verdict["pass"] is True
+    check = _ledger_check(verdict)
+    assert check["pass"] is True

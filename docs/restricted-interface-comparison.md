@@ -122,6 +122,45 @@ saving under 0.25.1 bumped `__generated_with` from 0.24.0 and rewrote the plot
 cell's `return ax, fig` to a bare `return`. It belongs to marimo's serializer, and
 it must not be read as a difference between the two agent surfaces.
 
+## Second batch — a stricter grader, and what the ledger caught
+
+The same two-arm, two-run batch re-run under the nine checks. The wrapper arm
+passed 2/2 (109.6 s and 83.8 s). **Both native runs failed one check**,
+`interface_ledger_intact`, and diagnosing that failure found a real defect — in
+the harness, not in the arm.
+
+What the agents actually did: each ran `pair create_cell` through the shim. The
+shim created the cell, then ran it, and the run raised
+`NameError: name 'processed' is not defined` because the fixture's earlier cells
+had not been executed in that session yet. The call therefore reported failure
+(exit 8, `tool_unsuccessful`) — **but the cell had already been created and
+saved**. The first shim version recorded only *successful* calls, so that write
+appeared in the ledger nowhere, and the hash chain showed the notebook changing
+"outside the adapter".
+
+Two things follow, and both are recorded rather than smoothed over:
+
+- **A failed call is not an ineffective one.** The shim now records a call it
+  reports as failed, with its error status and the hashes around it, and the
+  grader attributes the cell on disk to the `create_cell` code the ledger
+  recorded — whichever status that call carried. Attribution, not just chaining.
+  A cell written straight into the file still answers to no mediated call and
+  still fails.
+- **The native interface's own shape**: `create_cell` creates and runs in one
+  program, so a kernel error in the new cell is reported as a failed *creation*.
+  Both agents recovered by running `pair run_all` afterwards. That is a
+  usability observation about `marimo pair`, not a comparison result.
+
+After the fix: a deterministic driver replaying exactly that sequence (including
+the failed `create_cell`) grades **pass on all nine checks with 9 ledger
+entries**, and one live native agent run grades **pass on all nine with 14
+entries**, exit 0, 129.75 s, with the grader observing 1.25 → 2.5 → 1.25 on the
+restored gain. The check did not loosen to make those pass: the ledger became
+complete, and the attribution rule is stricter than "an entry said create_cell".
+
+The first batch's verdicts stay labelled as what they were — passes of the six
+checks that existed then.
+
 ## What it does and does not establish
 
 Establishes: whether one interface let an agent complete a fixed mission on a
