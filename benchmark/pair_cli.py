@@ -30,6 +30,16 @@ Every subcommand runs the same three steps in order:
 3. build ``<python> -m marimo pair execute --url <manifest url> --file
    <manifest notebook> -c <generated code>`` and run it with ``subprocess``.
 
+With ``--ledger PATH`` every successful call is appended to an append-only
+JSONL ledger: the notebook's SHA-256 before and after the call, the cells the
+call created, and the agent's own cell source for ``create_cell``. This is a
+**detector, not a boundary**: a shell-armed agent can still write the notebook
+itself, but such a write leaves the ledger's hash chain broken, so the
+independent grader can refuse the run instead of crediting a bypass. The ledger
+is deliberately part of the native arm's interface rather than a hidden hook:
+the grader reads it, the agent may read it, and neither can make a bypass look
+like a mediated call.
+
 ``--url`` and ``--file`` come **only** from the manifest; command-line
 arguments can never supply, override or extend them. The code argument is one
 argv element, so no shell is involved (``shell=False`` is never relaxed).
@@ -79,10 +89,12 @@ reported an invalid or unsuccessful envelope, 9 identity missing or mismatched,
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -99,7 +111,9 @@ __all__ = [
     "native_argv",
     "normalize_path",
     "read_census",
+    "read_ledger",
     "run_native",
+    "settle_sha256",
     "tool_stdout",
 ]
 
@@ -114,6 +128,7 @@ EXIT_TOOL_ENVELOPE = 8
 EXIT_IDENTITY = 9
 EXIT_USAGE = 10
 EXIT_INTERNAL = 11
+EXIT_LEDGER = 12
 
 #: Subcommands, in the order the interface documents them.
 STAGES = ("run_all", "create_cell", "run_cell", "variables", "errors", "set_ui")
@@ -146,6 +161,15 @@ SESSION_ECHO_KEYS = ("session_id", "pid")
 
 NATIVE_TIMEOUT_S = 60.0
 CENSUS_TIMEOUT_S = 5.0
+
+#: Sentinel the generated ``create_cell`` program prints with the new cell id.
+CREATED_SENTINEL = "PAIR_CLI_CREATED"
+
+#: How long to let a queued save land before the ledger hashes the notebook, and
+#: how often to look while waiting. Both are bounded: a file that never settles
+#: records its last observed digest instead of hanging the arm.
+LEDGER_SETTLE_TIMEOUT_S = 1.5
+LEDGER_SETTLE_INTERVAL_S = 0.05
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
@@ -208,6 +232,106 @@ def _is_sha256(value: object) -> bool:
         and len(value) == 64
         and all(character in _HEX_DIGITS for character in value)
     )
+
+
+# --------------------------------------------------------------------------- #
+# Ledger: the audit trail a bypass cannot fake
+# --------------------------------------------------------------------------- #
+
+
+def _sha256_or_none(path: str | os.PathLike[str]) -> str | None:
+    """The file's SHA-256, or ``None`` when it cannot be read."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def settle_sha256(
+    path: str | os.PathLike[str],
+    *,
+    timeout: float = LEDGER_SETTLE_TIMEOUT_S,
+    interval: float = LEDGER_SETTLE_INTERVAL_S,
+) -> str | None:
+    """Hash *path* once it stops changing, so a queued save is included.
+
+    marimo writes the notebook after the tool call returns. Hashing immediately
+    would record a stale digest and make an honest run's ledger look tampered
+    with. The wait is bounded (:data:`LEDGER_SETTLE_TIMEOUT_S`), and a file that
+    never settles yields its last observed digest rather than hanging the arm.
+    """
+    deadline = time.monotonic() + timeout
+    previous = _sha256_or_none(path)
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        current = _sha256_or_none(path)
+        if current is not None and current == previous:
+            return current
+        previous = current
+    return previous
+
+
+def read_ledger(path: str | os.PathLike[str]) -> list[dict]:
+    """Read the append-only ledger, refusing a malformed file.
+
+    Raises:
+        PairCliError: When a line is not a JSON object. An unreadable record must
+            never read as "nothing happened", so a corrupt ledger refuses.
+    """
+    ledger = Path(path)
+    if not ledger.exists():
+        return []
+    entries: list[dict] = []
+    for number, line in enumerate(
+        ledger.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+    ):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError as error:
+            raise PairCliError(
+                "ledger_corrupt",
+                f"ledger line {number} is not JSON: {error}",
+                EXIT_LEDGER,
+                stage="ledger",
+            ) from error
+        if not isinstance(entry, dict):
+            raise PairCliError(
+                "ledger_corrupt",
+                f"ledger line {number} is not a JSON object",
+                EXIT_LEDGER,
+                stage="ledger",
+            )
+        entries.append(entry)
+    return entries
+
+
+def _append_ledger(path: str | os.PathLike[str], entry: dict) -> None:
+    """Append one entry durably, creating the parent directory if needed."""
+    ledger = Path(path)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def created_cell_ids(reported: str) -> list[str]:
+    """The cell ids the generated program reported creating, in order.
+
+    Empty for every read-only subcommand and for a native run whose payload never
+    printed one — the ledger records what was observed, not what was expected.
+    """
+    ids: list[str] = []
+    for line in reported.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(CREATED_SENTINEL):
+            continue
+        value = stripped[len(CREATED_SENTINEL) :].strip()
+        if value:
+            ids.append(value)
+    return ids
 
 
 @dataclass(frozen=True)
@@ -612,6 +736,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="arm manifest JSON written by the setup step",
     )
+    parser.add_argument(
+        "--ledger",
+        default=None,
+        metavar="PATH",
+        help=(
+            "append an audit entry per successful call (absolute path); the"
+            " independent grader refuses a run whose final notebook hash is not"
+            " the ledger's last recorded hash"
+        ),
+    )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     subcommands.add_parser("run_all", help="run every cell in the anchored session")
@@ -688,6 +822,14 @@ def _main(
 ) -> int:
     args = _build_parser().parse_args(list(argv))
     manifest = load_manifest(args.manifest)
+    ledger_path: Path | None = None
+    if args.ledger is not None:
+        ledger_path = Path(args.ledger)
+        if not ledger_path.is_absolute():
+            raise UsageError(f"--ledger must be absolute: {args.ledger}")
+    # Read (and therefore validate) the ledger BEFORE the call runs: a corrupt
+    # record must refuse the run rather than be appended to.
+    ledger_entries = read_ledger(ledger_path) if ledger_path is not None else []
     try:
         try:
             census = census_reader(manifest.server_url)
@@ -730,6 +872,11 @@ def _main(
             stage=args.command,
         )
 
+        before = (
+            settle_sha256(manifest.resolved_notebook_path)
+            if ledger_path is not None
+            else None
+        )
         native = native_argv(manifest, code)
         native_env = dict(os.environ) if env is None else dict(env)
         try:
@@ -750,6 +897,25 @@ def _main(
             ) from error
 
         reported = tool_stdout(completed, manifest)
+        if ledger_path is not None:
+            entry: dict = {
+                "seq": len(ledger_entries) + 1,
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "command": args.command,
+                "status": "ok",
+                "notebook_path": manifest.resolved_notebook_path,
+                "sha256_before": before,
+                "sha256_after": settle_sha256(manifest.resolved_notebook_path),
+                "created_cell_ids": created_cell_ids(reported),
+            }
+            if args.command == "create_cell":
+                entry["code"] = args.code
+            elif args.command == "run_cell":
+                entry["cell_id"] = args.cell_id
+            elif args.command == "set_ui":
+                entry["ui"] = {"name": args.name, "value": options["value"]}
+            _append_ledger(ledger_path, entry)
+            ledger_entries.append(entry)
         _emit(
             {
                 "status": "ok",

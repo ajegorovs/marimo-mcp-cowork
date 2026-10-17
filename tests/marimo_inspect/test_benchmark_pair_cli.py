@@ -101,6 +101,7 @@ class Arm:
         self.calls = []
         self.census_reads = []
         self.env = {"PATH": "fake"}
+        self.ledger_path = tmp_path / "arm" / "ledger.jsonl"
 
     # -- seams ------------------------------------------------------------- #
 
@@ -130,6 +131,24 @@ class Arm:
             census_reader=self.census,
             env=self.env,
         )
+
+    def run_with_ledger(self, *arguments):
+        """Run through the real entry point with the arm's ledger recorded."""
+        return cli.main(
+            [
+                "--manifest",
+                str(self.manifest_path),
+                "--ledger",
+                str(self.ledger_path),
+                *arguments,
+            ],
+            runner=self.runner,
+            census_reader=self.census,
+            env=self.env,
+        )
+
+    def ledger(self):
+        return cli.read_ledger(self.ledger_path)
 
     def result(self, capsys):
         return json.loads(capsys.readouterr().out)
@@ -856,3 +875,110 @@ def test_gates_survive_optimized_mode(tmp_path, mode):
     )
     require("OPTIMIZED_HELD" in completed.stdout, completed.stdout)
     require("runner called" not in completed.stderr, completed.stderr)
+
+
+# --------------------------------------------------------------------------- #
+# Ledger: the audit trail a bypass cannot fake
+# --------------------------------------------------------------------------- #
+
+
+def test_ledger_records_a_created_cell_with_its_source_and_ids(arm, capsys):
+    arm.stdout = arm.tool_stdout("PAIR_CLI_CREATED cell-9")
+    code = arm.run_with_ledger("create_cell", "--code", "normalized = 1.25")
+    require(code == cli.EXIT_OK, arm.result(capsys))
+
+    entries = arm.ledger()
+    require(len(entries) == 1, entries)
+    entry = entries[0]
+    require(entry["seq"] == 1, entry)
+    require(entry["command"] == "create_cell", entry)
+    require(entry["status"] == "ok", entry)
+    require(entry["created_cell_ids"] == ["cell-9"], entry)
+    require(entry["code"] == "normalized = 1.25", entry)
+    require(entry["sha256_before"] == hashlib.sha256(NOTEBOOK_BYTES).hexdigest(), entry)
+    require(isinstance(entry["sha256_after"], str), entry)
+
+
+def test_ledger_chains_before_to_the_previous_after(arm, capsys):
+    require(arm.run_with_ledger("variables") == cli.EXIT_OK, arm.result(capsys))
+    require(arm.run_with_ledger("errors") == cli.EXIT_OK, arm.result(capsys))
+
+    entries = arm.ledger()
+    require([entry["seq"] for entry in entries] == [1, 2], entries)
+    require(entries[1]["sha256_before"] == entries[0]["sha256_after"], entries)
+
+
+def test_a_write_the_shim_did_not_make_breaks_the_chain(arm, capsys):
+    """The detector's input: an external write leaves a discontinuity."""
+    require(arm.run_with_ledger("variables") == cli.EXIT_OK, arm.result(capsys))
+    arm.notebook.write_bytes(NOTEBOOK_BYTES + b"# written outside the shim\n")
+    require(arm.run_with_ledger("variables") == cli.EXIT_OK, arm.result(capsys))
+
+    entries = arm.ledger()
+    require(entries[1]["sha256_before"] != entries[0]["sha256_after"], entries)
+
+
+def test_a_read_only_call_records_equal_hashes_and_no_cells(arm, capsys):
+    require(arm.run_with_ledger("variables", "--names", "gain") == cli.EXIT_OK)
+    entry = arm.ledger()[0]
+    require(entry["sha256_before"] == entry["sha256_after"], entry)
+    require(entry["created_cell_ids"] == [], entry)
+    require("code" not in entry, entry)
+
+
+def test_set_ui_records_the_name_and_parsed_value(arm, capsys):
+    require(
+        arm.run_with_ledger("set_ui", "--name", "gain", "--value", "4") == cli.EXIT_OK
+    )
+    entry = arm.ledger()[0]
+    require(entry["ui"] == {"name": "gain", "value": 4}, entry)
+
+
+def test_a_refused_call_writes_no_ledger_entry(arm, capsys):
+    arm.census_result = {"other-session": {"path": str(arm.notebook)}}
+    code = arm.run_with_ledger("variables")
+    payload = refusal(capsys)
+
+    require(code == cli.EXIT_CENSUS_MISMATCH, payload)
+    require(arm.ledger() == [], "a refused call must not write a ledger entry")
+
+
+def test_ledger_path_must_be_absolute(arm, capsys):
+    code = cli.main(
+        [
+            "--manifest",
+            str(arm.manifest_path),
+            "--ledger",
+            "relative/ledger.jsonl",
+            "variables",
+        ],
+        runner=arm.runner,
+        census_reader=arm.census,
+        env=arm.env,
+    )
+    payload = refusal(capsys)
+
+    require(code == cli.EXIT_USAGE, payload)
+    require("absolute" in payload["error"], payload)
+    require(arm.calls == [], "the native CLI must not run when the ledger is refused")
+
+
+def test_a_corrupt_ledger_refuses_before_the_native_call(arm, capsys):
+    arm.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    arm.ledger_path.write_text("{not json}\n", encoding="utf-8")
+    code = arm.run_with_ledger("variables")
+    payload = refusal(capsys)
+
+    require(code == cli.EXIT_LEDGER, payload)
+    require(payload["code"] == "ledger_corrupt", payload)
+    require(arm.calls == [], "the native CLI must not run against a corrupt ledger")
+
+
+def test_a_ledger_line_that_is_not_an_object_refuses(arm, capsys):
+    arm.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    arm.ledger_path.write_text("[]\n", encoding="utf-8")
+    code = arm.run_with_ledger("variables")
+    payload = refusal(capsys)
+
+    require(code == cli.EXIT_LEDGER, payload)
+    require(payload["code"] == "ledger_corrupt", payload)
