@@ -969,7 +969,59 @@ in `.gitattributes`, with a regression asserting the committed prompt inputs car
 no CR in the working tree. Verified from a fresh clone of the fix branch
 (`core.autocrlf=true`): prompt inputs `w/lf`, focused **118 passed**, non-live
 **1156 passed, 6 skipped, 91 deselected**, Ruff clean. The same clone of `main`
-shows the two failures above. Released by PR #11.
+shows the two failures above. Merged by PR #11 as
+`4934265`; the existing-checkout transition is covered in the next section.
+
+## PR #11 merged — the LF pin, and what a merge does *not* do to an existing checkout
+
+Reviewed head `342a3a00648fe6809676d89719bd905034d42c71` merged unchanged as
+`49342656081963955e34b96408e046cd90e206f9` on 2026-10-17, one documentation
+commit after the reviewed revision (`db35a5a`); `git diff --stat ffc3436 4934265`
+shows the four intended files and nothing else.
+
+**Target-tree verification — the actual checkout, checked before it was believed:**
+
+```text
+git ls-files --eol benchmark/prompts/     => i/lf w/lf attr/text   (all three files)
+focused test_benchmark_arm_run.py         => 118 passed
+pytest -m "not live"                      => 1156 passed, 6 skipped, 91 deselected (54.34s)
+ruff check . / ruff format --check .      => clean
+marimo check notebooks / git diff --check => exit 0 / clean ; 0 modified files
+```
+
+A brand-new clone of the merged revision (`core.autocrlf=true`) materialises all
+three as `i/lf w/lf` with no rematerialization, so the pin holds for fresh
+checkouts and the transition case above is the only one needing care.
+
+**Transition of an existing checkout — reproduced, not assumed.** A Windows
+checkout cloned from the pre-merge revision (`i/lf w/crlf`, no attributes, as any
+existing working tree is) that pulls the merged revision **keeps CRLF**:
+`.gitattributes` does not retroactively rematerialize files git already considers
+clean.
+
+```text
+after pull: i/lf w/crlf attr/text      git status: clean      git diff: no differences
+focused: 3 failed, 115 passed
+  test_prompt_is_mission_plus_blank_line_plus_interface_note
+  test_prompt_file_is_written_byte_exactly
+  test_the_committed_prompt_inputs_are_lf_in_the_working_tree   <- the new guard fires
+```
+
+A merged-but-not-rematerialized checkout therefore **cannot be reported green**:
+the guard fails first, by design. Rematerializing is safe once local content is
+proven unchanged — for each prompt, the committed LF blob equalled the CRLF
+working tree with `\r\n` -> `\n`, so nothing can be lost — and the tree then
+verifies clean:
+
+```text
+rm benchmark/prompts/*.md && git checkout -- benchmark/prompts/
+  => i/lf w/lf attr/text ; focused 118 passed ; non-live 1156 passed, 6 skipped,
+     91 deselected ; Ruff clean ; 0 modified
+```
+
+The live gate was **not** re-run for this correction: the 91-test live result is
+**inherited** from the PR #10 merged-tree run above, not a new pass. This change
+touches no kernel-path code.
 
 ## Related docs
 
