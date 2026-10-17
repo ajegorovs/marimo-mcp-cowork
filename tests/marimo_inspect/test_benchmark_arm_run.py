@@ -116,6 +116,34 @@ def _state_dir(tmp_path):
     return state
 
 
+def write_arm_manifest(
+    tmp_path, *, ledger="ledger.jsonl", drop_ledger=False, path=None
+):
+    """Write the native arm's manifest file, as ``mission_setup`` would.
+
+    The manifest is the only place a run's ``ledger_path`` comes from, so the
+    native arm's entry point reads a real file here. ``ledger`` is relative to
+    ``tmp_path`` (``None`` records the key as a non-string, which must refuse),
+    and ``drop_ledger=True`` omits the key entirely — the unaudited manifest a
+    run must refuse rather than launch.
+    """
+    manifest_path = Path(path) if path is not None else tmp_path / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "server_url": "http://127.0.0.1:9",
+        "session_id": "s-1",
+        "notebook_path": str(tmp_path / "run" / "notebook.py"),
+        "process_id": 4242,
+        "python": "python3",
+        "sha256": hashlib.sha256(b"fixture").hexdigest(),
+        "arm": "native",
+    }
+    if not drop_ledger:
+        payload["ledger_path"] = str(tmp_path / ledger) if ledger is not None else None
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    return manifest_path
+
+
 def _case(tmp_path, home_name="home"):
     """The shared arguments for one run, all under ``tmp_path``."""
     return {
@@ -131,7 +159,16 @@ def _case(tmp_path, home_name="home"):
     }
 
 
-def _run(tmp_path, arm, *, recorder=None, dry_run=False, home_name="home", **overrides):
+def _run(
+    tmp_path,
+    arm,
+    *,
+    recorder=None,
+    dry_run=False,
+    home_name="home",
+    prepare_manifest=True,
+    **overrides,
+):
     """``perform_run`` for one arm with the launch seam replaced."""
     case = _case(tmp_path, home_name)
     # A fixed command name keeps the printed argv machine-independent.
@@ -143,6 +180,11 @@ def _run(tmp_path, arm, *, recorder=None, dry_run=False, home_name="home", **ove
     else:
         case["mcp_command"] = None
     case.update(overrides)
+    # The native arm's manifest file is what the run reads its ``ledger_path``
+    # from; the wrapper arm has neither a manifest nor a shim. A test that
+    # supplies its own manifest (or none at all) turns this off.
+    if arm == "native" and case["manifest"] is not None and prepare_manifest:
+        write_arm_manifest(Path(case["manifest"]).parent, path=case["manifest"])
     recorder = recorder if recorder is not None else Recorder()
     metadata = arm_run.perform_run(
         arm=arm,
@@ -480,6 +522,7 @@ def _argv(tmp_path, arm, *, drop=None, override=None):
         "--dry-run",
     ]
     if arm == "native":
+        write_arm_manifest(tmp_path)
         arguments += [
             "--manifest",
             str(tmp_path / "manifest.json"),
@@ -696,9 +739,14 @@ def test_fingerprint_line_is_printed_for_both_arms(tmp_path, capsys):
 def test_native_launcher_passes_options_through_and_quotes_the_manifest(tmp_path):
     manifest = tmp_path / "a dir" / "the manifest.json"
     shim = tmp_path / "a dir" / "pair_cli.py"
+    ledger = tmp_path / "a dir" / "ledger.jsonl"
 
     posix, windows = arm_run.write_launcher(
-        tmp_path / "home", shim=shim, manifest=manifest, interpreter="python3"
+        tmp_path / "home",
+        shim=shim,
+        manifest=manifest,
+        ledger=ledger,
+        interpreter="python3",
     )
 
     require(
@@ -713,32 +761,65 @@ def test_native_launcher_passes_options_through_and_quotes_the_manifest(tmp_path
     sh = posix.read_bytes().decode("utf-8")
     cmd = windows.read_bytes().decode("utf-8")
 
-    require(sh == arm_run.posix_launcher("python3", str(shim), str(manifest)), sh)
-    require(cmd == arm_run.cmd_launcher("python3", str(shim), str(manifest)), cmd)
+    require(
+        sh == arm_run.posix_launcher("python3", str(shim), str(manifest), str(ledger)),
+        sh,
+    )
+    require(
+        cmd == arm_run.cmd_launcher("python3", str(shim), str(manifest), str(ledger)),
+        cmd,
+    )
     require(b"\r\n" in windows.read_bytes(), "the batch file has no CRLF endings")
     # The manifest path is quoted for the launcher's own shell, spaces included.
     require(f"--manifest '{manifest}'" in sh, sh)
     require(f'--manifest "{manifest}"' in cmd, cmd)
+    # BOTH variants carry the ledger, quoted the same way. The audit trail is
+    # only worth anything if the launcher names the file the grader reads.
+    require(Path(ledger).is_absolute(), str(ledger))
+    require(f"--ledger '{ledger}'" in sh, sh)
+    require(f'--ledger "{ledger}"' in cmd, cmd)
     require(f"'{shim}'" in sh, sh)
+    # --ledger comes BEFORE the pass-through arguments, so the agent's own
+    # arguments can neither supply, replace nor reorder it. The generated
+    # comments name both flags as well, so this reads the command line itself.
+    exec_line = next(line for line in sh.splitlines() if line.startswith("exec "))
+    batch_line = cmd.rstrip().splitlines()[-1]
+    require(exec_line.index("--ledger") < exec_line.index('"$@"'), exec_line)
+    require(batch_line.index("--ledger") < batch_line.index("%*"), batch_line)
     # Options and subcommands are passed through, never interpreted here.
-    require(sh.rstrip().endswith('"$@"'), sh)
-    require(cmd.rstrip().endswith("%*"), cmd)
+    require(exec_line.rstrip().endswith('"$@"'), exec_line)
+    require(batch_line.endswith("%*"), batch_line)
     # The launcher never names a target selector itself.
     for token in ("--file", "--session", "--url"):
         require(token not in sh and token not in cmd, token)
 
 
 def test_posix_launcher_quotes_a_manifest_path_with_a_single_quote():
-    text = arm_run.posix_launcher("/py", "/shim.py", "/a b/o'brien.json")
+    text = arm_run.posix_launcher(
+        "/py", "/shim.py", "/a b/o'brien.json", "/a b/l.jsonl"
+    )
 
     require(text.count("'\\''") == 1, text)
     require("--manifest '/a b/o'\\''brien.json'" in text, text)
 
 
+def test_posix_launcher_quotes_a_ledger_path_with_a_single_quote():
+    """The ledger is embedded the same way the manifest is."""
+    text = arm_run.posix_launcher("/py", "/shim.py", "/m.json", "/a b/o'brien.jsonl")
+
+    require("--ledger '/a b/o'\\''brien.jsonl' \"$@\"" in text, text)
+
+
 def test_cmd_launcher_refuses_a_manifest_it_cannot_quote():
     for bad in ("/a/percent%20.json", '/a/quote".json', "/a/two\nlines.json"):
         with pytest.raises(arm_run.ArmRunRefusal, match="safely for a cmd launcher"):
-            arm_run.cmd_launcher("/py", "/shim.py", bad)
+            arm_run.cmd_launcher("/py", "/shim.py", bad, "/run/ledger.jsonl")
+
+
+def test_cmd_launcher_refuses_a_ledger_it_cannot_quote():
+    for bad in ("/a/percent%20.jsonl", '/a/quote".jsonl', "/a/two\nlines.jsonl"):
+        with pytest.raises(arm_run.ArmRunRefusal, match="safely for a cmd launcher"):
+            arm_run.cmd_launcher("/py", "/shim.py", "/run/manifest.json", bad)
 
 
 def test_launcher_refuses_a_relative_path(tmp_path):
@@ -748,6 +829,7 @@ def test_launcher_refuses_a_relative_path(tmp_path):
             tmp_path / "home",
             shim="benchmark/pair_cli.py",
             manifest=tmp_path / "manifest.json",
+            ledger=tmp_path / "ledger.jsonl",
             interpreter="python3",
         )
     with pytest.raises(arm_run.ArmRunRefusal, match="manifest path must be absolute"):
@@ -755,8 +837,137 @@ def test_launcher_refuses_a_relative_path(tmp_path):
             tmp_path / "home",
             shim=tmp_path / "pair_cli.py",
             manifest="manifest.json",
+            ledger=tmp_path / "ledger.jsonl",
             interpreter="python3",
         )
+    # A relative ledger would resolve against the agent's own directory, so the
+    # audit trail would land somewhere the grader never looks.
+    with pytest.raises(arm_run.ArmRunRefusal, match="ledger path must be absolute"):
+        arm_run.write_launcher(
+            tmp_path / "home",
+            shim=tmp_path / "pair_cli.py",
+            manifest=tmp_path / "manifest.json",
+            ledger="ledger.jsonl",
+            interpreter="python3",
+        )
+
+
+def _custom_manifest(tmp_path, name, payload):
+    """Write a hand-built manifest JSON and return its path."""
+    path = tmp_path / name
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_native_run_refuses_a_manifest_without_an_absolute_ledger(tmp_path):
+    """Fail closed: a native arm is never launched unaudited."""
+    cases = (
+        (tmp_path / "absent.json", "cannot read the arm manifest"),
+        (
+            write_arm_manifest(
+                tmp_path, drop_ledger=True, path=tmp_path / "no-key.json"
+            ),
+            "carries no ledger_path",
+        ),
+        (
+            write_arm_manifest(
+                tmp_path, ledger=None, path=tmp_path / "not-a-path.json"
+            ),
+            "carries no ledger_path",
+        ),
+        (
+            _custom_manifest(
+                tmp_path, "relative.json", {"ledger_path": "ledger.jsonl"}
+            ),
+            "ledger_path must be absolute",
+        ),
+    )
+    for manifest, expected in cases:
+        with pytest.raises(arm_run.ArmRunRefusal, match=expected):
+            _run(
+                tmp_path,
+                "native",
+                home_name="home-refused",
+                manifest=manifest,
+                prepare_manifest=False,
+            )
+        require(
+            not (tmp_path / "home-refused").exists(),
+            "a refused run wrote its configuration home",
+        )
+
+
+def test_native_run_refuses_a_manifest_that_is_not_a_json_object(tmp_path):
+    """A bare list is not a manifest: refusing is the only safe reading."""
+    path = _custom_manifest(tmp_path, "list.json", ["ledger.jsonl"])
+
+    with pytest.raises(arm_run.ArmRunRefusal, match="must be a JSON object"):
+        arm_run.ledger_path_from_manifest(path)
+
+
+def test_native_run_refuses_a_manifest_that_is_not_json(tmp_path):
+    path = tmp_path / "broken.json"
+    path.write_text("{not json}\n", encoding="utf-8")
+
+    with pytest.raises(arm_run.ArmRunRefusal, match="not readable JSON"):
+        arm_run.ledger_path_from_manifest(path)
+
+
+def test_ledger_path_from_manifest_returns_the_absolute_path(tmp_path):
+    manifest = write_arm_manifest(tmp_path)
+
+    ledger = arm_run.ledger_path_from_manifest(manifest)
+
+    require(ledger == str(tmp_path / "ledger.jsonl"), ledger)
+    require(Path(ledger).is_absolute(), ledger)
+
+
+def test_a_refused_native_run_writes_no_fingerprint_and_no_home(tmp_path, capsys):
+    """The refusal lands before anything is printed or written."""
+    manifest = write_arm_manifest(tmp_path, drop_ledger=True)
+
+    with pytest.raises(arm_run.ArmRunRefusal, match="carries no ledger_path"):
+        _run(
+            tmp_path,
+            "native",
+            home_name="home-refused",
+            manifest=manifest,
+            prepare_manifest=False,
+        )
+
+    captured = capsys.readouterr()
+    require(captured.out == "", "a refused run still printed its fingerprint")
+    require(
+        not (tmp_path / "home-refused").exists(),
+        "a refused run wrote its configuration home",
+    )
+
+
+def test_the_cli_refuses_a_native_manifest_without_a_ledger(tmp_path, capsys):
+    manifest = write_arm_manifest(tmp_path, drop_ledger=True, path=tmp_path / "m.json")
+    arguments = _argv(tmp_path, "native", override=("--manifest", str(manifest)))
+
+    detail = _refusal(tmp_path, capsys, arguments)
+
+    require("ledger_path" in detail, detail)
+    require(
+        not (tmp_path / "home").exists(), "a refused run wrote its configuration home"
+    )
+
+
+def test_the_written_launcher_carries_the_manifest_ledger_path(tmp_path):
+    """End to end: the manifest's own ledger_path is what the launcher embeds."""
+    manifest = write_arm_manifest(tmp_path, ledger="audit/ledger.jsonl")
+    ledger = arm_run.ledger_path_from_manifest(manifest)
+
+    _run(tmp_path, "native", manifest=manifest, prepare_manifest=False)
+
+    bin_dir = tmp_path / "home" / arm_run.BIN_DIRNAME
+    sh = (bin_dir / arm_run.PAIR_LAUNCHER).read_bytes().decode("utf-8")
+    cmd = (bin_dir / arm_run.PAIR_LAUNCHER_CMD).read_bytes().decode("utf-8")
+
+    require(f"--ledger '{ledger}'" in sh, sh)
+    require(f'--ledger "{ledger}"' in cmd, cmd)
 
 
 def test_native_dry_run_writes_the_launcher_and_prepends_its_bin_dir(tmp_path, capsys):
@@ -1283,6 +1494,8 @@ def test_metadata_carries_the_documented_keys(tmp_path, capsys):
             "started_at",
             "ended_at",
             "exit_code",
+            "terminal_state",
+            "elapsed_s",
             "dry_run",
         },
         sorted(metadata),
@@ -1291,6 +1504,11 @@ def test_metadata_carries_the_documented_keys(tmp_path, capsys):
     require(metadata["state_dir"] == str(tmp_path / "state"), metadata)
     require(metadata["ended_at"] == FIXED_TIME, metadata)
     require(metadata["exit_code"] == 0, metadata)
+    require(metadata["terminal_state"] == "completed", metadata)
+    require(
+        isinstance(metadata["elapsed_s"], float) and metadata["elapsed_s"] >= 0.0,
+        metadata,
+    )
 
 
 def test_metadata_is_written_beside_the_transcript(tmp_path, capsys):
@@ -1300,6 +1518,186 @@ def test_metadata_is_written_beside_the_transcript(tmp_path, capsys):
     require(meta_path.parent == case["transcript"].parent, meta_path)
     require(meta_path.name == "arm.meta.json", meta_path.name)
     require(meta_path.read_bytes().endswith(b"\n"), "metadata has no trailing newline")
+
+
+# --------------------------------------------------------------------------- #
+# The terminal state, the elapsed time and the CLI exit status
+# --------------------------------------------------------------------------- #
+
+
+def _argv_live(tmp_path, arm):
+    """The CLI arguments for one arm that actually launch (the dry run's flag off)."""
+    return [item for item in _argv(tmp_path, arm) if item != "--dry-run"]
+
+
+def _metadata_from_stdout(capsys):
+    """The metadata object the CLI printed, parsed out of its JSON block.
+
+    ``main`` prints the fingerprint and command lines before the pretty-printed
+    metadata, so the JSON block is located by its opening ``{`` line, not by
+    parsing the whole stream.
+    """
+    lines = capsys.readouterr().out.splitlines()
+    require("{" in lines, lines)
+    start = lines.index("{")
+    return json.loads("\n".join(lines[start:]))
+
+
+def test_nonzero_child_exit_propagates_to_the_cli_status(tmp_path, capsys, monkeypatch):
+    """A child that exits 5 must make the CLI exit nonzero, not silently 0.
+
+    The harness is invoked for its return code, so a failed launch recorded as a
+    success lets a caller advance to grading. The metadata is still printed, with
+    the child's own code and the explicit ``completed`` terminal state.
+    """
+
+    def fake_run(argv, **kwargs):
+        kwargs["stdout"].write(b"the agent failed\n")
+        return subprocess.CompletedProcess(argv, 5, "", "")
+
+    monkeypatch.setattr(arm_run.subprocess, "run", fake_run)
+
+    code = arm_run.main(_argv_live(tmp_path, "native"))
+
+    require(code == 5, code)
+    metadata = _metadata_from_stdout(capsys)
+    require(metadata["exit_code"] == 5, metadata)
+    require(metadata["terminal_state"] == "completed", metadata)
+    require(metadata["dry_run"] is False, metadata)
+    meta_path = arm_run.meta_path_for(tmp_path / "out" / "arm.txt")
+    require(meta_path.is_file(), meta_path)
+    require(json.loads(meta_path.read_text(encoding="utf-8")) == metadata, metadata)
+
+
+def test_a_timed_out_child_records_timeout_and_fails_the_cli(
+    tmp_path, capsys, monkeypatch
+):
+    """A killed child has no exit status: record the timeout, never a success.
+
+    ``subprocess.run`` kills the child and raises ``TimeoutExpired``; the run must
+    still leave complete metadata — an explicit ``timeout`` state, the elapsed
+    seconds, and a null exit code — and the CLI must fail.
+    """
+
+    def fake_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=list(argv), timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(arm_run.subprocess, "run", fake_run)
+
+    code = arm_run.main(_argv_live(tmp_path, "wrapper"))
+
+    require(code != 0, code)
+    metadata = _metadata_from_stdout(capsys)
+    require(metadata["terminal_state"] == "timeout", metadata)
+    require(metadata["exit_code"] is None, metadata)
+    require(
+        isinstance(metadata["elapsed_s"], float) and metadata["elapsed_s"] >= 0.0,
+        metadata,
+    )
+    require(metadata["ended_at"] is not None, metadata)
+    require(metadata["dry_run"] is False, metadata)
+    meta_path = arm_run.meta_path_for(tmp_path / "out" / "arm.txt")
+    require(meta_path.is_file(), meta_path)
+    require(json.loads(meta_path.read_text(encoding="utf-8")) == metadata, metadata)
+
+
+class TimingOut:
+    """The launch seam when the child is killed for exceeding its budget."""
+
+    def __call__(self, argv, env, transcript, timeout):
+        raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+
+
+def test_perform_run_timeout_records_elapsed_and_complete_metadata(tmp_path):
+    """The injected seam times out: explicit state, exact elapsed, no exit code."""
+    ticks = iter([500.0, 503.5])
+
+    metadata, _recorder, case = _run(
+        tmp_path, "native", recorder=TimingOut(), timer=lambda: next(ticks)
+    )
+
+    require(metadata["terminal_state"] == "timeout", metadata)
+    require(metadata["exit_code"] is None, metadata)
+    require(metadata["elapsed_s"] == 3.5, metadata)
+    require(metadata["dry_run"] is False, metadata)
+    require(metadata["ended_at"] == FIXED_TIME, metadata)
+    meta_path = arm_run.meta_path_for(case["transcript"])
+    require(meta_path.is_file(), meta_path)
+    require(json.loads(meta_path.read_text(encoding="utf-8")) == metadata, metadata)
+
+
+def test_a_completed_run_records_its_elapsed_seconds(tmp_path):
+    """A child that terminates on its own records ``completed`` and its elapsed time."""
+    ticks = iter([400.0, 402.25])
+
+    metadata, _recorder, _case = _run(
+        tmp_path, "wrapper", recorder=Recorder(exit_code=0), timer=lambda: next(ticks)
+    )
+
+    require(metadata["terminal_state"] == "completed", metadata)
+    require(metadata["elapsed_s"] == 2.25, metadata)
+    require(metadata["exit_code"] == 0, metadata)
+
+
+def test_cli_exit_status_is_zero_only_for_a_success(tmp_path):
+    """The CLI status is fail-closed: any unknown status is not a success."""
+    zero_cases = (
+        {"dry_run": True, "exit_code": None, "terminal_state": None},
+        {"dry_run": False, "exit_code": 0, "terminal_state": "completed"},
+    )
+    for case in zero_cases:
+        require(
+            arm_run.cli_exit_status(case) == 0, (case, arm_run.cli_exit_status(case))
+        )
+
+    require(
+        arm_run.cli_exit_status(
+            {"dry_run": False, "exit_code": 5, "terminal_state": "completed"}
+        )
+        == 5,
+        "a nonzero child status was not propagated",
+    )
+    require(
+        arm_run.cli_exit_status(
+            {"dry_run": False, "exit_code": None, "terminal_state": "timeout"}
+        )
+        == arm_run.TIMEOUT_EXIT_STATUS,
+        "a timeout did not report the timeout status",
+    )
+    require(arm_run.TIMEOUT_EXIT_STATUS != 0, arm_run.TIMEOUT_EXIT_STATUS)
+    # A launched run whose child status cannot be read must not be reported as a
+    # success: it fails closed rather than returning 0.
+    require(
+        arm_run.cli_exit_status(
+            {"dry_run": False, "exit_code": None, "terminal_state": None}
+        )
+        != 0,
+        "an unreadable status was reported as success",
+    )
+
+
+def test_a_refused_run_writes_no_metadata_and_still_exits_one(tmp_path, capsys):
+    """A refusal never fabricates a run: JSON on stderr, exit 1, no metadata file."""
+    code = arm_run.main(_without(_argv(tmp_path, "native"), "--manifest"))
+
+    require(code == 1, code)
+    captured = capsys.readouterr()
+    require(captured.out == "", captured.out)
+    error = json.loads(captured.err)
+    require(error["error"] == "arm_run_refused", error)
+    require("--manifest" in error["detail"], error)
+    meta_path = arm_run.meta_path_for(tmp_path / "out" / "arm.txt")
+    require(not meta_path.exists(), meta_path)
+
+
+def test_dry_run_metadata_keeps_its_shape(tmp_path):
+    """A dry run launched nothing, so it has no terminal state or elapsed time."""
+    metadata, _recorder, _case = _run(tmp_path, "native", dry_run=True)
+
+    require("terminal_state" not in metadata, sorted(metadata))
+    require("elapsed_s" not in metadata, sorted(metadata))
+    require(metadata["exit_code"] is None, metadata)
+    require(metadata["dry_run"] is True, metadata)
 
 
 # --------------------------------------------------------------------------- #

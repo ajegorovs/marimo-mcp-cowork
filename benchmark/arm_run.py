@@ -100,7 +100,12 @@ therefore added to both ``PATH`` and ``ORIGINAL_PATH`` (see
 :func:`build_child_env`). Both launchers pass their arguments through to the
 shim untouched, with the manifest path quoted for their own shell; the shim
 keeps the manifest the only place the notebook and session identifiers come
-from.
+from. They also carry ``--ledger <manifest ledger_path>`` **before** the
+pass-through arguments, so every call the agent makes through the shim lands
+in the arm's audit trail. That path is read from the manifest and must be
+absolute: a manifest without one refuses the run (see
+:func:`ledger_path_from_manifest`) instead of launching an unaudited native
+arm.
 
 The child's marimo state
 ------------------------
@@ -142,6 +147,20 @@ trailing newline on either file cannot produce two blank lines or none). The
 SHA-256 of each source file is recorded in the run metadata, so accidental
 per-arm drift in the shared mission or in one note is detectable after the fact.
 
+Outcome: terminal state, elapsed time and exit status
+-----------------------------------------------------
+The metadata records what actually happened to the child. ``terminal_state`` is
+``"completed"`` when the child terminated on its own and ``"timeout"`` when the
+harness killed it for exceeding its budget; ``elapsed_s`` is the seconds spent
+in the launch, measured monotonically. A completed run also records the child's
+own ``exit_code``; a killed child has no status of its own, so its ``exit_code``
+is ``null`` rather than a fabricated ``0``. ``main`` (:func:`cli_exit_status`)
+propagates the outcome: the child's nonzero status verbatim, or
+:data:`TIMEOUT_EXIT_STATUS` for a killed child, so a caller that checks the
+command's return code cannot treat a failed launch as a success and advance to
+grading. A dry run launches nothing and therefore keeps its original metadata
+shape; a refusal writes no metadata at all.
+
 Scope honesty
 -------------
 This module *prepares and launches*; it does not enforce the budget it passes.
@@ -168,6 +187,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -186,6 +206,9 @@ __all__ = [
     "REASONING_LEVELS",
     "RUN_BUDGET_GRACE_S",
     "STATE_DIR_ENV_VARS",
+    "TERMINAL_COMPLETED",
+    "TERMINAL_TIMEOUT",
+    "TIMEOUT_EXIT_STATUS",
     "TRANSPORT_ARGS",
     "WRAPPER_BUILTIN_TOOLSETS",
     "WRAPPER_TOOLSETS",
@@ -194,9 +217,11 @@ __all__ = [
     "budget_fingerprint",
     "build_child_argv",
     "build_child_env",
+    "cli_exit_status",
     "cmd_launcher",
     "config_toolsets",
     "effective_toolsets",
+    "ledger_path_from_manifest",
     "main",
     "meta_path_for",
     "perform_run",
@@ -293,6 +318,17 @@ STATE_DIR_ENV_VARS = ("USERPROFILE", "XDG_STATE_HOME", "HOME")
 
 #: Session source tag prefix, so a run is filterable by the arm it belongs to.
 SOURCE_PREFIX = "arm-"
+
+#: The terminal states a launched run's metadata records. ``COMPLETED``: the child
+#: terminated on its own (whatever its exit status). ``TIMEOUT``: the harness
+#: killed it for exceeding its budget, so it has no exit status of its own.
+TERMINAL_COMPLETED = "completed"
+TERMINAL_TIMEOUT = "timeout"
+
+#: The exit status the CLI reports for a killed child. There is no child status
+#: to propagate, but a caller must not read the launch as a success — 124 mirrors
+#: coreutils ``timeout``.
+TIMEOUT_EXIT_STATUS = 124
 
 #: A launcher runs ``(argv, env, transcript, timeout)`` and returns the exit code.
 ChildRun = Callable[[Sequence[str], Mapping[str, str], Path, float], int]
@@ -504,27 +540,31 @@ def cmd_quote(value: str) -> str:
     return f'"{value}"'
 
 
-def posix_launcher(interpreter: str, shim: str, manifest: str) -> str:
+def posix_launcher(interpreter: str, shim: str, manifest: str, ledger: str) -> str:
     """The POSIX ``sh`` launcher text for the bare command ``pair``."""
     return (
         "#!/bin/sh\n"
         "# Generated per-run launcher for the native arm's restricted interface.\n"
         "# The manifest is the only place the target identifiers come from; every\n"
         '# argument after it is passed through untouched ("$@").\n'
+        "# --ledger records every call in the shim's audit trail, so a write that\n"
+        "# bypasses the adapter is detectable by the independent grader.\n"
         f"exec {sh_quote(interpreter)} {sh_quote(shim)}"
-        f' --manifest {sh_quote(manifest)} "$@"\n'
+        f' --manifest {sh_quote(manifest)} --ledger {sh_quote(ledger)} "$@"\n'
     )
 
 
-def cmd_launcher(interpreter: str, shim: str, manifest: str) -> str:
+def cmd_launcher(interpreter: str, shim: str, manifest: str, ledger: str) -> str:
     """The ``cmd.exe`` launcher text for the bare command ``pair``."""
     return (
         "@echo off\r\n"
         "rem Generated per-run launcher for the native arm's restricted interface.\r\n"
         "rem The manifest is the only place the target identifiers come from; every\r\n"
         "rem argument after it is passed through untouched (%*).\r\n"
+        "rem --ledger records every call in the shim's audit trail, so a write that\r\n"
+        "rem bypasses the adapter is detectable by the independent grader.\r\n"
         f"{cmd_quote(interpreter)} {cmd_quote(shim)}"
-        f" --manifest {cmd_quote(manifest)} %*\r\n"
+        f" --manifest {cmd_quote(manifest)} --ledger {cmd_quote(ledger)} %*\r\n"
     )
 
 
@@ -536,26 +576,72 @@ def _make_executable(path: Path) -> None:
         pass
 
 
+def ledger_path_from_manifest(manifest: str | os.PathLike[str]) -> str:
+    """The absolute ledger path the native arm's manifest records, or refuse.
+
+    The native arm reaches the notebook only through the ``pair`` launcher, and
+    every call that goes through it is appended to the shim's ledger — the audit
+    trail the independent grader checks against the saved notebook. A manifest
+    that names no absolute ledger path would still launch the arm, but every
+    call would be unaudited and a bypass would leave no trace at all, so the run
+    is refused instead. Reading the manifest here — before anything is printed
+    or written — makes that a refusal rather than a silently unaudited run.
+
+    The wrapper arm has no shim and no ledger; this is only consulted for the
+    native arm (see :func:`perform_run`).
+
+    Raises:
+        ArmRunRefusal: If the manifest cannot be read, is not a JSON object, or
+            carries no non-empty absolute ``ledger_path`` (written by
+            ``mission_setup``).
+    """
+    try:
+        payload = json.loads(Path(manifest).read_bytes().decode("utf-8"))
+    except OSError as exc:
+        raise ArmRunRefusal(f"cannot read the arm manifest {manifest}: {exc}") from exc
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ArmRunRefusal(
+            f"the arm manifest is not readable JSON: {manifest} ({exc})"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ArmRunRefusal(f"the arm manifest must be a JSON object: {manifest}")
+    ledger = payload.get("ledger_path")
+    if not isinstance(ledger, str) or ledger.strip() == "":
+        raise ArmRunRefusal(
+            "the manifest carries no ledger_path: the native arm would run"
+            " unaudited (re-run mission_setup to record one)"
+        )
+    if not Path(ledger).is_absolute():
+        raise ArmRunRefusal(f"the manifest ledger_path must be absolute: {ledger!r}")
+    return ledger
+
+
 def write_launcher(
     home: str | os.PathLike[str],
     *,
     shim: str | os.PathLike[str],
     manifest: str | os.PathLike[str],
+    ledger: str | os.PathLike[str],
     interpreter: str | None = None,
 ) -> tuple[Path, Path]:
     """Write the ``pair`` launchers under ``<home>/bin`` and return both paths.
 
     Two files are written — a POSIX ``sh`` script and a ``cmd.exe`` batch file —
     so the bare command resolves in either shell. Both invoke the shim with
-    ``--manifest`` and pass their own arguments through, which is why the
-    launcher can never add a target selector.
+    ``--manifest`` and ``--ledger`` and pass their own arguments through, which
+    is why the launcher can never add a target selector.
+
+    ``--ledger`` is the manifest's own ``ledger_path`` (read by
+    :func:`ledger_path_from_manifest`) and is written **before** the pass-through
+    arguments, so the agent's own options can neither supply, replace nor
+    reorder it.
 
     Raises:
-        ArmRunRefusal: If no interpreter is available, if the shim or manifest
-            path is relative (the launcher runs from the agent's own working
-            directory, so a relative path would silently point elsewhere), or
-            if (for the ``cmd`` launcher) the manifest path cannot be quoted
-            safely.
+        ArmRunRefusal: If no interpreter is available, if the shim, manifest or
+            ledger path is relative (the launcher runs from the agent's own
+            working directory, so a relative path would silently point
+            elsewhere), or if (for the ``cmd`` launcher) the manifest or ledger
+            path cannot be quoted safely.
     """
     bin_dir = Path(home) / BIN_DIRNAME
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -565,23 +651,29 @@ def write_launcher(
         "no interpreter to run the pair shim with",
     )
     shim_path, manifest_path = Path(shim), Path(manifest)
+    ledger_path = Path(ledger)
     # The launcher is invoked by the agent, whose working directory is not the
-    # harness's: both paths are embedded verbatim and must already be absolute.
+    # harness's: every path is embedded verbatim and must already be absolute.
     require(shim_path.is_absolute(), f"the pair shim path must be absolute: {shim}")
     require(
         manifest_path.is_absolute(), f"the manifest path must be absolute: {manifest}"
     )
-    shim_text, manifest_text = str(shim_path), str(manifest_path)
+    require(ledger_path.is_absolute(), f"the ledger path must be absolute: {ledger}")
+    shim_text, manifest_text, ledger_text = (
+        str(shim_path),
+        str(manifest_path),
+        str(ledger_path),
+    )
     posix = bin_dir / PAIR_LAUNCHER
     posix.write_text(
-        posix_launcher(python, shim_text, manifest_text),
+        posix_launcher(python, shim_text, manifest_text, ledger_text),
         encoding="utf-8",
         newline="\n",
     )
     _make_executable(posix)
     windows = bin_dir / PAIR_LAUNCHER_CMD
     windows.write_text(
-        cmd_launcher(python, shim_text, manifest_text),
+        cmd_launcher(python, shim_text, manifest_text, ledger_text),
         encoding="utf-8",
         newline="",
     )
@@ -782,6 +874,12 @@ def run_child(
 
     No shell is involved anywhere: the argv is passed through as a list. The
     timeout is the run budget plus :data:`RUN_BUDGET_GRACE_S`.
+
+    Raises:
+        subprocess.TimeoutExpired: If the child outlives *timeout*.
+            ``subprocess.run`` kills the process before raising, so the child is
+            already dead when this escapes; :func:`perform_run` turns it into an
+            explicit ``timeout`` terminal state rather than a fabricated status.
     """
     transcript = Path(transcript)
     transcript.parent.mkdir(parents=True, exist_ok=True)
@@ -923,16 +1021,26 @@ def perform_run(
     command: str | None = None,
     launch: ChildRun = run_child,
     clock: Callable[[], str] | None = None,
+    timer: Callable[[], float] | None = None,
 ) -> dict:
     """Prepare one arm's run and — unless *dry_run* — launch its agent.
 
-    Steps: validate that every budget argument was supplied; compute and print
-    the budget fingerprint; materialize the configuration home (``config.yaml``,
+    Steps: validate that every budget argument was supplied; for the native arm
+    read the manifest and take its ``ledger_path`` (refusing a manifest that
+    names none, so the run cannot be launched unaudited); compute and print the
+    budget fingerprint; materialize the configuration home (``config.yaml``,
     and for the native arm the ``pair`` launcher); assemble the prompt from the
     mission plus the interface note and record both digests; build the child
     argv and environment; then either print the command line and write the
     metadata without launching (``dry_run=True``), or run the child, capture its
     transcript and write the metadata beside it.
+
+    A launched run's metadata records a ``terminal_state`` (``"completed"`` if
+    the child terminated on its own, ``"timeout"`` if it was killed for
+    exceeding its budget), the ``elapsed_s`` seconds the launch took and the
+    child's own ``exit_code`` — ``null`` after a timeout, never a fabricated
+    ``0``. A timed-out child is still recorded in full rather than left
+    unwritten. A dry run launches nothing and keeps the metadata shape it had.
 
     Args:
         arm: One of :data:`ARMS`.
@@ -962,8 +1070,12 @@ def perform_run(
         command: Override the ``hermes`` executable (default:
             :func:`resolve_hermes_command`).
         launch: The launch seam. Defaults to :func:`run_child`; tests inject a
-            recorder so nothing is executed.
+            recorder so nothing is executed. It may raise
+            :class:`subprocess.TimeoutExpired` to signal a killed child.
         clock: Optional ``() -> str`` timestamp source for deterministic tests.
+        timer: Optional ``() -> float`` monotonic seconds source for the elapsed
+            measurement; defaults to :func:`time.monotonic` (tests inject it).
+            Consulted only on the launch path, so a dry run is unaffected.
 
     Returns:
         The run metadata that was written.
@@ -985,6 +1097,11 @@ def perform_run(
         shim=shim,
         mcp_command=mcp_command,
     )
+    # The native arm's audit trail: the manifest's ledger_path, read BEFORE
+    # anything is printed or written. A manifest that names none refuses the run
+    # here, so a native arm cannot be launched without the shim recording every
+    # call it makes through the adapter.
+    ledger = ledger_path_from_manifest(manifest) if arm == "native" else None
     state = validate_state_dir(state_dir)
     now = clock or utc_now
     toolsets = effective_toolsets(arm)
@@ -1001,7 +1118,7 @@ def perform_run(
     home.mkdir(parents=True, exist_ok=True)
     write_config(home, arm, mcp_command=mcp_command)
     if arm == "native":
-        write_launcher(home, shim=str(shim), manifest=str(manifest))
+        write_launcher(home, shim=str(shim), manifest=str(manifest), ledger=str(ledger))
 
     mission_bytes = _read_source(mission, "mission")
     interface_bytes = _read_source(interface, "interface note")
@@ -1049,8 +1166,22 @@ def perform_run(
         _write_metadata(meta_path_for(transcript), metadata)
         return metadata
 
-    exit_code = launch(argv, env, transcript, float(run_budget) + RUN_BUDGET_GRACE_S)
-    metadata["exit_code"] = int(exit_code)
+    tick = timer or time.monotonic
+    launch_started = tick()
+    try:
+        exit_code: int | None = launch(
+            argv, env, transcript, float(run_budget) + RUN_BUDGET_GRACE_S
+        )
+    except subprocess.TimeoutExpired:
+        # The child was killed, not finished: it has no status of its own, so the
+        # run is recorded as an explicit timeout with a null exit code rather
+        # than a fabricated success.
+        exit_code = None
+        metadata["terminal_state"] = TERMINAL_TIMEOUT
+    else:
+        metadata["terminal_state"] = TERMINAL_COMPLETED
+    metadata["elapsed_s"] = float(tick() - launch_started)
+    metadata["exit_code"] = None if exit_code is None else int(exit_code)
     metadata["ended_at"] = now()
     _write_metadata(meta_path_for(transcript), metadata)
     return metadata
@@ -1134,8 +1265,32 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def cli_exit_status(metadata: Mapping[str, object]) -> int:
+    """The process exit status *metadata* implies for a finished run.
+
+    Zero only when nothing was launched (a dry run) or the child terminated on
+    its own with status 0. A nonzero child status is propagated verbatim, so a
+    caller that checks the command's return code cannot advance to grading after
+    a failed launch. A killed child has no status to propagate, and a launched
+    run whose status cannot be read is not a success either: both fail closed
+    with :data:`TIMEOUT_EXIT_STATUS`.
+    """
+    if metadata.get("dry_run"):
+        return 0
+    code = metadata.get("exit_code")
+    if isinstance(code, int) and not isinstance(code, bool):
+        return code
+    return TIMEOUT_EXIT_STATUS
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entry point: prepare and run one arm, or refuse with JSON on stderr."""
+    """CLI entry point: prepare and run one arm, or refuse with JSON on stderr.
+
+    The metadata is always printed for a run that was prepared — including a
+    failed one — and the process exit status follows it: the child's own nonzero
+    status, or :data:`TIMEOUT_EXIT_STATUS` for a killed child. A refusal prints a
+    JSON error on stderr and exits 1 without writing metadata.
+    """
     args = _parse_args(argv)
     try:
         metadata = perform_run(
@@ -1163,7 +1318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
     print(json.dumps(metadata, indent=2, sort_keys=True))
-    return 0
+    return cli_exit_status(metadata)
 
 
 if __name__ == "__main__":

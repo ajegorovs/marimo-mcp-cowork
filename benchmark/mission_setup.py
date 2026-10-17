@@ -26,6 +26,12 @@ Design seams
   either — it is detection, and it only works when the caller places the control
   dir somewhere the arm cannot write. That placement is the caller's
   responsibility; this module cannot enforce it.
+* The manifest also names the arm's audit trail: ``ledger_path``, the file
+  ``root/ledger.jsonl`` — one JSONL entry per shim call, written by
+  ``pair_cli.py``. Setup does **not** create the file (it need not exist until
+  the shim's first call) and does not constrain what happens to it; it records
+  the path for BOTH arms, so the grader can require the chain for the native arm
+  and report the wrapper arm's absence of one as not applicable.
 
 Scope honesty: this stages and records a disposable arm; it does not *pin* the
 server it started. The identity checks are detection of a captured snapshot, not
@@ -58,6 +64,7 @@ __all__ = [
     "CONTROL_FILENAME",
     "CONTROL_IDENTITY_KEYS",
     "CONTROL_KEYS",
+    "LEDGER_FILENAME",
     "MANIFEST_KEYS",
     "ServerSession",
     "SetupRefusal",
@@ -80,6 +87,10 @@ ARMS = ("native", "wrapper")
 # The manifest keys a grader may rely on. ``canonical_path``, ``root`` and
 # ``state_dir`` are recorded alongside them so a grader can re-hash the fixture
 # and isolate its own fresh boot without reading any other channel.
+# ``ledger_path`` is the arm's audit trail (``root/ledger.jsonl``): the file the
+# shim appends one JSONL entry per successful call to. Both arms record it — the
+# wrapper arm has no shim, so the grader treats its ledger as not applicable
+# rather than as a hole in the record.
 MANIFEST_KEYS = (
     "server_url",
     "session_id",
@@ -89,7 +100,14 @@ MANIFEST_KEYS = (
     "sha256",
     "arm",
     "generated_at",
+    "ledger_path",
 )
+
+#: The audit trail's file name inside the disposable root. Setup records the
+#: path but never creates the file: the shim writes it on its first call, so an
+#: arm that makes no call leaves no ledger at all — which the grader reads as a
+#: failure, never as "nothing happened".
+LEDGER_FILENAME = "ledger.jsonl"
 
 # The control copy: the file name inside ``--control-dir`` and the identity
 # fields it pins. A grader compares every identity field against the manifest,
@@ -223,8 +241,20 @@ def build_manifest(
     canonical_path: str,
     root: str,
     state_dir: str,
+    ledger_path: str,
 ) -> dict:
-    """Assemble and validate the manifest mapping for one staged arm."""
+    """Assemble and validate the manifest mapping for one staged arm.
+
+    ``ledger_path`` is the arm's audit trail (``<root>/ledger.jsonl`` for both
+    arms; see :data:`LEDGER_FILENAME`). It is required and must be **absolute**:
+    the arm reaches it through a launcher that the *agent* invokes from its own
+    working directory, so a relative path would resolve somewhere else, and a
+    manifest that named none would let the native arm run unaudited.
+
+    Raises:
+        SetupRefusal: On an unknown arm, a non-string or blank field, or a
+            non-absolute ``ledger_path``.
+    """
     if arm not in ARMS:
         raise SetupRefusal(f"arm must be one of {ARMS}, got {arm!r}")
     text_fields = (
@@ -237,10 +267,15 @@ def build_manifest(
         ("canonical_path", canonical_path),
         ("root", root),
         ("state_dir", state_dir),
+        ("ledger_path", ledger_path),
     )
     for field, value in text_fields:
         if not isinstance(value, str) or not value.strip():
             raise SetupRefusal(f"manifest field {field} must be a non-empty string")
+    if not Path(ledger_path).is_absolute():
+        raise SetupRefusal(
+            f"manifest field ledger_path must be an absolute path: {ledger_path!r}"
+        )
     return {
         "server_url": server_url,
         "session_id": session_id,
@@ -253,6 +288,7 @@ def build_manifest(
         "canonical_path": canonical_path,
         "root": root,
         "state_dir": state_dir,
+        "ledger_path": ledger_path,
     }
 
 
@@ -406,6 +442,12 @@ def perform_setup(
     root.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(parents=True, exist_ok=True)
 
+    # The arm's audit trail, both arms: the file the shim appends one entry per
+    # successful call to. It is NOT created here — the shim writes it on its
+    # first call, so an arm that makes none leaves no ledger (which the grader
+    # fails for the native arm rather than reading as "nothing happened").
+    ledger_path = str(root / LEDGER_FILENAME)
+
     copy, digest = stage_disposable(canonical, root)
 
     server = server_factory(copy, str(python), state_dir)
@@ -435,6 +477,7 @@ def perform_setup(
         canonical_path=str(canonical),
         root=str(root),
         state_dir=str(state_dir),
+        ledger_path=ledger_path,
     )
     try:
         write_manifest(manifest_path, manifest)
