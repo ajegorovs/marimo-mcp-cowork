@@ -2,8 +2,9 @@
 
 This document describes the **harness** that stages, restricts and grades the
 comparison of two agent-facing interfaces on one mission: this repository's
-structured MCP wrapper against the pinned native `marimo pair` CLI. It does not
-contain results; a run produces its own evidence.
+structured MCP wrapper against the pinned native `marimo pair` CLI. The first
+complete batch and its per-run evidence are recorded below; every new batch adds
+its own record rather than replacing one.
 
 The comparison exists to answer a bounded question — *is the native interface
 worth further work?* — not to certify either surface as safe for unattended use.
@@ -20,7 +21,7 @@ One arm at a time, four steps, each a separate program:
 | --- | --- | --- |
 | Stage | `benchmark/mission_setup.py` | Copies the mission notebook byte-exactly into a disposable root, boots one loopback server, creates one session, enforces the guards, writes the run manifest plus a control copy of the anchor. |
 | Run | `benchmark/arm_run.py` | Prepares an ephemeral configuration home for the arm and launches the agent in one fresh session with a pinned model, provider, reasoning level, turn limit and wall-clock budget. |
-| Grade | `benchmark/mission_grade.py` | Independent of the agent's report: fixture unchanged, `normalized` cell saved on disk, fresh process and session, kernel values compared with the oracle, zero cell errors. |
+| Grade | `benchmark/mission_grade.py` | Independent of the agent's report, nine checks: fixture unchanged; a saved cell that *assigns* `normalized` while reading `processed` and `input_vector` (structural, so a constant fails); fresh process and session; kernel value equal to the oracle at the default gain; **reactivity** — the grader drives `gain` to 4 and requires 2.5, then restores 2 and requires 1.25; zero cell errors with a partial run refused; and, for the native arm, a ledger whose hash chain ends at the saved file. |
 | Stop | `benchmark/mission_teardown.py` | Stops that arm's server tree by recorded pid with identity checks, and fails if a confirmed member survives. |
 
 `benchmark/prompts/mission.md` is the shared mission, given verbatim to both
@@ -34,10 +35,23 @@ notes is the variable under test*, so neither is padded to help its arm.
   copy (`read_bytes`/`write_bytes`) and refused when the census is anything but
   exactly one session resolving to that copy. A second session, a rotation, or a
   reused id invalidates the run rather than being silently followed.
-- **The adapter takes no target argument.** The native arm reaches the notebook
-  only through `benchmark/pair_cli.py`, which reads server, session and notebook
-  from the run manifest and re-checks the census before every subcommand. The
-  agent cannot name a different target even if it tries.
+- **The adapter takes no target argument — targeting, not reach.** The native
+  arm reaches *the anchored notebook* only through `benchmark/pair_cli.py`, which
+  reads server, session and notebook from the run manifest and re-checks the
+  census before every subcommand; the agent cannot name a different target even
+  if it tries. **The command surface is not a boundary**: the arm's shell can run
+  any command, so a direct file write is possible and is *prompt-constrained*
+  only. What detects it is the ledger (below) plus artifact checks — never a
+  claim that the adapter was the only thing that ran.
+- **A ledger a bypass cannot fake.** `pair_cli.py --ledger PATH` appends one
+  entry per successful call: the notebook's SHA-256 before and after, the cells
+  the call created, the agent's own cell source, and the UI value it set. Grading
+  requires the saved notebook's hash to be the ledger's last recorded hash, the
+  entry sequence to be unbroken, and each entry to start where the previous one
+  ended; an out-of-band write breaks that chain and the verdict fails with
+  `interface_bypass_suspected` instead of crediting a mediated run. The ledger
+  covers the native arm only — the wrapper arm has no equivalent capture, and
+  that asymmetry is stated with every result rather than smoothed over.
 - **An anchor the arm is not pointed at.** `mission_setup --control-dir` writes a
   control copy of the identity plus a digest of the manifest file; grading
   refuses unless the two agree, and refuses outright without a control copy

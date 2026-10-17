@@ -4,13 +4,35 @@ Grades ONE staged arm from its manifest and its on-disk artifacts alone. It
 never reads the agent's self-report and never trusts the setup process's memory:
 
 1. re-hash the canonical fixture against the manifest ``sha256``;
-2. inspect the *saved* notebook bytes for the mission's ``normalized`` cell;
+2. parse the *saved* notebook into cells and require one that assigns
+   ``normalized`` from BOTH ``processed`` and ``input_vector`` — a bare
+   constant, or the word only in a comment, fails (see
+   :func:`normalized_cell_shape`);
 3. boot a FRESH loopback server on the same notebook (touching nothing the
    setup owns), create a fresh session, prove the identity rotated with
    ``session_guard.validate_reopen``, run every cell, and read ``gain`` and
    ``normalized`` straight from the kernel;
-4. compare the kernel's ``normalized`` with ``oracle.expected_metric`` and
-   require a COMPLETED run-all with zero cell errors.
+4. compare the kernel's ``normalized`` with ``oracle.expected_metric``, then —
+   because the grader drives this, not the agent — set the ``gain`` slider to 4
+   through the arm's OWN mechanism, require ``oracle.expected_metric(4)``, set
+   it back to the default and require the default value again;
+5. require a COMPLETED run-all with zero cell errors;
+6. for the native arm, read the shim's ledger and require its hash chain to
+   start at the fixture's digest and end at the saved notebook's — a write that
+   bypassed the adapter breaks it (see :func:`verify_ledger`). The wrapper arm
+   has no shim and no ledger, so that check reports itself not applicable for
+   it rather than crediting the run as audited.
+
+What the artifact cannot establish
+----------------------------------
+Steps 2-4 prove the SAVED notebook's structure and the reopened kernel's
+reactivity. Step 6 proves the native arm's calls went through its adapter. The
+blanket limit is what remains: a notebook that already reacts to ``gain``, plus
+a grader that moved the slider itself, produces exactly the same artifact
+whether the agent performed the interaction or never touched it. Proving the
+agent's *choices* needs captured tool actions, which no check here reads; the
+ledger covers the native arm's writes only, and says nothing about intent. That
+gap is a stated limit, not an oversight (see :func:`grade`).
 
 The verdict is a JSON object with a ``checks`` list (``name`` / ``pass`` /
 ``detail``), an overall ``pass`` flag and the ``observed`` values. A failed
@@ -39,6 +61,16 @@ Design seam
 :func:`grade` takes an injectable ``prober`` exposing ``probe(path) ->
 ProbeResult``. :class:`ArmProber` is the live implementation; a test substitutes
 a fake and the whole verdict logic runs with no server.
+
+Driving the reactivity sequence
+-------------------------------
+The grader, never the agent, moves the slider for the reactivity checks.
+:class:`ArmProber` submits a code-mode program through ``marimo pair execute``
+that calls ``ctx.set_ui_value`` on the ``gain`` global — the same call
+``pair_cli.py``'s ``set_ui`` stage generates — while :class:`WrapperProber`
+calls the repository's ``set_ui_value`` tool handler in-process, the same
+handler the wrapper arm's interface exposes. Each reader therefore drives its
+own arm's mechanism, and neither touches the arm's server.
 
 Reader follows the arm
 ----------------------
@@ -72,6 +104,7 @@ coroutine that uses them, so this module and its tests still load when
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import hashlib
 import importlib.util
@@ -89,9 +122,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
+    "CHANGED_EXPECTED_GAIN",
     "CHECK_NAMES",
     "CONTROL_FILENAME",
     "CONTROL_IDENTITY_KEYS",
+    "LEDGER_CREATE_COMMAND",
+    "NORMALIZED_REQUIRED_INPUTS",
     "READERS",
     "RUN_OK_STATUSES",
     "ArmProber",
@@ -99,16 +135,20 @@ __all__ = [
     "ProbeResult",
     "WrapperProber",
     "build_server_command",
+    "document_cell_sources",
     "grade",
     "main",
     "make_prober",
     "native_kernel_values",
     "native_run_status",
+    "normalized_cell_shape",
     "pick_free_port",
     "probe_result",
     "resolve_reader",
     "sha256_file",
     "verify_control_anchor",
+    "verify_ledger",
+    "wrapper_gain_and_normalized",
     "wrapper_kernel_values",
     "wrapper_run_status",
 ]
@@ -118,14 +158,19 @@ __all__ = [
 # arm's marimo version (see the module docstring).
 READERS = ("native", "wrapper")
 
-# The verdict always carries exactly these checks, in this order.
+# The verdict always carries exactly these checks, in this order. The last one
+# covers the native arm's audit trail; for the wrapper arm it reports itself not
+# applicable (see :func:`verify_ledger`).
 CHECK_NAMES = (
     "canonical_fixture_unchanged",
     "normalized_cell_saved",
     "reopen_rotated_identity",
     "kernel_normalized_matches_oracle",
     "kernel_gain_is_default",
+    "kernel_reactivity_at_gain_4",
+    "kernel_restored_to_default",
     "kernel_zero_cell_errors",
+    "interface_ledger_intact",
 )
 
 # A read only counts as a completed run when its producer says the run finished
@@ -150,10 +195,27 @@ CONTROL_IDENTITY_KEYS = (
 
 DEFAULT_EXPECTED_GAIN = 2
 
-# The saved notebook must carry a ``normalized`` definition; the pristine
-# fixture deliberately does not (see ``oracle.verify_fixture``). The check is a
-# byte substring, never a decoded-text one.
-NORMALIZED_MARKER = b"normalized"
+# The value the grader moves the slider TO for the reactivity check; the arm's
+# default gain is restored right after (see :func:`_set_gain_code`).
+CHANGED_EXPECTED_GAIN = 4
+
+
+def _set_gain_code(value: int) -> str:
+    """The code-mode program that moves the ``gain`` slider.
+
+    The grader's own slider driver for the native reader: the same call
+    ``pair_cli.py``'s ``set_ui`` stage generates
+    (``ctx.set_ui_value(ctx.globals[name], value)`` — see
+    ``code_for("set_ui", ...)``), submitted through ``marimo pair execute``.
+    The update flushes when the code-mode context exits, so the value is read
+    back by a SEPARATE program (see ``ArmProber._drive_slider``).
+    """
+    return (
+        "import marimo._code_mode as cm\n"
+        "async with cm.get_context() as ctx:\n"
+        f"    ctx.set_ui_value(ctx.globals['gain'], {value!r})\n"
+    )
+
 
 _RUN_ALL_CELLS = (
     "import marimo._code_mode as cm\n"
@@ -200,6 +262,21 @@ def _oracle():
     return _load_sibling("_mission_oracle", "oracle.py")
 
 
+def _pair_cli():
+    """The shim's ledger reader (``benchmark/pair_cli.py``), loaded by path.
+
+    The native arm's ledger is only legible through the reader that writes it —
+    one JSONL object per line, a line that is not a JSON object refusing the
+    whole file — so grading uses that reader rather than a second parser that
+    could disagree with it. ``pair_cli`` imports its guard with a bare ``from
+    session_guard import ...`` (the way it runs as a script inside
+    ``benchmark/``), so the guard is loaded under that plain name first; nothing
+    here puts ``benchmark/`` on ``sys.path``.
+    """
+    _load_sibling("session_guard", "session_guard.py")
+    return _load_sibling("_mission_pair_cli", "pair_cli.py")
+
+
 def pick_free_port() -> int:
     """Return a free loopback port for the grader's own fresh server."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -233,6 +310,343 @@ def build_server_command(python: str, notebook, port: int) -> list[str]:
 def sha256_file(path) -> str:
     """The SHA-256 hex digest of *path*'s bytes."""
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# The native arm's audit trail: the shim's ledger
+# --------------------------------------------------------------------------- #
+
+#: The ledger ``command`` whose entry proves the mission's own cell was created
+#: through the adapter rather than found already present.
+LEDGER_CREATE_COMMAND = "create_cell"
+
+
+def verify_ledger(
+    ledger_path: object,
+    *,
+    fixture_sha256: object,
+    saved_sha256: object,
+) -> tuple[bool, str, int]:
+    """Whether the native arm's ledger is intact and chains to the saved file.
+
+    The ledger is what makes a bypass detectable. ``pair_cli.py`` appends one
+    entry per successful call carrying the notebook's SHA-256 before and after
+    that call, so an honest arm's entries form a chain that starts at the
+    disposable copy's initial hash and ends at the bytes now on disk. A write
+    that never went through the adapter — a shell redirect, a file API, a
+    ``marimo`` invocation the agent ran itself — changes the file without
+    appending an entry, and the chain no longer ends where the file does.
+
+    Checked in this order, failing on the FIRST violation:
+
+    1. the manifest names a path, and the file exists;
+    2. the file parses as the shim's JSONL (a corrupt line refuses the file);
+    3. the ledger is non-empty;
+    4. ``seq`` runs 1..n with no gap or repeat;
+    5. the first entry's ``sha256_before`` is the fixture's digest;
+    6. every entry's ``sha256_before`` is the previous entry's ``sha256_after``;
+    7. the last entry's ``sha256_after`` is the saved notebook's current digest;
+    8. at least one entry ran ``create_cell``.
+
+    Honest limit of step 7: the shim measures each hash after letting marimo's
+    queued save settle for a bounded wait, which is not an atomic boundary. A
+    save that lands after the shim's last measurement would read as an
+    unmediated write — a false failure, and the direction to prefer over
+    crediting a bypass.
+
+    Args:
+        ledger_path: The manifest's ``ledger_path``, or whatever it carried.
+        fixture_sha256: The manifest's ``sha256`` — the disposable copy's
+            initial hash.
+        saved_sha256: The saved notebook's digest now, or ``None`` when it
+            cannot be read.
+
+    Returns:
+        ``(passed, detail, entry_count)``. ``entry_count`` is 0 for every
+        failure before the entries are read, so a verdict never claims more
+        entries than it counted.
+    """
+    if not isinstance(ledger_path, str) or ledger_path.strip() == "":
+        return (
+            False,
+            (
+                "manifest carries no ledger_path: a native arm cannot be shown to"
+                " have gone through the adapter at all"
+            ),
+            0,
+        )
+    path = Path(ledger_path)
+    try:
+        exists = path.is_file()
+    except OSError as exc:
+        return False, f"cannot read the ledger {path}: {exc}", 0
+    if not exists:
+        return (
+            False,
+            (
+                f"no ledger at {path}: the native arm was never audited through"
+                " the adapter"
+            ),
+            0,
+        )
+    try:
+        entries = _pair_cli().read_ledger(path)
+    except Exception as exc:  # noqa: BLE001 - an unreadable ledger fails closed
+        return False, f"the ledger is unreadable: {exc}", 0
+    if not entries:
+        return False, f"the ledger at {path} holds no entry: no call was audited", 0
+
+    count = len(entries)
+    for index, entry in enumerate(entries, start=1):
+        seq = entry.get("seq")
+        if seq != index:
+            return (
+                False,
+                (
+                    f"ledger entry {index} records seq {seq!r}, expected {index}:"
+                    " entries are missing or out of order"
+                ),
+                count,
+            )
+
+    first = entries[0].get("sha256_before")
+    if first != fixture_sha256:
+        return (
+            False,
+            (
+                f"ledger entry 1 records sha256_before {first!r}, not the"
+                f" fixture's {fixture_sha256!r}: the ledger does not belong to"
+                " this notebook"
+            ),
+            count,
+        )
+
+    previous = entries[0]
+    for index, entry in enumerate(entries[1:], start=2):
+        before, after = entry.get("sha256_before"), previous.get("sha256_after")
+        if before != after:
+            return (
+                False,
+                (
+                    f"ledger entry {index} does not chain to entry {index - 1}:"
+                    f" sha256_before {before!r} != {after!r}"
+                ),
+                count,
+            )
+        previous = entry
+
+    if saved_sha256 is None:
+        return (
+            False,
+            (
+                "cannot hash the saved notebook: the ledger's last recorded hash"
+                " has nothing to be checked against"
+            ),
+            count,
+        )
+    recorded = entries[-1].get("sha256_after")
+    if recorded != saved_sha256:
+        return (
+            False,
+            (
+                f"the ledger's last recorded hash {recorded!r} != the saved"
+                f" notebook's {saved_sha256!r}: the notebook was written outside"
+                " the adapter"
+            ),
+            count,
+        )
+
+    if not any(entry.get("command") == LEDGER_CREATE_COMMAND for entry in entries):
+        return (
+            False,
+            (
+                f"no ledger entry ran {LEDGER_CREATE_COMMAND}: the mission's cell"
+                " was never created through the adapter"
+            ),
+            count,
+        )
+    return (
+        True,
+        (
+            f"{count} ledger entr{'y' if count == 1 else 'ies'} chain from the"
+            f" fixture hash to the saved notebook, including {LEDGER_CREATE_COMMAND}"
+        ),
+        count,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The SAVED notebook's structure: a cell that DERIVES ``normalized``
+# --------------------------------------------------------------------------- #
+
+# The names the mission's diagnostic must be derived FROM: the fixture defines
+# ``input_vector`` and the ``processed`` array built from it, so a saved cell
+# assigning ``normalized`` must read both. A hardcoded number reads neither, and
+# a comment is not in the AST at all.
+NORMALIZED_REQUIRED_INPUTS = ("processed", "input_vector")
+
+
+def _carries_cell_decorator(node: ast.AST) -> bool:
+    """Whether a function node carries a marimo ``@app.cell``-style decorator."""
+    for decorator in getattr(node, "decorator_list", ()):
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Attribute) and target.attr == "cell":
+            return True
+        if isinstance(target, ast.Name) and target.id == "cell":
+            return True
+    return False
+
+
+def _is_main_guard(node: ast.AST) -> bool:
+    """Whether a statement is the ``if __name__ == "__main__":`` block."""
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    return (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+        and any(isinstance(op, ast.Eq) for op in test.ops)
+    )
+
+
+def _stdlib_cell_sources(source: str) -> list[str]:
+    """Cell sources via stdlib ``ast`` — marimo's own cell rule, no marimo.
+
+    The fallback for a grading interpreter without marimo installed. Every cell
+    of a marimo ``.py`` notebook is a function decorated ``@app.cell`` (or
+    ``@cell``), and ``ast.get_source_segment`` returns its body — the same body
+    source ``marimo._ast.parse`` hands back. The ``__main__`` guard ends the
+    document: marimo does not treat a function after it as a cell either.
+    """
+    tree = ast.parse(source)
+    sources: list[str] = []
+    for node in tree.body:
+        if _is_main_guard(node):
+            break
+        if isinstance(node, ast.FunctionDef) and _carries_cell_decorator(node):
+            sources.append(ast.get_source_segment(source, node) or "")
+    return sources
+
+
+def _marimo_cell_sources(source: str, filepath: str) -> list[str]:
+    """Cell sources via marimo's own notebook parser (lazy import).
+
+    The parser ``marimo check`` and the package's ``lint_notebook`` use, so the
+    grader sees the same cells the notebook's own toolchain does. marimo reports
+    an unreadable document as invalid rather than raising, so a document it
+    rejects AND extracts no cell from is reported as unparseable.
+
+    Raises:
+        ValueError: If marimo reports no notebook, or rejects a document it
+            could not extract a single cell from.
+    """
+    from marimo._ast.parse import parse_notebook
+
+    notebook = parse_notebook(source, filepath=filepath)
+    if notebook is None:
+        raise ValueError("marimo parsed no notebook document")
+    cells = [cell.code for cell in notebook.cells]
+    if not cells and getattr(notebook, "valid", True) is False:
+        raise ValueError("marimo rejected the notebook document")
+    return cells
+
+
+def document_cell_sources(source: str, *, filepath: str = "notebook.py") -> list[str]:
+    """The saved notebook's cell sources, in document order.
+
+    marimo's parser is preferred and the stdlib extractor is the fallback, so
+    this module still reads a saved notebook when marimo is not importable in
+    the grading interpreter (no new dependency, and no hard import). Both use
+    marimo's cell rule, ``__main__`` guard included, so the two agree on which
+    functions are cells.
+
+    Raises:
+        ImportError: Never — the fallback absorbs it.
+        SyntaxError: If the document cannot be parsed at all.
+    """
+    try:
+        return _marimo_cell_sources(source, filepath)
+    except ImportError:
+        return _stdlib_cell_sources(source)
+
+
+def _assigned_names(tree: ast.AST) -> set[str]:
+    """Every name BOUND anywhere in *tree* (plain, annotated, augmented)."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                names |= _target_names(target)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            names |= _target_names(node.target)
+    return names
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    """Every name bound by one assignment target."""
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _target_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*(_target_names(item) for item in target.elts))
+    return set()
+
+
+def _referenced_names(tree: ast.AST) -> set[str]:
+    """Every name READ anywhere in *tree* (a comment reads nothing)."""
+    return {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+
+
+def normalized_cell_shape(
+    source: str, *, filepath: str = "notebook.py"
+) -> tuple[bool, str]:
+    """Whether the saved notebook carries the mission's ``normalized`` cell.
+
+    Structural, never textual: some CELL must ASSIGN ``normalized`` and READ
+    both of :data:`NORMALIZED_REQUIRED_INPUTS`. ``normalized = 1.25`` reads
+    neither input; ``# normalized`` is not in the AST at all; an assignment
+    outside every cell is not a marimo cell. All three fail.
+
+    Returns:
+        ``(passed, detail)``. The detail names the cell position when one
+        assigns ``normalized`` without reading the inputs.
+    """
+    try:
+        cells = document_cell_sources(source, filepath=filepath)
+    except Exception as exc:  # noqa: BLE001 - an unreadable notebook fails closed
+        return False, f"saved notebook is not parseable: {exc}"
+    if not cells:
+        return False, "saved notebook defines no marimo cells"
+
+    incomplete: tuple[int, list[str]] | None = None
+    for index, cell in enumerate(cells, start=1):
+        try:
+            tree = ast.parse(cell)
+        except SyntaxError as exc:
+            return False, f"saved notebook cell {index} is not parseable: {exc}"
+        if "normalized" not in _assigned_names(tree):
+            continue
+        referenced = _referenced_names(tree)
+        missing = [
+            name for name in NORMALIZED_REQUIRED_INPUTS if name not in referenced
+        ]
+        if not missing:
+            return True, (
+                f"cell {index} assigns 'normalized' reading"
+                f" {list(NORMALIZED_REQUIRED_INPUTS)}"
+            )
+        if incomplete is None:
+            incomplete = (index, missing)
+    if incomplete is not None:
+        index, missing = incomplete
+        return False, f"cell {index} assigns 'normalized' but never reads {missing}"
+    return False, "no cell assigns 'normalized'"
 
 
 def _measured_value(payload: dict, label: str) -> float:
@@ -293,6 +707,28 @@ def _serialized_number(node: object, label: str) -> float:
         raise GradeRefusal(f"kernel reported no numeric {label!r}: {node!r}") from exc
 
 
+def wrapper_gain_and_normalized(variables: dict) -> tuple[float, float]:
+    """Map a ``get_variables`` payload to ``(gain, normalized)``.
+
+    The reactivity reads need only these two values, and they must be read the
+    same way the default read is — so both mapping paths share this function.
+
+    Raises:
+        GradeRefusal: If the payload is an error or carries no readable value,
+            so the caller reports a failed probe rather than a partial pass.
+    """
+    if variables.get("error"):
+        raise GradeRefusal(f"get_variables failed: {variables.get('error')}")
+    found = variables.get("variables") or {}
+    for name in ("gain", "normalized"):
+        if name not in found:
+            raise GradeRefusal(f"kernel reported no {name!r} variable")
+    return (
+        _serialized_number(found["gain"], "gain"),
+        _serialized_number(found["normalized"], "normalized"),
+    )
+
+
 def wrapper_kernel_values(variables: dict, errors: dict) -> tuple[float, float, int]:
     """Map the package's ``get_variables`` / ``get_errors`` dicts to the shape.
 
@@ -301,16 +737,9 @@ def wrapper_kernel_values(variables: dict, errors: dict) -> tuple[float, float, 
             value, so the caller reports a failed probe rather than a partial
             pass.
     """
-    if variables.get("error"):
-        raise GradeRefusal(f"get_variables failed: {variables.get('error')}")
+    gain, normalized = wrapper_gain_and_normalized(variables)
     if errors.get("error"):
         raise GradeRefusal(f"get_errors failed: {errors.get('error')}")
-    found = variables.get("variables") or {}
-    for name in ("gain", "normalized"):
-        if name not in found:
-            raise GradeRefusal(f"kernel reported no {name!r} variable")
-    gain = _serialized_number(found["gain"], "gain")
-    normalized = _serialized_number(found["normalized"], "normalized")
     total = errors.get("total_errors")
     if total is None:
         raise GradeRefusal("get_errors reported no total_errors")
@@ -365,6 +794,14 @@ class ProbeResult:
             reader that cannot say whether the run completed must not report a
             pass, so the check that carries this fails for any status outside
             :data:`RUN_OK_STATUSES`.
+        gain_at_4: The kernel's ``gain`` after THIS GRADER set the slider to
+            :data:`CHANGED_EXPECTED_GAIN`, or None when the reader reported no
+            such read. None is not a pass: the reactivity check fails closed.
+        normalized_at_4: The kernel's ``normalized`` at that gain, or None.
+        gain_restored: The kernel's ``gain`` after the grader put the slider
+            back to :data:`DEFAULT_EXPECTED_GAIN`, or None.
+        normalized_restored: The kernel's ``normalized`` back at the default
+            gain, or None.
     """
 
     session_id: str
@@ -374,6 +811,10 @@ class ProbeResult:
     normalized: float | None
     error_count: int | None
     run_status: str
+    gain_at_4: float | None = None
+    normalized_at_4: float | None = None
+    gain_restored: float | None = None
+    normalized_restored: float | None = None
 
 
 def probe_result(
@@ -383,9 +824,26 @@ def probe_result(
     notebook_path: str,
     values: tuple[float, float, int],
     run_status: str,
+    reactivity: tuple[float | None, float | None, float | None, float | None]
+    | None = None,
 ) -> ProbeResult:
-    """Build the one :class:`ProbeResult` shape both readers produce."""
+    """Build the one :class:`ProbeResult` shape both readers produce.
+
+    Args:
+        values: The default-gain read: ``(gain, normalized, error_count)``.
+        run_status: The run-all status that read came with.
+        reactivity: The grader-driven slider sequence's reads, in order —
+            ``(gain_at_4, normalized_at_4, gain_restored, normalized_restored)``.
+            ``None`` means the reader reported no sequence, which fails both
+            reactivity checks closed rather than skipping them.
+    """
     gain, normalized, error_count = values
+    gain_at_4, normalized_at_4, gain_restored, normalized_restored = reactivity or (
+        None,
+        None,
+        None,
+        None,
+    )
     return ProbeResult(
         session_id=session_id,
         process_id=process_id,
@@ -394,6 +852,10 @@ def probe_result(
         normalized=normalized,
         error_count=error_count,
         run_status=run_status,
+        gain_at_4=gain_at_4,
+        normalized_at_4=normalized_at_4,
+        gain_restored=gain_restored,
+        normalized_restored=normalized_restored,
     )
 
 
@@ -414,7 +876,12 @@ class ArmProber:
         self.state_dir = Path(state_dir)
 
     def probe(self, notebook_path: str) -> ProbeResult:
-        """Boot a fresh server, prove it up, run cells and read the values."""
+        """Boot a fresh server, prove it up, run cells, then read and drive.
+
+        The grader drives the reactivity sequence itself (set the ``gain``
+        slider to :data:`CHANGED_EXPECTED_GAIN`, read, restore, read) — the arm
+        is never asked to have done it.
+        """
         notebook = Path(notebook_path)
         if not notebook.is_file():
             raise GradeRefusal(f"notebook does not exist: {notebook}")
@@ -433,7 +900,9 @@ class ArmProber:
         try:
             url = self._await_ready(process, port)
             session_id = self._create_session(url, notebook)
-            values, run_status = self._read_kernel(env, url, notebook, session_id)
+            values, run_status, reactivity = self._read_kernel(
+                env, url, notebook, session_id
+            )
         finally:
             _stop_process(process)
         return probe_result(
@@ -442,21 +911,47 @@ class ArmProber:
             notebook_path=str(notebook),
             values=values,
             run_status=run_status,
+            reactivity=reactivity,
         )
 
     def _read_kernel(
         self, env: dict, url: str, notebook: Path, session_id: str
-    ) -> tuple[tuple[float, float, int], str]:
-        """Native read: run every cell, then read values via ``pair execute``.
+    ) -> tuple[
+        tuple[float, float, int],
+        str,
+        tuple[float | None, float | None, float | None, float | None],
+    ]:
+        """Native read: run every cell, read, then drive the slider sequence.
 
-        Returns ``(values, run_status)``: the status is taken from the RUN-ALL
-        envelope (what the run itself reported), the values from the read
-        envelope. A run-all envelope that does not claim a completed run fails
-        the check that carries the status even when the values look healthy.
+        Returns ``(values, run_status, reactivity)``: the status is taken from
+        the RUN-ALL envelope (what the run itself reported), the values from the
+        read envelope. A run-all envelope that does not claim a completed run
+        fails the check that carries the status even when the values look
+        healthy. ``reactivity`` is the grader-driven sequence's four reads.
         """
         run_payload = self._execute(env, url, notebook, _RUN_ALL_CELLS)
         payload = self._execute(env, url, notebook, _READ_VALUES)
-        return native_kernel_values(payload), native_run_status(run_payload)
+        values = native_kernel_values(payload)
+        reactivity = self._drive_slider(env, url, notebook)
+        return values, native_run_status(run_payload), reactivity
+
+    def _drive_slider(
+        self, env: dict, url: str, notebook: Path
+    ) -> tuple[float | None, float | None, float | None, float | None]:
+        """Move ``gain`` to the changed value and back, reading after each move.
+
+        Each move and each read is its own ``pair execute`` program: a code-mode
+        context flushes its queued widget write on exit, so the read that
+        verifies the move must be a NEW program (the same two-step the
+        repository's widget template performs). A failed move or read raises
+        :class:`GradeRefusal` out of ``_execute``/``_measured_value``, so the
+        whole probe fails closed rather than reporting a partial sequence.
+        """
+        self._execute(env, url, notebook, _set_gain_code(CHANGED_EXPECTED_GAIN))
+        at_4 = native_kernel_values(self._execute(env, url, notebook, _READ_VALUES))
+        self._execute(env, url, notebook, _set_gain_code(DEFAULT_EXPECTED_GAIN))
+        restored = native_kernel_values(self._execute(env, url, notebook, _READ_VALUES))
+        return (at_4[0], at_4[1], restored[0], restored[1])
 
     def _await_ready(self, process: subprocess.Popen, port: int) -> str:
         url = f"http://127.0.0.1:{port}"
@@ -524,7 +1019,61 @@ class ArmProber:
         return data
 
 
-async def _wrapper_read(url: str, session_id: str) -> tuple[dict, dict, str]:
+async def _wrapper_set_gain(
+    set_ui_value,
+    value: int,
+    url: str,
+    session_id: str,
+) -> None:
+    """Set the ``gain`` slider through the package's own widget handler.
+
+    The wrapper arm's interface exposes ``set_ui_value``; grading drives the
+    same handler in-process, against the fresh session the grader created.
+
+    Raises:
+        GradeRefusal: If the handler reports an error, so a failed move fails
+            the probe closed instead of reading a stale value.
+    """
+    payload = await set_ui_value("gain", value, session_id=session_id, server_url=url)
+    if not isinstance(payload, dict) or payload.get("status") == "error":
+        raise GradeRefusal(
+            f"set_ui_value('gain', {value!r}) failed: {str(payload)[:500]}"
+        )
+
+
+async def _wrapper_drive_slider(
+    set_ui_value, get_variables, url: str, session_id: str
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """Move ``gain`` to the changed value and back, reading after each move.
+
+    The wrapper counterpart of ``ArmProber._drive_slider``: every move and every
+    read is its own tool call, so the read that verifies a move sees the flushed
+    kernel state rather than the queued write.
+    """
+
+    async def read_pair() -> tuple[float, float]:
+        variables = await get_variables(
+            session_id=session_id,
+            variable_names=["gain", "normalized"],
+            server_url=url,
+        )
+        return wrapper_gain_and_normalized(variables)
+
+    await _wrapper_set_gain(set_ui_value, CHANGED_EXPECTED_GAIN, url, session_id)
+    gain_at_4, normalized_at_4 = await read_pair()
+    await _wrapper_set_gain(set_ui_value, DEFAULT_EXPECTED_GAIN, url, session_id)
+    gain_restored, normalized_restored = await read_pair()
+    return (gain_at_4, normalized_at_4, gain_restored, normalized_restored)
+
+
+async def _wrapper_read(
+    url: str, session_id: str
+) -> tuple[
+    dict,
+    dict,
+    str,
+    tuple[float | None, float | None, float | None, float | None],
+]:
     """Read the live kernel through the repository package (async).
 
     The package imports live inside this coroutine body, so this module and its
@@ -535,10 +1084,15 @@ async def _wrapper_read(url: str, session_id: str) -> tuple[dict, dict, str]:
     count then come from the package's own handlers, against the fresh session
     id and server url the grader created. The status is returned, never
     swallowed: ``partial`` reaches the verdict as a failed check.
+
+    The grader then drives the slider sequence through the package's
+    ``set_ui_value`` handler and returns its four reads alongside the default
+    read, so both readers report the same :class:`ProbeResult` shape.
     """
     from marimo_inspection.client import MarimoClient
     from marimo_inspection.tools.errors import get_errors
     from marimo_inspection.tools.mutation import run_cell
+    from marimo_inspection.tools.ui import set_ui_value
     from marimo_inspection.tools.variables import get_variables
 
     # Confirm over the wire that the fresh session this grader created is the
@@ -560,7 +1114,10 @@ async def _wrapper_read(url: str, session_id: str) -> tuple[dict, dict, str]:
         server_url=url,
     )
     errors = await get_errors(session_id=session_id, server_url=url)
-    return variables, errors, run_status
+    reactivity = await _wrapper_drive_slider(
+        set_ui_value, get_variables, url, session_id
+    )
+    return variables, errors, run_status, reactivity
 
 
 class WrapperProber(ArmProber):
@@ -569,22 +1126,28 @@ class WrapperProber(ArmProber):
     The wrapper arm ran this repository's package against a marimo release that
     may have no ``pair execute`` subcommand, so this reader drives
     ``MarimoClient`` and the package's ``run_cell`` / ``get_variables`` /
-    ``get_errors`` handlers over the fresh session the grader itself created —
-    never the arm's session. Boot mechanics are inherited unchanged, so only the
-    read step differs from the native reader.
+    ``get_errors`` / ``set_ui_value`` handlers over the fresh session the grader
+    itself created — never the arm's session. Boot mechanics are inherited
+    unchanged, so only the read and drive steps differ from the native reader.
     """
 
     def _read_kernel(
         self, env: dict, url: str, notebook: Path, session_id: str
-    ) -> tuple[tuple[float, float, int], str]:
-        """Wrapper read: run every cell, then read values via the package.
+    ) -> tuple[
+        tuple[float, float, int],
+        str,
+        tuple[float | None, float | None, float | None, float | None],
+    ]:
+        """Wrapper read: run every cell, read values, then drive the slider.
 
         The package's ``run_cell`` status travels back with the values, so a
         ``partial`` run-all — a cell that failed or never finished — reaches the
         verdict as a failed check instead of a pass.
         """
-        variables, errors, run_status = asyncio.run(_wrapper_read(url, session_id))
-        return wrapper_kernel_values(variables, errors), run_status
+        variables, errors, run_status, reactivity = asyncio.run(
+            _wrapper_read(url, session_id)
+        )
+        return wrapper_kernel_values(variables, errors), run_status, reactivity
 
 
 def make_prober(reader: str, python: str, state_dir) -> object:
@@ -734,6 +1297,29 @@ def grade(
         ``{"pass": bool, "checks": [{"name", "pass", "detail"}, ...],
         "observed": {...}}``. ``pass`` is true only when every check passed and
         the full check set is present — a partial read never passes.
+
+    Stated limit — this does NOT establish the agent's history:
+        The reactivity checks prove the SAVED notebook reacts to ``gain`` in a
+        fresh kernel that THIS GRADER drove. They do not prove the agent ever
+        moved the slider: artifact-level reactivity is indistinguishable whether
+        the agent performed the interaction, never touched it, or the notebook
+        already responded that way before the run began. Establishing agent
+        history needs captured tool actions, which the artifact-level checks
+        never read.
+
+        The ``interface_ledger_intact`` check covers HALF of that gap, and
+        asymmetrically: it is the native arm's audit trail only. The native arm
+        reaches the notebook through the ``pair`` shim, whose ledger records the
+        notebook's hash around every call it mediated, so a write that bypassed
+        the adapter breaks the chain against the saved file and fails the check.
+        The wrapper arm has no shim and therefore no captured calls at all: for
+        it the check reports itself NOT APPLICABLE and the verdict records
+        ``observed["ledger_applicable"] is False``, so a wrapper run is never
+        silently credited as audited — its interaction history stays
+        unestablished, exactly as above. The ledger also proves traversal, not
+        intent or completeness: it cannot show that every write went through the
+        shim, only that the file's final bytes are what the shim's last
+        mediated call left. Do not read a passing verdict as more than it is.
     """
     observed: dict = {}
     checks: list[dict] = []
@@ -767,25 +1353,29 @@ def grade(
                     f"canonical drifted: {actual_sha} != {expected_sha}",
                 )
 
-    # 2. The SAVED notebook carries a normalized cell (byte substring).
+    # 2. The SAVED notebook carries a STRUCTURAL normalized cell: parsed into
+    # cells, one of them must assign ``normalized`` reading both inputs. A bare
+    # constant and a comment mention both fail here.
     notebook_path = manifest.get("notebook_path")
     if not notebook_path:
         add("normalized_cell_saved", False, "manifest carries no notebook_path")
     else:
         try:
-            raw = Path(notebook_path).read_bytes()
+            saved_source = Path(notebook_path).read_text(encoding="utf-8")
         except OSError as exc:
             add("normalized_cell_saved", False, f"cannot read notebook: {exc}")
-        else:
-            present = NORMALIZED_MARKER in raw
-            observed["normalized_marker_present"] = present
+        except UnicodeDecodeError as exc:
             add(
                 "normalized_cell_saved",
-                present,
-                "saved notebook bytes carry a normalized cell"
-                if present
-                else "saved notebook bytes carry no normalized cell",
+                False,
+                f"saved notebook is not UTF-8 text: {exc}",
             )
+        else:
+            shaped, shape_detail = normalized_cell_shape(
+                saved_source, filepath=str(notebook_path)
+            )
+            observed["normalized_cell_structural"] = shaped
+            add("normalized_cell_saved", shaped, shape_detail)
 
     # 3. Fresh boot + rotated identity + kernel reads.
     previous = None
@@ -814,6 +1404,10 @@ def grade(
         observed["gain"] = result.gain
         observed["normalized"] = result.normalized
         observed["cell_errors"] = result.error_count
+        observed["gain_at_4"] = result.gain_at_4
+        observed["normalized_at_4"] = result.normalized_at_4
+        observed["gain_restored"] = result.gain_restored
+        observed["normalized_restored"] = result.normalized_restored
 
     # 3a. Reopen rotated both ids while keeping the notebook.
     if result is None:
@@ -837,15 +1431,20 @@ def grade(
 
     # 3b. Kernel normalized matches the independent expectation. The oracle is
     # looked up INSIDE the guard: a missing or failing oracle must still produce
-    # a JSON verdict with a failed check, never an uncaught exception.
-    target = None
+    # a JSON verdict with a failed check, never an uncaught exception. The
+    # oracle is asked for BOTH gains up front, because the reactivity checks
+    # compare against the changed gain's expectation.
+    targets: dict[int, float] = {}
     oracle_error: str | None = None
     try:
-        target = _oracle().expected_metric(expected_gain)
+        for gain in (expected_gain, CHANGED_EXPECTED_GAIN):
+            targets[gain] = _oracle().expected_metric(gain)
     except Exception as exc:  # noqa: BLE001 - any oracle failure is a failed check
         oracle_error = f"oracle unavailable: {exc}"
-    if target is not None:
-        observed["expected_metric"] = target
+    if oracle_error is None:
+        observed["expected_metric"] = targets[expected_gain]
+        observed["expected_metric_at_gain_4"] = targets[CHANGED_EXPECTED_GAIN]
+    target = targets.get(expected_gain)
     if oracle_error is not None:
         add("kernel_normalized_matches_oracle", False, oracle_error)
     elif result is None or result.normalized is None:
@@ -883,6 +1482,77 @@ def grade(
             f"gain {result.gain} != default {expected_gain}",
         )
 
+    # 3c2. The grader DROVE the slider: it moved ``gain`` to the changed value
+    # through the arm's own mechanism and read the diagnostic again. The moved
+    # gain is required too — the diagnostic changing while the slider never
+    # moved would not be the mission's behaviour. A hardcoded diagnostic reads
+    # the default value here and fails.
+    changed_target = targets.get(CHANGED_EXPECTED_GAIN)
+    if oracle_error is not None:
+        add("kernel_reactivity_at_gain_4", False, oracle_error)
+    elif result is None or result.gain_at_4 is None or result.normalized_at_4 is None:
+        add(
+            "kernel_reactivity_at_gain_4",
+            False,
+            probe_error or "the gain-4 read reported no gain/normalized value",
+        )
+    elif result.gain_at_4 != CHANGED_EXPECTED_GAIN:
+        add(
+            "kernel_reactivity_at_gain_4",
+            False,
+            f"gain did not move to {CHANGED_EXPECTED_GAIN}: read {result.gain_at_4}",
+        )
+    elif result.normalized_at_4 == changed_target:
+        add(
+            "kernel_reactivity_at_gain_4",
+            True,
+            f"gain {result.gain_at_4} -> normalized {result.normalized_at_4}"
+            f" == oracle {changed_target}",
+        )
+    else:
+        add(
+            "kernel_reactivity_at_gain_4",
+            False,
+            f"gain {result.gain_at_4} -> normalized {result.normalized_at_4}"
+            f" != oracle {changed_target}",
+        )
+
+    # 3c3. The grader restored the slider: gain back at the default and the
+    # diagnostic back at the default value. A run that changed the value and
+    # never restored fails here.
+    if oracle_error is not None:
+        add("kernel_restored_to_default", False, oracle_error)
+    elif (
+        result is None
+        or result.gain_restored is None
+        or result.normalized_restored is None
+    ):
+        add(
+            "kernel_restored_to_default",
+            False,
+            probe_error or "the restore read reported no gain/normalized value",
+        )
+    elif result.gain_restored != expected_gain:
+        add(
+            "kernel_restored_to_default",
+            False,
+            f"gain was not restored to {expected_gain}: read {result.gain_restored}",
+        )
+    elif result.normalized_restored == target:
+        add(
+            "kernel_restored_to_default",
+            True,
+            f"gain back at {result.gain_restored} -> normalized"
+            f" {result.normalized_restored} == oracle {target}",
+        )
+    else:
+        add(
+            "kernel_restored_to_default",
+            False,
+            f"gain back at {result.gain_restored} -> normalized"
+            f" {result.normalized_restored} != oracle {target}",
+        )
+
     # 3d. A completed run with zero cell errors. The producer's run status is
     # checked FIRST: a partial run-all means a target failed or never finished,
     # so it is a failed check even when the structured error count reads zero.
@@ -912,6 +1582,41 @@ def grade(
             f"{result.error_count} cell error(s) present (run status:"
             f" {result.run_status})",
         )
+
+    # 4. The native arm's audit trail. The ledger is what makes a bypass
+    #    detectable: it records the notebook's hash around every call the shim
+    #    mediated, so a write that never went through the adapter leaves the
+    #    chain ending somewhere other than the saved file's bytes. The check
+    #    follows the ARM the manifest names — the ledger is the native arm's
+    #    interface — never the reader, which only selects how the kernel is read.
+    #    A wrapper arm has no shim, so its calls are not captured at all: the
+    #    check then reports itself NOT APPLICABLE (and the verdict says so),
+    #    rather than crediting that arm as audited.
+    if manifest.get("arm") == "wrapper":
+        observed["ledger_applicable"] = False
+        add(
+            "interface_ledger_intact",
+            True,
+            "not applicable: the wrapper arm has no shim, so its tool calls are"
+            " not captured in a ledger",
+        )
+    else:
+        observed["ledger_applicable"] = True
+        saved_sha: str | None = None
+        if isinstance(notebook_path, str) and notebook_path.strip():
+            try:
+                saved_sha = sha256_file(notebook_path)
+            except OSError:
+                # The saved-cell check has already failed on this file; the
+                # ledger check fails closed too, rather than skipping.
+                saved_sha = None
+        ledger_passed, ledger_detail, ledger_entries = verify_ledger(
+            manifest.get("ledger_path"),
+            fixture_sha256=expected_sha,
+            saved_sha256=saved_sha,
+        )
+        observed["ledger_entry_count"] = ledger_entries
+        add("interface_ledger_intact", ledger_passed, ledger_detail)
 
     complete = len(checks) == len(CHECK_NAMES) and {c["name"] for c in checks} == set(
         CHECK_NAMES
