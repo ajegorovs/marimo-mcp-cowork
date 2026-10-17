@@ -463,6 +463,22 @@ def test_prompt_file_is_written_byte_exactly(tmp_path, capsys):
     )
 
 
+def test_the_committed_prompt_inputs_are_lf_in_the_working_tree():
+    """The prompts are asserted byte-for-byte, so their line endings must not
+    depend on the checkout policy. Git stores them as LF; `.gitattributes` pins
+    `benchmark/prompts/*.md` to LF so a Windows checkout with
+    `core.autocrlf=true` cannot materialise CRLF and flip these assertions."
+    """
+    for path in sorted(PROMPTS.glob("*.md")):
+        data = path.read_bytes()
+        require(
+            b"\r" not in data,
+            f"{path.name} carries CR in the working tree: either .gitattributes"
+            " stopped pinning it or the file was saved with CRLF — the prompt"
+            " byte assertions depend on this",
+        )
+
+
 def test_both_arms_get_the_identical_mission_and_different_notes(tmp_path):
     native, _native_recorder, _case = _run(tmp_path, "native", home_name="native-home")
     wrapper, _wrapper_recorder, _case = _run(
