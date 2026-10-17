@@ -38,6 +38,14 @@ follows from this document.
 | Concurrency protection | depends on the underlying server behaviour | read-before-edit guard and notebook-path-anchored binding — detection on a captured snapshot, **not** atomic prevention |
 | Version evaluated | marimo 0.25.1, with the marimo-pair v0.0.20 Agent Skill | marimo 0.24.x (pinned: private APIs are version-bound) |
 
+This compares **interfaces, not feature counts**. Official marimo also ships
+*built-in AI tools* exposed over its own MCP server endpoint, so structured MCP
+tooling is not unique to this project — those tools were source-inspected in the
+now-historical
+[`marimo-inspection-tools-comparison.md`](marimo-inspection-tools-comparison.md).
+What is claimed as distinctive here is the *shape*: a named operation vocabulary,
+typed refusals, an importable client — not the transport.
+
 The protection row is the one most easily over-claimed. The upstream server
 routes by a mutable session id and accepts no caller-side expected identity, so
 **neither** interface can offer atomic target protection at this layer. Our bind
@@ -66,23 +74,29 @@ reactivity itself (`gain` 2 → 4 → 2) rather than reading the agent's claim.
 
 First complete batch — two runs per arm, alternating order:
 
-| Run | Arm | Grade | `normalized` | Oracle | Cell errors | Anchor | Agent wall time |
+| Run | Arm | Grade | `normalized` | Oracle | Cell errors | Anchor | Time (`agent_seconds`) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | wrapper (marimo 0.24) | pass | 1.25 | 1.25 | 0 | control_verified | 77 s |
 | 2 | native (marimo 0.25.1) | pass | 1.25 | 1.25 | 0 | control_verified | 328 s |
 | 3 | native (marimo 0.25.1) | pass | 1.25 | 1.25 | 0 | control_verified | 100 s |
 | 4 | wrapper (marimo 0.24) | pass | 1.25 | 1.25 | 0 | control_verified | 122 s |
 
+Times are the harness's recorded `agent_seconds` for that run, rounded to the
+second; the per-run detail, hashes and verdicts are authored and owned by
+[`restricted-interface-comparison.md`](restricted-interface-comparison.md).
+
 All six checks passed in all four runs. **No efficiency conclusion is drawn**:
 wrapper 77–122 s against native 100–328 s, with the ranges overlapping at two
 runs per arm.
 
 Second batch, under a stricter nine-check grader: the wrapper arm passed 2/2
-(109.6 s, 83.8 s); **both** native runs failed `interface_ledger_intact`. The
-cause was a defect in the harness, not in the arm: the shim recorded only
-successful calls, while a `pair create_cell` that reported failure had already
-created and saved the cell. After the fix, a deterministic replay of that
-sequence and one live native run both grade pass on all nine checks.
+(98.6 s and 73.3 s — that batch's recorded `elapsed_s`, a different field from the
+first batch's `agent_seconds`); **both** native runs failed
+`interface_ledger_intact`. The cause was a defect in the harness, not in the arm:
+the shim recorded only successful calls, while a `pair create_cell` that reported
+failure had already created and saved the cell. After the fix, a deterministic
+replay of that sequence and one live native run both grade pass on all nine
+checks (`elapsed_s` 129.75 s for that live run).
 
 Two observations from that batch are findings rather than noise:
 

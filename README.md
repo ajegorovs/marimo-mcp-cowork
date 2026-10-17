@@ -28,6 +28,12 @@ What this package adds is *shape* — a structured, inspectable tool vocabulary:
 | Concurrency protection | depends on the underlying server behaviour | read-before-edit guard and notebook-path-anchored binding — detection, **not** atomic prevention |
 | Version evaluated | marimo 0.25.1 | marimo 0.24.x (pinned) |
 
+Two scope notes: the table compares **interfaces**, not feature counts — official
+marimo also ships *built-in AI tools* over its own MCP server endpoint, so
+structured MCP tooling is not unique to this project (source-inspected in the
+now-historical [`docs/marimo-inspection-tools-comparison.md`](docs/marimo-inspection-tools-comparison.md));
+and the "concurrency protection" row is not a safety claim.
+
 **Reach for this package** for an agent framework that already speaks MCP, for
 refusals as structured payloads rather than tracebacks, for driving a live session
 from Python, or for the read-before-edit guard and notebook-path-anchored binding
@@ -99,10 +105,11 @@ only, never a committed dependency source.
 | Tools | 14 — no `restart_kernel` | 15, including `restart_kernel` |
 | Binding | process/connection-scoped | MCP-session state **plus** a process-global fallback, anchored to the bound notebook path (an id-only rotation is repaired; a reused id refused `notebook_mismatch`) |
 
-`main` is 105 commits ahead of that tag and `pyproject.toml` still carries
-`0.3.3`, so **there is no release for the newer surface yet**: a consumer pinning
-`v0.3.3` gets the older, smaller interface — a normal development gap, not a
-defect in the tag.
+`main` carries substantial unreleased changes beyond `v0.3.3`, and the package
+version in `pyproject.toml` has not yet been advanced — so **there is no release
+for the newer surface yet**: a consumer pinning `v0.3.3` gets the older, smaller
+interface, which is a normal development gap rather than a defect in the tag.
+Read the tag, not the branch, when you need to know what a pin actually does.
 
 ## The MCP tool surface
 

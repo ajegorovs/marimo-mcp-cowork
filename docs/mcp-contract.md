@@ -5,6 +5,13 @@ groups, the response envelope, binding, mutation, execution, widget and output
 semantics, and session lifecycle — for a reader who has not connected a client
 yet.
 
+> **Which surface this describes.** These are the rules for the current
+> development surface on `main` — 15 tools, the notebook-path anchor,
+> `restart_kernel`. A consumer of the pinned `v0.3.3` release has an earlier,
+> smaller contract (14 tools, no path anchor), so read the release/development
+> table in [`../README.md`](../README.md) before relying on a specific tool or
+> refusal reason.
+
 **Its sections are short summaries, not the rules themselves.** Each one states
 the contract as the packaged resources state it and names the authoritative
 location; the resources ship in the wheel, an agent reads them with

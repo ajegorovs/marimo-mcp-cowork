@@ -132,9 +132,18 @@ it must not be read as a difference between the two agent surfaces.
 ## Second batch — a stricter grader, and what the ledger caught
 
 The same two-arm, two-run batch re-run under the nine checks. The wrapper arm
-passed 2/2 (109.6 s and 83.8 s). **Both native runs failed one check**,
+passed 2/2 — `metadata.elapsed_s` 98.6 s and 73.3 s (see the correction below).
+**Both native runs failed one check**,
 `interface_ledger_intact`, and diagnosing that failure found a real defect — in
 the harness, not in the arm.
+
+**Correction (2026-10-17).** This paragraph previously reported the two wrapper
+runs as 109.6 s and 83.8 s. Those figures are not reproducible from the committed
+bundle: each run's metadata records `elapsed_s` of 98.578 and 73.265, equal to
+that run's own `started_at` → `ended_at` delta, and no other timing field is
+published for this batch. The recorded field is used above; the superseded pair
+had no stated measurement boundary. Verdicts, checks and the 129.75 s figure for
+the post-fix live native run are unaffected, and no run was repeated.
 
 What the agents actually did: each ran `pair create_cell` through the shim. The
 shim created the cell, then ran it, and the run raised
