@@ -3,13 +3,10 @@
 Structured tooling for **co-working on a live marimo notebook**: read cells,
 variables and outputs, edit source, run cells, drive widgets, and verify what
 happened — over the wire, or from inside another notebook. Two surfaces over one
-implementation:
-
-- a **Python client** (`MarimoClient`, `discover_servers`) driving a live marimo
-  session from any notebook or script;
-- a **FastMCP server** (`create_server`, and the `marimo-inspect` console
-  script) exposing the same tooling to AI agents over the Model Context
-  Protocol.
+implementation: a **Python client** (`MarimoClient`, `discover_servers`) that
+drives a live marimo session from any notebook or script, and a **FastMCP
+server** (`create_server`, and the `marimo-inspect` console script) that exposes
+the same tooling to AI agents over the Model Context Protocol.
 
 ## Why not just use upstream `marimo pair`?
 
@@ -62,8 +59,9 @@ async def main():
 asyncio.run(main())
 ```
 
-Importing `marimo_inspection` does **not** require `fastmcp`: the MCP server is
-lazily imported, and only by `create_server()`.
+Importing `marimo_inspection` does **not** import `fastmcp` — the server is
+reached through a lazy `__getattr__`, and only `create_server()` loads it.
+`fastmcp` is still an install-time dependency of the package.
 
 ### 2. As an MCP server
 
@@ -126,8 +124,8 @@ default): a never-read cell answers `needs_read`, a changed-since-read cell
 cell/session-targeting tool resolves its target through one shared step, so a
 target problem is a structured payload (`status: error` with `target_resolved` /
 `operation_ran` / `state_changed` all `false`) rather than an exception, and **no
-mutation is dispatched on a refusal**. Full contract:
-[`docs/mcp-contract.md`](docs/mcp-contract.md).
+mutation is dispatched on a refusal**. The full contract, written for a reader who
+has not connected a client yet: [`docs/mcp-contract.md`](docs/mcp-contract.md).
 
 ## MCP resources
 
@@ -141,8 +139,9 @@ connected client with `list_resources()` / `read_resource(uri)`:
 | `workflow://marimo-inspect/live-safety` | read-before-edit and live-kernel safety rules |
 | `reference://marimo-inspect/fallbacks-and-limits` | what MCP does not cover, and its intentional fallbacks |
 
-They are also readable in-process, over FastMCP's transport
-(`Client(transport=create_server())`), with no harness involved.
+The same three documents are readable without a connected client: in this
+repository at `src/marimo_inspection/resources/`, or in-process with
+`Client(transport=create_server())`.
 
 ## Requirements
 
@@ -161,7 +160,7 @@ They are also readable in-process, over FastMCP's transport
 | [`docs/interface-positioning.md`](docs/interface-positioning.md) | The comparison with upstream `marimo pair`, with its evidence and limits |
 | The packaged MCP resources | Authoritative runtime semantics for an agent that is already connected |
 | [`docs/harness-integration/README.md`](docs/harness-integration/README.md) | Consumer installation and per-harness configuration |
-| [`docs/deployment-topologies.md`](docs/deployment-topologies.md) | Local, remote and Tailnet topologies, binding and security boundaries |
+| [`docs/deployment-topologies.md`](docs/deployment-topologies.md) | Local, remote and Tailnet deployment shapes, URL resolution and the operator boundary |
 | [`examples/`](examples/) | Consumer-facing marimo usage patterns to copy, and how they are checked |
 | [`docs/live-tests.md`](docs/live-tests.md) | Live-kernel test mechanics and the current counts |
 | [`docs/project-status.md`](docs/project-status.md) | Current work, effort issues and durable design trails |

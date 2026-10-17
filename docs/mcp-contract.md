@@ -5,21 +5,25 @@ groups, the response envelope, binding, mutation, execution, widget and output
 semantics, and session lifecycle — for a reader who has not connected a client
 yet.
 
-**It is not a second copy of the runtime rules.** The three packaged MCP
-resources are authoritative for runtime semantics; they ship in the wheel and an
-agent reads them with `list_resources()` / `read_resource(uri)`. Where this
-document and a resource disagree, the resource wins, and the disagreement is a
-defect to fix here.
+**Its sections are short summaries, not the rules themselves.** Each one states
+the contract as the packaged resources state it and names the authoritative
+location; the resources ship in the wheel, an agent reads them with
+`list_resources()` / `read_resource(uri)`, and **they win on any difference** —
+a disagreement means this file is out of date and is a defect to fix here.
+Nothing here is intended as a second, independently maintained source.
 
 | Topic | Authoritative document |
 | --- | --- |
 | The step-by-step co-work loop, run modes, refusal families | `workflow://marimo-inspect/co-work-loop` |
 | Read-before-edit, live-kernel safety, widget visibility rules | `workflow://marimo-inspect/live-safety` |
-| What the surface deliberately does not cover, limits, binding scope | `reference://marimo-inspect/fallbacks-and-limits` |
+| What the surface deliberately does not cover, limits, binding at the tool-call level | `reference://marimo-inspect/fallbacks-and-limits` |
 | Installation and harness configuration | [`harness-integration/README.md`](harness-integration/README.md) |
-| Local, remote and Tailnet deployment shapes | [`deployment-topologies.md`](deployment-topologies.md) |
+| Local, remote and Tailnet deployment shapes, URL resolution, operator boundary | [`deployment-topologies.md`](deployment-topologies.md) |
 | Why the package exists beside `marimo pair`, and the evidence | [`interface-positioning.md`](interface-positioning.md) |
 | Released versus unreleased surface | [`../README.md`](../README.md) § Release and development boundary |
+
+The resources' own bodies are in this repository at
+`src/marimo_inspection/resources/`.
 
 ## Tool groups
 

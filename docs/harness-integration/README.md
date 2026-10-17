@@ -42,7 +42,8 @@ uv add "marimo-inspect @ git+https://github.com/ajegorovs/marimo-mcp-cowork@v0.3
 
 Pin the tag in a committed `pyproject.toml`; this is a normal, non-editable
 installation in the consumer project's environment. 📄 `AGENTS.md` §Remote /
-publishing; `README.md` §Install and connect an MCP client.
+publishing; `README.md` §Release and development boundary (what the pinned tag
+ships versus what `main` documents) and §Quick start.
 
 ### A2. Local checkout, editable — provider-contributor override only ✅
 
@@ -89,8 +90,10 @@ end-to-end install verification exist. Use A1 for normal consumers.
   `mo.mpl.interactive(plot(..., return_fig=True))`. The first consumer hit
   exactly this (O23) — decide it before writing display code, not after.
 
-Verified resolution on this machine: `fastmcp 4.0.3`, `marimo 0.24.0`,
-`marimo-inspect 0.3.1`.
+Verified resolution on this machine during the original integration pass:
+`fastmcp 4.0.3`, `marimo 0.24.0`, `marimo-inspect 0.3.1` — a point-in-time
+record, not the current release (see `README.md` §Release and development
+boundary).
 
 ---
 
@@ -254,6 +257,12 @@ Registry location (from `discovery.py::_get_registry_dir`): ✅
 ## What the agent sees
 
 15 tools, namespaced `mcp__<serverName>__<tool>` in most harnesses:
+
+> **Which surface this describes.** This is the current development surface on
+> `main`. The pinned `v0.3.3` release ships **14** of these — it has no
+> `restart_kernel` — and predates the notebook-path binding anchor, so its
+> refusal vocabulary is smaller. See `README.md` §Release and development
+> boundary before promising a tool in a pin.
 
 `list_active_notebooks` · `set_active_session` · `get_cell_map` ·
 `get_cell_data` · `get_cell_outputs` · `get_variables` ·
